@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]
+asyncpg
+alembic
+pydantic
+pydantic-settings
+httpx
+python-multipart
+numpy
+scikit-learn
+openai
+tiktoken>=0.5.0
