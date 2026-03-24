@@ -471,32 +471,77 @@ RULES:
 - Do NOT call code_visualizer unless user provides a GitHub URL or explicitly asks to scan a repo.
 - For follow-up confirmations (like \"yes create all\"), check the conversation context."""
 
-    # Use the same unified LLM routing as the main response (handles key rotation, fallbacks, BYOK)
-    try:
-        system_msg = "You are a tool-selection assistant. Respond with JSON only."
-        context = [{"role": "system", "content": system_msg}]
-        result = await route_query(
-            message=prompt,
-            context=context,
-            user_api_keys=user_api_keys,
-        )
-        content = result.get("response", "")
-        parsed = json.loads(content)
-        tool_id = parsed.get("tool")
+    # Direct Groq call with JSON mode — iterate ALL keys like multi_ai_router does
+    groq_api_keys = []
+    # User BYOK Groq first
+    if user_api_keys and user_api_keys.get("groq"):
+        groq_api_keys.append(user_api_keys["groq"])
+    # System keys: GROQ_API_KEY (comma-separated) + GROQ_API_KEY_2
+    for env_var in ("GROQ_API_KEY", "GROQ_API_KEY_2"):
+        raw = os.getenv(env_var, "")
+        for k in raw.split(","):
+            k = k.strip()
+            if k and k not in groq_api_keys:
+                groq_api_keys.append(k)
 
-        if tool_id and tool_id in enabled_skill_ids:
-            logger.info(f"[LLM-TOOL] Selected tool: {tool_id} (provider={result.get('provider')})")
-            return tool_id
-        elif tool_id:
-            logger.info(f"[LLM-TOOL] Selected {tool_id} but not in enabled skills, ignoring")
-            return None
-        else:
-            logger.info("[LLM-TOOL] No tool needed")
-            return None
-
-    except Exception as e:
-        logger.warning(f"[LLM-TOOL] Tool detection failed: {e}")
+    if not groq_api_keys:
+        logger.warning("[LLM-TOOL] No Groq API keys available, skipping tool detection")
         return None
+
+    messages = [
+        {"role": "system", "content": "You are a tool-selection assistant. Respond with JSON only."},
+        {"role": "user", "content": prompt},
+    ]
+
+    for key_idx, api_key in enumerate(groq_api_keys):
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": messages,
+                        "temperature": 0.0,
+                        "max_tokens": 60,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+
+                if resp.status_code == 401:
+                    logger.warning(f"[LLM-TOOL] Groq key {key_idx+1}/{len(groq_api_keys)} returned 401, trying next")
+                    continue
+                if resp.status_code == 429:
+                    logger.warning(f"[LLM-TOOL] Groq key {key_idx+1}/{len(groq_api_keys)} rate limited, trying next")
+                    continue
+                if resp.status_code != 200:
+                    logger.warning(f"[LLM-TOOL] Groq returned {resp.status_code}: {resp.text[:200]}")
+                    continue
+
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                parsed = json.loads(content)
+                tool_id = parsed.get("tool")
+
+                if tool_id and tool_id in enabled_skill_ids:
+                    logger.info(f"[LLM-TOOL] Selected tool: {tool_id}")
+                    return tool_id
+                elif tool_id:
+                    logger.info(f"[LLM-TOOL] Selected {tool_id} but not in enabled skills, ignoring")
+                    return None
+                else:
+                    logger.info("[LLM-TOOL] No tool needed")
+                    return None
+
+        except Exception as e:
+            logger.warning(f"[LLM-TOOL] Groq key {key_idx+1} failed: {e}")
+            continue
+
+    logger.warning("[LLM-TOOL] All Groq keys failed for tool detection")
+    return None
 
 
 def _extract_current_time_tool_results(user_message: str) -> List[ToolResultData]:
