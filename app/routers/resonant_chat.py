@@ -421,6 +421,7 @@ async def _llm_detect_tool(
     message: str,
     enabled_skill_ids: set,
     recent_messages: list = None,
+    user_api_keys: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """Use LLM to decide which tool (if any) to call for this message.
 
@@ -471,8 +472,13 @@ RULES:
 - For follow-up confirmations (like \"yes create all\"), check the conversation context."""
 
     try:
-        groq_keys = os.getenv("GROQ_API_KEY", "")
-        groq_key = groq_keys.split(",")[0].strip() if groq_keys else ""
+        # Prefer user BYOK Groq key over expired system key
+        groq_key = ""
+        if user_api_keys:
+            groq_key = (user_api_keys.get("groq") or user_api_keys.get("groq_api_key") or "").strip()
+        if not groq_key:
+            groq_keys = os.getenv("GROQ_API_KEY", "")
+            groq_key = groq_keys.split(",")[0].strip() if groq_keys else ""
         if not groq_key:
             logger.warning("[LLM-TOOL] No GROQ_API_KEY, skipping tool detection")
             return None
@@ -1489,6 +1495,7 @@ async def send_message(
                 message=safe_user_message,
                 enabled_skill_ids=enabled_skill_ids,
                 recent_messages=recent_messages[-4:] if recent_messages else None,
+                user_api_keys=user_api_keys,
             )
             if detected_tool_id:
                 if detected_tool_id == "web_search":
