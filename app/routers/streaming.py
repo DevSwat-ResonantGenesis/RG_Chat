@@ -25,6 +25,7 @@ from ..db import get_session
 from ..models import ResonantChat, ResonantChatMessage
 from ..domain.provider import route_query_stream
 from ..services.resonance_hashing import ResonanceHasher
+from ..services.user_api_keys import user_api_key_service
 from ..services.memory_merge import merge_and_rank_memories
 from ..services.magnetic_pull import magnetic_pull_system
 from ..services.intent_engine import intent_engine
@@ -261,11 +262,19 @@ async def stream_message(
             full_response = ""
             provider = "unknown"
             
+            # Fetch user BYOK keys so Resonant Chat uses the same keys as AI Assistant
+            _user_api_keys = {}
+            try:
+                _user_api_keys = await user_api_key_service.get_user_api_keys(user_id)
+            except Exception as _e:
+                logger.warning(f'Failed to fetch BYOK keys for streaming: {_e}')
+
             try:
                 async for chunk_data in route_query_stream(
                     message=request_body.message,
                     context=context_messages,
                     preferred_provider=request_body.preferred_provider,
+                    user_api_keys={**_user_api_keys, "__user_id__": user_id},
                 ):
                     if chunk_data.get("type") == "chunk":
                         chunk_text = chunk_data.get("content", "")
