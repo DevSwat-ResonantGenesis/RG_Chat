@@ -4557,8 +4557,13 @@ async def get_memory_anchors(
         all_anchors = []
         for msg in messages:
             if msg.meta_data and isinstance(msg.meta_data, dict):
-                anchors = msg.meta_data.get("anchors", [])
-                all_anchors.extend(anchors)
+                raw_anchors = msg.meta_data.get("anchors", [])
+                # Normalize anchors: may be dicts from _extract_keyphrases_nlp or plain strings
+                for a in raw_anchors:
+                    if isinstance(a, dict):
+                        all_anchors.append(a.get("text", a.get("content", str(a))))
+                    elif isinstance(a, str):
+                        all_anchors.append(a)
         
         # Deduplicate and limit
         unique_anchors = list(dict.fromkeys(all_anchors))[:100]
