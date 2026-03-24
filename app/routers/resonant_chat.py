@@ -471,59 +471,73 @@ RULES:
 - Do NOT call code_visualizer unless user provides a GitHub URL or explicitly asks to scan a repo.
 - For follow-up confirmations (like \"yes create all\"), check the conversation context."""
 
-    try:
-        # Prefer user BYOK Groq key over expired system key
-        groq_key = ""
-        if user_api_keys:
-            groq_key = (user_api_keys.get("groq") or user_api_keys.get("groq_api_key") or "").strip()
-        if not groq_key:
-            groq_keys = os.getenv("GROQ_API_KEY", "")
-            groq_key = groq_keys.split(",")[0].strip() if groq_keys else ""
-        if not groq_key:
-            logger.warning("[LLM-TOOL] No GROQ_API_KEY, skipping tool detection")
-            return None
+    # Build provider chain: try user BYOK keys first, then system keys
+    providers_to_try = []
+    if user_api_keys:
+        if user_api_keys.get("groq"):
+            providers_to_try.append(("groq", "https://api.groq.com/openai/v1/chat/completions", user_api_keys["groq"], "llama-3.3-70b-versatile"))
+        if user_api_keys.get("openai"):
+            providers_to_try.append(("openai", "https://api.openai.com/v1/chat/completions", user_api_keys["openai"], "gpt-4o-mini"))
+    # System fallbacks
+    sys_groq = (os.getenv("GROQ_API_KEY", "").split(",")[0].strip())
+    if sys_groq:
+        providers_to_try.append(("groq-sys", "https://api.groq.com/openai/v1/chat/completions", sys_groq, "llama-3.3-70b-versatile"))
+    sys_openai = os.getenv("OPENAI_API_KEY", "").strip()
+    if sys_openai:
+        providers_to_try.append(("openai-sys", "https://api.openai.com/v1/chat/completions", sys_openai, "gpt-4o-mini"))
 
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {groq_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [
-                        {"role": "system", "content": "You are a tool-selection assistant. Respond with JSON only."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.0,
-                    "max_tokens": 60,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-
-            if resp.status_code != 200:
-                logger.warning(f"[LLM-TOOL] Groq returned {resp.status_code}: {resp.text[:200]}")
-                return None
-
-            data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            parsed = json.loads(content)
-            tool_id = parsed.get("tool")
-
-            if tool_id and tool_id in enabled_skill_ids:
-                logger.info(f"[LLM-TOOL] LLM selected tool: {tool_id}")
-                return tool_id
-            elif tool_id:
-                logger.info(f"[LLM-TOOL] LLM selected {tool_id} but not in enabled skills, ignoring")
-                return None
-            else:
-                logger.info("[LLM-TOOL] LLM decided no tool needed")
-                return None
-
-    except Exception as e:
-        logger.warning(f"[LLM-TOOL] Tool detection failed: {e}")
+    if not providers_to_try:
+        logger.warning("[LLM-TOOL] No API keys available for tool detection")
         return None
+
+    messages = [
+        {"role": "system", "content": "You are a tool-selection assistant. Respond with JSON only."},
+        {"role": "user", "content": prompt},
+    ]
+
+    for prov_name, api_url, api_key, model in providers_to_try:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.post(
+                    api_url,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "temperature": 0.0,
+                        "max_tokens": 60,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+
+                if resp.status_code != 200:
+                    logger.warning(f"[LLM-TOOL] {prov_name} returned {resp.status_code}: {resp.text[:200]}")
+                    continue
+
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                parsed = json.loads(content)
+                tool_id = parsed.get("tool")
+
+                if tool_id and tool_id in enabled_skill_ids:
+                    logger.info(f"[LLM-TOOL] {prov_name} selected tool: {tool_id}")
+                    return tool_id
+                elif tool_id:
+                    logger.info(f"[LLM-TOOL] {prov_name} selected {tool_id} but not in enabled skills, ignoring")
+                    return None
+                else:
+                    logger.info(f"[LLM-TOOL] {prov_name} decided no tool needed")
+                    return None
+
+        except Exception as e:
+            logger.warning(f"[LLM-TOOL] {prov_name} failed: {e}")
+            continue
+
+    logger.warning("[LLM-TOOL] All providers failed for tool detection")
+    return None
 
 
 def _extract_current_time_tool_results(user_message: str) -> List[ToolResultData]:
