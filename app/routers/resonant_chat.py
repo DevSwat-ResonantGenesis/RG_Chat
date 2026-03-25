@@ -3042,13 +3042,13 @@ async def get_providers(
     # Get user info from request
     user_id = request.headers.get("x-user-id")
     user_role = request.headers.get("x-user-role", "user")
-    user_plan = request.headers.get("x-user-plan", "free")
+    user_plan = request.headers.get("x-user-plan", "developer")
     
-    # Free tier credit limit
-    FREE_TIER_CREDITS = 1000
+    # Developer tier credit limit
+    FREE_TIER_CREDITS = 15000
     
-    # Check if user is on a paid plan (unlimited platform keys)
-    is_paid_user = user_plan in ["plus", "enterprise"] or \
+    # Check if user is on a paid plan (all tiers are now paid)
+    is_paid_user = user_plan in ["developer", "plus", "enterprise"] or \
                    user_role in ["platform_dev", "system", "admin", "owner", "org_admin"]
     
     # Get user's credit balance for free users
