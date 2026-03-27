@@ -1135,7 +1135,7 @@ async def send_message(
     # ============================================
     # STEP 0: CHECK PLAN LIMITS (GTM Critical)
     # ============================================
-    privileged_roles = {"owner", "platform_owner", "admin", "superuser"}
+    privileged_roles = {"platform_owner", "admin", "superuser"}
     is_privileged_user = is_superuser or unlimited_credits or user_role.lower() in privileged_roles
 
     # Get user's plan and check message limit
