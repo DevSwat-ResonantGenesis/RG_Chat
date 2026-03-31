@@ -672,7 +672,7 @@ def _calculate_resonance_score(
     if memories and len(memories) > 0:
         # Check if response references memory content
         memory_keywords = set()
-        for mem in memories[:20]:  # Use top 20 for better context
+        for mem in memories[:5]:  # Top 5 by relevance score
             content = mem.get("content", "")
             if content:
                 words = content.lower().split()[:10]
@@ -796,7 +796,7 @@ async def _extract_memories(
                 "user_id": valid_user_id,
                 "org_id": org_id,
                 "agent_hash": effective_agent_hash,
-                "limit": 25,
+                "limit": 10,
                 # Extraction methods in priority order
                 "use_anchors": True,       # Layer 4: Anchor-based lookup (PRIORITY 1)
                 "use_proximity": True,     # Layer 5: XYZ proximity search (PRIORITY 2)
@@ -850,11 +850,11 @@ async def _extract_memories(
         sphere_memories = magnetic_pull_system.apply_to_memories(sphere_memories)
     
     # Merge and rank memories using hybrid scoring
-    # Merge and rank memories (increased limit from 10 to 25 for better context)
+    # Top 5 by combined score (resonance + proximity + anchor + recency + RAG)
     merged_memories = merge_and_rank_memories(
         rag_memories=rag_memories,
         sphere_memories=sphere_memories,
-        limit=25
+        limit=5
     )
     
     # Add xyz coordinates to memories for Layer 7/9 evidence aggregation
@@ -1050,11 +1050,11 @@ PLATFORM PAGES: /dashboard, /agents (AgentOS), /agent-teams, /connect-profiles (
         })
     logger.info(f"📝 Total context_messages: {len(context_messages)}")
     
-    # Add memory context if available (use top 20 for better memory retention)
+    # Add memory context if available (top 5 by semantic relevance)
     if memories:
         memory_context = "RELEVANT MEMORIES FROM USER'S HASH SPHERE:\n"
         mem_count = 0
-        for mem in memories[:20]:
+        for mem in memories[:5]:
             content = mem.get("content", "") or mem.get("anchor_text", "")
             # Quality filter: skip very short, empty, or still-encrypted memories
             if not content or len(content.strip()) < 15 or content.startswith("ENC2:"):
@@ -1388,11 +1388,11 @@ async def send_message(
         enhanced_metrics_calculator.record_memory_usage(
             message_id="pending",  # Will be updated after assistant_message is created
             memories_retrieved=len(memories),
-            memories_used=min(len(memories), 20),  # We inject up to 20 into context
+            memories_used=min(len(memories), 5),  # We inject top 5 into context
             anchor_matches=sum(1 for m in memories if m.get("anchor_energy", 0) > 0),
             rag_queries=1,  # We made one Hash Sphere extraction call
             embedding_lookups=1 if any(m.get("proximity_score", 0) > 0 for m in memories) else 0,
-            memory_tokens=sum(len(str(m.get("content", ""))) // 4 for m in memories[:20]),
+            memory_tokens=sum(len(str(m.get("content", ""))) // 4 for m in memories[:5]),
         )
     
     # ============================================
@@ -2213,11 +2213,11 @@ async def send_message(
             enhanced_metrics_calculator.record_memory_usage(
                 message_id=str(assistant_message.id),
                 memories_retrieved=len(memories),
-                memories_used=min(len(memories), 20),
+                memories_used=min(len(memories), 5),
                 anchor_matches=sum(1 for m in memories if m.get("anchor_energy", 0) > 0),
                 rag_queries=1,
                 embedding_lookups=1 if any(m.get("proximity_score", 0) > 0 for m in memories) else 0,
-                memory_tokens=sum(len(str(m.get("content", ""))) // 4 for m in memories[:20]),
+                memory_tokens=sum(len(str(m.get("content", ""))) // 4 for m in memories[:5]),
             )
     except Exception as e:
         logger.warning(f"DSID persistence failed (non-critical): {e}")
@@ -2366,7 +2366,7 @@ async def send_message(
     if memories:
         anchors = [
             (mem.get("anchor_text", "") or mem.get("content", ""))[:50]
-            for mem in memories[:20]
+            for mem in memories[:5]
             if mem.get("anchor_text") or mem.get("content")
         ]
     
