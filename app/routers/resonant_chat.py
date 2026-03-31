@@ -672,7 +672,7 @@ def _calculate_resonance_score(
     if memories and len(memories) > 0:
         # Check if response references memory content
         memory_keywords = set()
-        for mem in memories[:5]:  # Increased from 5 to 20 for better context
+        for mem in memories[:20]:  # Use top 20 for better context
             content = mem.get("content", "")
             if content:
                 words = content.lower().split()[:10]
@@ -1050,11 +1050,11 @@ PLATFORM PAGES: /dashboard, /agents (AgentOS), /agent-teams, /connect-profiles (
         })
     logger.info(f"📝 Total context_messages: {len(context_messages)}")
     
-    # Add memory context if available (increased from 5 to 20 for better memory retention)
+    # Add memory context if available (use top 20 for better memory retention)
     if memories:
         memory_context = "RELEVANT MEMORIES FROM USER'S HASH SPHERE:\n"
         mem_count = 0
-        for mem in memories[:5]:
+        for mem in memories[:20]:
             content = mem.get("content", "") or mem.get("anchor_text", "")
             # Quality filter: skip very short, empty, or still-encrypted memories
             if not content or len(content.strip()) < 15 or content.startswith("ENC2:"):
@@ -1388,11 +1388,11 @@ async def send_message(
         enhanced_metrics_calculator.record_memory_usage(
             message_id="pending",  # Will be updated after assistant_message is created
             memories_retrieved=len(memories),
-            memories_used=min(len(memories), 5),  # We inject up to 5 into context
+            memories_used=min(len(memories), 20),  # We inject up to 20 into context
             anchor_matches=sum(1 for m in memories if m.get("anchor_energy", 0) > 0),
             rag_queries=1,  # We made one Hash Sphere extraction call
             embedding_lookups=1 if any(m.get("proximity_score", 0) > 0 for m in memories) else 0,
-            memory_tokens=sum(len(str(m.get("content", ""))) // 4 for m in memories[:5]),
+            memory_tokens=sum(len(str(m.get("content", ""))) // 4 for m in memories[:20]),
         )
     
     # ============================================
@@ -1928,6 +1928,7 @@ async def send_message(
                 message=message_with_images,
                 context_messages=context_messages,
                 preferred_provider=request_body.preferred_provider,
+                user_api_keys=user_api_keys,
                 images=request_body.images,
             )
             if debate_used and debate_response:
@@ -2212,11 +2213,11 @@ async def send_message(
             enhanced_metrics_calculator.record_memory_usage(
                 message_id=str(assistant_message.id),
                 memories_retrieved=len(memories),
-                memories_used=min(len(memories), 5),
+                memories_used=min(len(memories), 20),
                 anchor_matches=sum(1 for m in memories if m.get("anchor_energy", 0) > 0),
                 rag_queries=1,
                 embedding_lookups=1 if any(m.get("proximity_score", 0) > 0 for m in memories) else 0,
-                memory_tokens=sum(len(str(m.get("content", ""))) // 4 for m in memories[:5]),
+                memory_tokens=sum(len(str(m.get("content", ""))) // 4 for m in memories[:20]),
             )
     except Exception as e:
         logger.warning(f"DSID persistence failed (non-critical): {e}")
@@ -2365,7 +2366,7 @@ async def send_message(
     if memories:
         anchors = [
             (mem.get("anchor_text", "") or mem.get("content", ""))[:50]
-            for mem in memories[:5]  # Increased from 5 to 20
+            for mem in memories[:20]
             if mem.get("anchor_text") or mem.get("content")
         ]
     

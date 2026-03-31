@@ -242,12 +242,35 @@ class DynamicTeamComposer:
     def should_use_dynamic_team(self, task: str) -> Tuple[bool, Optional[DynamicTeam]]:
         """Determine if a dynamic team should be used for a task.
 
-        DISABLED: Dynamic team composition fires too broadly — domain patterns
-        match common words like "build", "how to", "fix", "test", "review",
-        causing multi-agent overhead for simple questions. A single focused LLM
-        call with clean context outperforms a committee of agents on nearly all tasks.
-        User can still explicitly select teams via the UI team picker.
+        Smart gating rules (prevents over-triggering):
+        1. Task must be complex (multi-sentence OR explicit complexity markers)
+        2. Must detect 2+ distinct domains (single-domain → single agent)
+        3. Short messages (< 60 chars) always skip
+        4. Users can still explicitly select teams via the UI team picker
         """
+        if not task or len(task.strip()) < 60:
+            return False, None
+
+        analysis = self.analyze_task(task)
+
+        # Only compose teams for genuinely multi-domain complex tasks
+        if analysis.complexity == "simple":
+            return False, None
+        if len(analysis.domains) < 2:
+            return False, None
+        # Require at least moderate complexity with 2+ domains
+        # or complex with any multi-domain
+        if analysis.complexity == "moderate" and analysis.estimated_agents < 2:
+            return False, None
+
+        team = self.compose_team(task)
+        if team and len(team.agents) >= 2:
+            logger.info(
+                f"🎯 Dynamic team composed: {team.name} "
+                f"(domains={analysis.domains}, complexity={analysis.complexity})"
+            )
+            return True, team
+
         return False, None
     
     def get_agent_for_domain(self, domain: str) -> str:

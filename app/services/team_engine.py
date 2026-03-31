@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -187,21 +188,29 @@ class TeamEngine:
     def should_use_team(self, message: str) -> Optional[str]:
         """Determine if a team should be used based on message content.
 
-        Conservative: only matches very explicit team requests with compound
-        keywords (2+ words) in short messages (< 200 chars). Most messages
-        should go straight to a single focused LLM agent, not a multi-agent team.
-        Users can also explicitly select teams via the UI team picker (teamId).
+        Balanced gating:
+        - Messages must be > 30 chars (skip greetings/short replies)
+        - Messages must be < 300 chars (very long messages go to single agent)
+        - Both single-word and compound keywords are matched
+        - Compound (multi-word) keywords get priority — checked first
+        - Users can also explicitly select teams via the UI team picker (teamId)
         """
-        message_lower = message.lower()
+        message_lower = message.lower().strip()
 
-        if len(message_lower) > 200:
+        if len(message_lower) < 30 or len(message_lower) > 300:
             return None
 
+        # Pass 1: compound keywords (high confidence — exact phrase match)
         for team_id, team_def in self.teams.items():
             for keyword in team_def.trigger_keywords:
-                if " " not in keyword:
-                    continue
-                if keyword in message_lower:
+                if " " in keyword and keyword in message_lower:
+                    logger.info(f"👥 Team triggered: {team_def.name} (compound keyword: '{keyword}')")
+                    return team_id
+
+        # Pass 2: single-word keywords (require word boundary match)
+        for team_id, team_def in self.teams.items():
+            for keyword in team_def.trigger_keywords:
+                if " " not in keyword and re.search(r'\b' + re.escape(keyword) + r'\b', message_lower):
                     logger.info(f"👥 Team triggered: {team_def.name} (keyword: '{keyword}')")
                     return team_id
 

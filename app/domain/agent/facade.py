@@ -47,14 +47,21 @@ async def maybe_run_debate(
     message: str,
     context_messages: List[Dict],
     preferred_provider: Optional[str] = None,
+    user_api_keys: Optional[Dict[str, str]] = None,
     images: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Optional[str], bool]:
     """Run debate if the debate engine decides it is needed.
 
     Returns (response_text, debate_used_flag).
     """
+    # Set user API keys on the router BEFORE initializing engines
+    if user_api_keys:
+        router = get_router_for_internal_use()
+        router.set_user_api_keys(user_api_keys)
+        logger.info(f"🔑 Set {len(user_api_keys)} user API keys for debate: {list(user_api_keys.keys())}")
+
     _init_engines()
-    
+
     use_debate = debate_engine.should_use_debate(message)
     response_text = None
     use_debate_flag = False
