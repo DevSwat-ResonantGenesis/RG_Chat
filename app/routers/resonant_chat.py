@@ -1631,6 +1631,12 @@ async def send_message(
                 "is_superuser": is_superuser,
                 "user_api_keys": user_api_keys or {},
             }
+            # Pass conversation history so skills can detect follow-ups (e.g., architect Phase 2 confirmation)
+            if recent_messages:
+                skill_context["previousMessages"] = [
+                    {"role": m.role, "content": m.content}
+                    for m in recent_messages[-10:]
+                ]
             if _prev_assistant_agent_content:
                 skill_context["prev_assistant_content"] = _prev_assistant_agent_content
             github_token = _extract_github_token_from_user_keys(user_api_keys)

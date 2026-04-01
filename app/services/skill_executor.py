@@ -2435,12 +2435,13 @@ RULES:
 
     # ── Confirmation Detection (stateless two-phase) ──
     _CONFIRM_PATTERNS = [
-        r"^(yes|yep|yeah|yup|sure|ok|okay|go|do it|confirm|approved|lgtm)$",
-        r"build (it|now|them|this|that|the agent|as planned|all)",
+        r"^(yes|yep|yeah|yup|sure|ok|okay|go|do it|confirm|approved|lgtm)\b",
+        r"build\b.*\b(now|as planned|all|them|it)",
+        r"yes.{0,20}build",
         r"looks? good",
         r"go ahead",
         r"as planned",
-        r"create (it|them|the agent|now)",
+        r"create\b.*\b(it|them|now|all|agents?)",
         r"ship it",
         r"let'?s? (do it|go|build)",
         r"^(build|create|deploy|launch)$",
@@ -2450,16 +2451,22 @@ RULES:
         """Detect if user is confirming a previous plan preview."""
         # Check recent context for a prior architect plan preview
         prev_messages = context.get("previousMessages") or context.get("previous_messages") or []
+        print(f"[ARCHITECT_CONFIRM] prev_messages count={len(prev_messages)}", flush=True)
         has_prior_preview = any(
             "Mode: BUILD" in (m.get("content") or "") or "Plan Preview" in (m.get("content") or "")
-            for m in prev_messages[-3:]
+            or "Here's what I'll create" in (m.get("content") or "")
+            or "Ready to build" in (m.get("content") or "")
+            for m in prev_messages[-5:]
             if m.get("role") == "assistant"
         )
+        print(f"[ARCHITECT_CONFIRM] has_prior_preview={has_prior_preview}", flush=True)
         if not has_prior_preview:
             return False
         # Strip "Agent Architect:" prefix from option clicks before matching
         msg_lower = re.sub(r"^agent\s*architect\s*:\s*", "", message.lower().strip())
-        return any(re.search(p, msg_lower) for p in self._CONFIRM_PATTERNS)
+        matched = any(re.search(p, msg_lower) for p in self._CONFIRM_PATTERNS)
+        print(f"[ARCHITECT_CONFIRM] msg_lower={msg_lower!r}, matched={matched}", flush=True)
+        return matched
 
     # ── Helper: gather Groq API keys ──
     def _get_groq_keys(self, user_api_keys: Optional[Dict[str, str]] = None) -> List[str]:
