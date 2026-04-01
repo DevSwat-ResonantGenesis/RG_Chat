@@ -2216,6 +2216,8 @@ Respond with ONLY the category name (no explanation):
 Categories:
 - BRAINSTORM: User is exploring ideas, vague about what they want, asking "what can you build?" or describing a pain point without a concrete goal
 - BUILD: User has a concrete outcome — "create an agent that does X", "build me a bot for Y", "I need an agent to monitor Z"
+- RUN: User wants to execute/start/trigger an existing agent — "run my agent now", "execute X", "start X now", "trigger a run"
+- SCHEDULE: User wants to set up automated recurring runs — "schedule X daily", "automate X every hour", "set up a schedule"
 - MODIFY: User wants to change an existing agent — "change my agent to also do Y", "update the schedule", "add tools to my agent"
 - DIAGNOSE: User asking about failures/issues — "why did my agent fail?", "what went wrong?", "check my agent's logs"
 - REVIEW: User asking about current state — "what agents do I have?", "show my agents", "list my schedules"
@@ -2370,16 +2372,25 @@ RULES:
     async def _architect_classify_intent(
         self, message: str, user_api_keys: Optional[Dict[str, str]] = None
     ) -> str:
-        """Classify user intent into BRAINSTORM/BUILD/MODIFY/DIAGNOSE/REVIEW using fast LLM."""
-        # Quick regex shortcuts before calling LLM
-        msg_lower = message.lower().strip()
+        """Classify user intent into BRAINSTORM/BUILD/MODIFY/DIAGNOSE/REVIEW/RUN/SCHEDULE using fast LLM."""
+        # Strip Agent Architect prefix for cleaner matching
+        msg_lower = re.sub(r"^agent\s*architect\s*:\s*", "", message.lower().strip())
+        # Quick regex shortcuts before calling LLM (order matters — most specific first)
         if any(kw in msg_lower for kw in ("what agents", "list agents", "show agents", "my agents", "how many agents")):
             return "REVIEW"
         if any(kw in msg_lower for kw in ("why did", "failed", "what went wrong", "error", "diagnose", "debug")):
             return "DIAGNOSE"
         if any(kw in msg_lower for kw in ("change my", "update my", "modify my", "add tool", "remove tool", "change schedule")):
             return "MODIFY"
-        if any(kw in msg_lower for kw in ("create", "build", "make me", "set up", "deploy", "launch", "i need an agent")):
+        # RUN — must check BEFORE BUILD to avoid "run X" matching "build"
+        if re.search(r"\b(run|execute|start|trigger|launch)\s+(?:the\s+|my\s+|this\s+)?[A-Z]", message.strip()):
+            return "RUN"
+        if re.search(r"\b(run|execute|start|trigger)\b.*\b(now|agent|it|again)\b", msg_lower):
+            return "RUN"
+        # SCHEDULE
+        if re.search(r"\b(schedule|set up a|automate|recurring|cron|every\s+(?:day|hour|week|morning|evening))\b", msg_lower):
+            return "SCHEDULE"
+        if any(kw in msg_lower for kw in ("create", "build", "make me", "set up", "deploy", "i need an agent")):
             return "BUILD"
 
         # Fallback: LLM classification (fast, single-token-ish response)
@@ -2399,7 +2410,7 @@ RULES:
                     )
                     if resp.status_code == 200:
                         text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip().upper()
-                        for intent in ("BRAINSTORM", "BUILD", "MODIFY", "DIAGNOSE", "REVIEW"):
+                        for intent in ("RUN", "SCHEDULE", "BRAINSTORM", "BUILD", "MODIFY", "DIAGNOSE", "REVIEW"):
                             if intent in text:
                                 return intent
             except Exception:
@@ -2767,6 +2778,16 @@ Produce the JSON blueprint now:"""
             result["summary"] = f"**Mode: MODIFY**\n\n{result['summary']}"
             return result
 
+        if intent == "RUN":
+            result = await self._architect_handle_run(message, existing_agents_list, headers, panel_url)
+            result["summary"] = f"**Mode: RUN**\n\n{result['summary']}"
+            return result
+
+        if intent == "SCHEDULE":
+            result = await self._architect_handle_schedule(message, existing_agents_list, headers, panel_url)
+            result["summary"] = f"**Mode: SCHEDULE**\n\n{result['summary']}"
+            return result
+
         # ── BUILD intent: Phase 1 — Plan Preview ──
 
         # ── Scope Risk → Decision Branches ──
@@ -3050,6 +3071,247 @@ Produce the JSON blueprint now:"""
         }
 
     # ── Intent Handlers for non-BUILD intents ──
+
+    async def _architect_handle_run(
+        self, message: str, agents: List[Dict], headers: Dict[str, str], panel_url: str
+    ) -> Dict[str, Any]:
+        """Handle RUN intent — actually start/execute an agent."""
+        if not agents:
+            return {
+                "success": True, "intent": "RUN", "operation": "architect_run",
+                "summary": "You don't have any agents to run yet.",
+                "present_options": {
+                    "_type": "present_options", "title": "Get started",
+                    "options": [
+                        {"label": "Build an agent", "value": "Agent Architect: help me build my first agent", "description": "Create your first agent", "icon": "🏗️"},
+                    ],
+                    "allow_custom": True,
+                },
+            }
+
+        # Find which agent the user wants to run
+        msg_lower = re.sub(r"^agent\s*architect\s*:\s*", "", message.lower().strip())
+        target_agent = None
+        for a in agents:
+            if a.get("name", "").lower() in msg_lower:
+                target_agent = a
+                break
+        if not target_agent:
+            # Fuzzy match — find closest agent name
+            for a in agents:
+                name_words = a.get("name", "").lower().replace("_", " ").split()
+                if any(w in msg_lower for w in name_words if len(w) > 3):
+                    target_agent = a
+                    break
+        if not target_agent:
+            # If only one agent or can't determine, ask user to pick
+            if len(agents) == 1:
+                target_agent = agents[0]
+            else:
+                agent_options = []
+                for a in agents[:4]:
+                    status = "🟢" if a.get("is_active") else "🔴"
+                    agent_options.append({
+                        "label": f"{status} {a['name']}", "value": f"Agent Architect: run {a['name']} now",
+                        "description": f"{a.get('model', '?')}", "icon": "▶️",
+                    })
+                return {
+                    "success": True, "intent": "RUN", "operation": "architect_run",
+                    "summary": "**Which agent would you like to run?**",
+                    "present_options": {
+                        "_type": "present_options", "title": "Select an agent",
+                        "options": agent_options, "allow_custom": True,
+                    },
+                }
+
+        agent_id = target_agent.get("id")
+        agent_name = target_agent.get("name", "Agent")
+
+        # Actually start the agent via Agent Engine API
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # Try /agents/{id}/start endpoint
+                resp = await client.post(
+                    f"{AGENT_ENGINE_URL}/agents/{agent_id}/start",
+                    headers=headers,
+                )
+                if resp.status_code == 404:
+                    # Fallback: update enabled + status
+                    resp = await client.patch(
+                        f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json={"enabled": True, "status": "active"},
+                    )
+                    if resp.status_code == 405:
+                        resp = await client.put(
+                            f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                            headers={**headers, "Content-Type": "application/json"},
+                            json={**target_agent, "enabled": True, "status": "active"},
+                        )
+                resp.raise_for_status()
+                logger.info(f"▶️ [ARCHITECT] Started agent: {agent_name} ({agent_id})")
+
+                options = [
+                    {"label": "Check status", "value": f"Agent Architect: what's the status of {agent_name}?", "description": "See if the run completed", "icon": "🔍"},
+                    {"label": "View in dashboard", "value": f"Agent Architect: show me {agent_name}", "description": "Open agent details", "icon": "📋"},
+                    {"label": "Build another", "value": "Agent Architect: build another agent", "description": "Create something new", "icon": "🏗️"},
+                ]
+
+                return {
+                    "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                    "intent": "RUN", "operation": "architect_run",
+                    "summary": f"▶️ **{agent_name}** has been started!\n\nAgent ID: `{agent_id}`\nThe agent is now running. Check the Agents panel to monitor progress.",
+                    "present_options": {
+                        "_type": "present_options", "title": "What's next?",
+                        "options": options, "allow_custom": True,
+                    },
+                }
+        except Exception as e:
+            logger.error(f"[ARCHITECT] Failed to start agent {agent_id}: {e}")
+            return {
+                "success": False, "action": "open_agents_panel", "panel_url": panel_url,
+                "intent": "RUN", "operation": "architect_run",
+                "error": str(e),
+                "summary": f"❌ Failed to start **{agent_name}**: {e}\n\nYou can try starting it from the Agents panel directly.",
+                "present_options": {
+                    "_type": "present_options", "title": "Options",
+                    "options": [
+                        {"label": "Try again", "value": f"Agent Architect: run {agent_name} now", "description": "Retry starting the agent", "icon": "🔄"},
+                        {"label": "Diagnose", "value": f"Agent Architect: diagnose {agent_name}", "description": "Check what went wrong", "icon": "🔍"},
+                    ],
+                    "allow_custom": True,
+                },
+            }
+
+    async def _architect_handle_schedule(
+        self, message: str, agents: List[Dict], headers: Dict[str, str], panel_url: str
+    ) -> Dict[str, Any]:
+        """Handle SCHEDULE intent — create automated recurring runs."""
+        if not agents:
+            return {
+                "success": True, "intent": "SCHEDULE", "operation": "architect_schedule",
+                "summary": "You don't have any agents to schedule yet.",
+                "present_options": {
+                    "_type": "present_options", "title": "Get started",
+                    "options": [
+                        {"label": "Build an agent", "value": "Agent Architect: help me build my first agent", "description": "Create your first agent", "icon": "🏗️"},
+                    ],
+                    "allow_custom": True,
+                },
+            }
+
+        # Find which agent to schedule
+        msg_lower = re.sub(r"^agent\s*architect\s*:\s*", "", message.lower().strip())
+        target_agent = None
+        for a in agents:
+            if a.get("name", "").lower() in msg_lower:
+                target_agent = a
+                break
+        if not target_agent:
+            for a in agents:
+                name_words = a.get("name", "").lower().replace("_", " ").split()
+                if any(w in msg_lower for w in name_words if len(w) > 3):
+                    target_agent = a
+                    break
+        if not target_agent:
+            if len(agents) == 1:
+                target_agent = agents[0]
+            else:
+                agent_options = [
+                    {"label": a["name"], "value": f"Agent Architect: set up a daily schedule for {a['name']}", "description": f"{a.get('model', '?')}", "icon": "⏰"}
+                    for a in agents[:4]
+                ]
+                return {
+                    "success": True, "intent": "SCHEDULE", "operation": "architect_schedule",
+                    "summary": "**Which agent would you like to schedule?**",
+                    "present_options": {
+                        "_type": "present_options", "title": "Select an agent",
+                        "options": agent_options, "allow_custom": True,
+                    },
+                }
+
+        agent_id = target_agent.get("id")
+        agent_name = target_agent.get("name", "Agent")
+
+        # Parse schedule frequency from message
+        interval_seconds = 21600  # default: every 6 hours
+        cron_expression = None
+        schedule_label = "every 6 hours"
+
+        if re.search(r"\b(hourly|every\s+hour)\b", msg_lower):
+            interval_seconds = 3600
+            schedule_label = "every hour"
+        elif re.search(r"\b(daily|every\s+day|every\s+morning|every\s+evening)\b", msg_lower):
+            interval_seconds = 86400
+            schedule_label = "daily"
+        elif re.search(r"\b(weekly|every\s+week)\b", msg_lower):
+            interval_seconds = 604800
+            schedule_label = "weekly"
+        elif re.search(r"\bevery\s+(\d+)\s*(min|minute|hour|sec)", msg_lower):
+            m = re.search(r"\bevery\s+(\d+)\s*(min|minute|hour|sec)", msg_lower)
+            n = int(m.group(1))
+            unit = m.group(2)
+            if "hour" in unit:
+                interval_seconds = n * 3600
+            elif "min" in unit:
+                interval_seconds = n * 60
+            else:
+                interval_seconds = n
+            schedule_label = f"every {n} {unit}s"
+
+        # Create schedule via Agent Engine API
+        try:
+            sched_payload = {
+                "name": f"{agent_name} Schedule",
+                "goal": f"Automated {schedule_label} execution",
+                "interval_seconds": interval_seconds,
+            }
+            if cron_expression:
+                sched_payload["cron_expression"] = cron_expression
+                del sched_payload["interval_seconds"]
+
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{AGENT_ENGINE_URL}/agents/{agent_id}/schedules",
+                    headers=headers, json=sched_payload,
+                )
+                resp.raise_for_status()
+                logger.info(f"⏰ [ARCHITECT] Schedule created for {agent_name}: {schedule_label}")
+
+                return {
+                    "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                    "intent": "SCHEDULE", "operation": "architect_schedule",
+                    "summary": (
+                        f"⏰ **Schedule created for {agent_name}!**\n\n"
+                        f"Frequency: **{schedule_label}**\n"
+                        f"Agent ID: `{agent_id}`\n\n"
+                        "The agent will now run automatically on this schedule."
+                    ),
+                    "present_options": {
+                        "_type": "present_options", "title": "What's next?",
+                        "options": [
+                            {"label": f"Run {agent_name} now", "value": f"Agent Architect: run {agent_name} now", "description": "Don't wait — start immediately", "icon": "▶️"},
+                            {"label": "Build another agent", "value": "Agent Architect: build another agent", "description": "Create something new", "icon": "🏗️"},
+                            {"label": "Review all agents", "value": "Agent Architect: show me all my agents", "description": "See your full workspace", "icon": "📋"},
+                        ],
+                        "allow_custom": True,
+                    },
+                }
+        except Exception as e:
+            logger.error(f"[ARCHITECT] Failed to create schedule for {agent_id}: {e}")
+            return {
+                "success": False, "action": "open_agents_panel", "panel_url": panel_url,
+                "intent": "SCHEDULE", "operation": "architect_schedule",
+                "error": str(e),
+                "summary": f"❌ Failed to create schedule for **{agent_name}**: {e}",
+                "present_options": {
+                    "_type": "present_options", "title": "Options",
+                    "options": [
+                        {"label": "Try again", "value": f"Agent Architect: schedule {agent_name} daily", "description": "Retry scheduling", "icon": "🔄"},
+                    ],
+                    "allow_custom": True,
+                },
+            }
 
     def _architect_handle_review(
         self, agents: List[Dict], panel_url: str
