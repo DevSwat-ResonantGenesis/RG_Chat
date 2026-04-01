@@ -407,6 +407,7 @@ _SKILL_TOOL_DESCRIPTIONS = {
     "memory_search": "Search user\'s long-term memory for previously stored information. When user asks \'what did I say about X\' or \'do you remember X\'.",
     "memory_library": "Open the memory library panel. ONLY when user explicitly says \"open memory library\", \"show my memories\", or \"browse memories\".",
     "agents_os": "Create, manage, rename, delete, or configure AI agents. ONLY when user explicitly asks to create/build/manage/rename/delete agents or open Agents OS.",
+    "agent_architect": "Design and build advanced autonomous agents from a high-level description. When user wants a powerful/professional/advanced/autonomous agent built with optimal setup — tools, schedules, budgets, webhooks, goals, API connections. Use this instead of agents_os when user describes WHAT they need (not just 'create agent') and wants smart auto-configuration.",
     "state_physics": "Open State Physics visualization panel. ONLY when user explicitly says \"open state physics\", \"show state physics\", or \"state-space visualization\".",
     "ide_workspace": "Open the IDE workspace split panel. ONLY when user explicitly says \"open IDE\", \"open editor\", \"open terminal\", or \"open workspace\". Do NOT trigger for coding questions or requests to write code.",
     "rabbit_post": "Create a post on Rabbit community forum. When user wants to post something to a Rabbit community.",

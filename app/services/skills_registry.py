@@ -142,6 +142,24 @@ BUILTIN_SKILLS: Dict[str, SkillDefinition] = {
         credit_cost=25,
         is_default=True,
     ),
+    "agent_architect": SkillDefinition(
+        id="agent_architect",
+        name="Agent Architect",
+        description="Advanced autonomous meta-agent that analyzes your needs and creates fully-configured production agents. "
+                     "From a single sentence it researches, plans, and builds agents with optimal tools, models, schedules, "
+                     "budgets, webhooks, goals, and API connections. Creates any kind of agent — better than manual setup.",
+        icon="sparkles",
+        category=SkillCategory.UTILITY,
+        agent_type="orchestration",
+        capabilities=[
+            "analyze_user_needs", "plan_agent_architecture", "create_agents",
+            "configure_tools", "assign_goals", "create_schedules",
+            "setup_wallets", "create_webhooks", "set_autonomy_mode",
+            "multi_agent_orchestration", "auto_connect_apis",
+        ],
+        credit_cost=50,
+        is_default=True,
+    ),
     "state_physics": SkillDefinition(
         id="state_physics",
         name="State Physics",

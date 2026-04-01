@@ -45,6 +45,7 @@ class SkillExecutor:
             "memory_search": self._execute_memory_search,
             "memory_library": self._execute_memory_library,
             "agents_os": self._execute_agents_os,
+            "agent_architect": self._execute_agent_architect,
             "state_physics": self._execute_state_physics,
             "ide_workspace": self._execute_ide_workspace,
             "rabbit_post": self._execute_rabbit_post,
@@ -2292,6 +2293,413 @@ class SkillExecutor:
             action_word = "start" if start else "stop"
             logger.error(f"Failed to {action_word} agent {agent_id}: {e}")
             return f"❌ Failed to {action_word} agent: {e}"
+
+    # ============================================
+    # AGENT ARCHITECT SKILL — LLM-Powered Meta-Agent
+    # ============================================
+
+    _ARCHITECT_PLANNING_PROMPT = """You are Agent Architect, an advanced autonomous meta-agent on the Resonant Genesis platform.
+Your job: analyze the user's request and produce a PRECISE JSON blueprint for one or more production-ready agents.
+
+AVAILABLE TOOLS (assign the best subset to each agent):
+  web_search, fetch_url, http_request, memory.read, memory.write, github,
+  database, code_execution, create_rabbit_post, list_rabbit_communities,
+  create_rabbit_community
+
+AVAILABLE PROVIDERS & MODELS:
+  - groq: llama-3.3-70b-versatile (fast, free — best default)
+  - openai: gpt-4o (strongest reasoning)
+  - anthropic: claude-3-5-sonnet-20241022 (excellent coding/analysis)
+  - google: gemini-pro (good general purpose)
+
+AUTONOMY MODES: "governed" (safe default), "unbounded" (full autonomy — only if user asks)
+
+SCHEDULE FORMATS: cron_expression (e.g. "0 */6 * * *" for every 6h) or interval_seconds
+
+Respond with ONLY valid JSON (no markdown, no explanation):
+{
+  "agents": [
+    {
+      "name": "Descriptive Agent Name",
+      "description": "Clear purpose description",
+      "provider": "groq",
+      "model": "llama-3.3-70b-versatile",
+      "temperature": 0.6,
+      "max_tokens": 4096,
+      "tools": ["web_search", "fetch_url"],
+      "mode": "governed",
+      "system_prompt_hint": "Key behaviors and role description for this agent",
+      "goal": "Primary objective for this agent (null if none)",
+      "goal_priority": 5,
+      "schedule": {
+        "name": "Schedule name",
+        "goal": "What to do on each run",
+        "cron_expression": "0 */6 * * *",
+        "interval_seconds": null
+      },
+      "webhook": true,
+      "autonomy_mode": "governed",
+      "budget_per_day": null
+    }
+  ],
+  "team_name": "Optional team name if multiple agents work together (null if single)",
+  "team_workflow": "sequential or parallel_merge (null if single agent)",
+  "reasoning": "Brief explanation of why you chose this configuration"
+}
+
+RULES:
+- ALWAYS include web_search and fetch_url as base tools
+- Choose provider/model based on the task complexity
+- For research/analysis tasks: add memory.read, memory.write
+- For web scraping/APIs: add http_request
+- For code tasks: add github, code_execution
+- For content/posting: add create_rabbit_post
+- Set schedule ONLY if user mentions recurring/periodic/scheduled tasks
+- Set webhook=true if agent needs to receive external triggers
+- Create MULTIPLE agents if the task is complex enough to benefit from specialization
+- goal is mandatory — derive the best goal from user's description
+- Keep system_prompt_hint focused on the agent's specific role and behavior"""
+
+    async def _architect_plan_with_llm(
+        self, message: str, user_api_keys: Optional[Dict[str, str]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Use LLM to analyze user request and produce agent blueprint JSON."""
+        import json as _json
+
+        prompt = f"""{self._ARCHITECT_PLANNING_PROMPT}
+
+USER REQUEST: {message}
+
+Produce the JSON blueprint now:"""
+
+        # Use Groq for fast planning (same key rotation as _llm_detect_tool)
+        groq_api_keys: List[str] = []
+        if user_api_keys and user_api_keys.get("groq"):
+            groq_api_keys.append(user_api_keys["groq"])
+        for env_var in ("GROQ_API_KEY", "GROQ_API_KEY_2"):
+            raw = os.getenv(env_var, "")
+            for k in raw.split(","):
+                k = k.strip()
+                if k and k not in groq_api_keys:
+                    groq_api_keys.append(k)
+
+        # Fallback to OpenAI if no Groq keys
+        openai_key = os.getenv("OPENAI_API_KEY", "")
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+
+        messages = [
+            {"role": "system", "content": "You are Agent Architect. Respond with valid JSON only. No markdown fences."},
+            {"role": "user", "content": prompt},
+        ]
+
+        # Try Groq first
+        for api_key in groq_api_keys:
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "llama-3.3-70b-versatile",
+                            "messages": messages,
+                            "temperature": 0.3,
+                            "max_tokens": 2000,
+                            "response_format": {"type": "json_object"},
+                        },
+                    )
+                    if resp.status_code in (401, 429):
+                        continue
+                    if resp.status_code != 200:
+                        continue
+                    content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                    return _json.loads(content)
+            except Exception as e:
+                logger.warning(f"[ARCHITECT] Groq planning failed: {e}")
+                continue
+
+        # Fallback to OpenAI
+        if openai_key:
+            try:
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "gpt-4o",
+                            "messages": messages,
+                            "temperature": 0.3,
+                            "max_tokens": 2000,
+                            "response_format": {"type": "json_object"},
+                        },
+                    )
+                    if resp.status_code == 200:
+                        content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                        return _json.loads(content)
+            except Exception as e:
+                logger.warning(f"[ARCHITECT] OpenAI planning failed: {e}")
+
+        return None
+
+    async def _execute_agent_architect(
+        self, message: str, user_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Agent Architect: LLM-driven meta-agent that creates fully-configured agents.
+
+        Flow:
+        1. LLM analyzes user request → produces JSON blueprint
+        2. Create each agent via Agent Engine API
+        3. Assign goals to each agent
+        4. Create schedules if specified
+        5. Create webhook triggers if specified
+        6. Set autonomy mode if non-default
+        7. Return comprehensive summary
+        """
+        import json as _json
+
+        panel_url = "/agents?embed=1"
+        headers = {
+            "x-user-id": user_id,
+            "x-user-role": str(context.get("user_role", "user")),
+            "x-is-superuser": "true" if bool(context.get("is_superuser", False)) else "false",
+            "x-unlimited-credits": "true" if bool(context.get("unlimited_credits", False)) else "false",
+        }
+
+        logger.info(f"🏗️ [ARCHITECT] Starting for: {message[:120]!r}")
+        print(f"[AGENT_ARCHITECT] Planning agents for: {message[:120]!r}", flush=True)
+
+        # ── Step 1: LLM Planning ──
+        user_api_keys = context.get("user_api_keys") or {}
+        blueprint = await self._architect_plan_with_llm(message, user_api_keys)
+
+        if not blueprint or "agents" not in blueprint:
+            # Fallback: use the existing simple builder
+            logger.warning("[ARCHITECT] LLM planning failed, falling back to simple builder")
+            payload = self._build_agent_create_payload(message)
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                result = await self._create_single_agent(client, payload, headers)
+            if result:
+                return {
+                    "success": True,
+                    "action": "open_agents_panel",
+                    "panel_url": panel_url,
+                    "operation": "architect_fallback",
+                    "created_agents": [{"id": result.get("id"), "name": result.get("name")}],
+                    "summary": (
+                        f"✅ **Agent created:** {result.get('name')} (ID: `{result.get('id')}`)\n\n"
+                        "*(Agent Architect used simplified builder — LLM planning unavailable)*"
+                    ),
+                }
+            return {
+                "success": False,
+                "action": "open_agents_panel",
+                "panel_url": panel_url,
+                "error": "Agent Architect planning failed and fallback creation also failed.",
+                "summary": "❌ Failed to create agent. Please try again or use the Agents OS panel directly.",
+            }
+
+        agent_blueprints = blueprint.get("agents", [])
+        reasoning = blueprint.get("reasoning", "")
+        team_name = blueprint.get("team_name")
+        team_workflow = blueprint.get("team_workflow")
+
+        logger.info(f"🏗️ [ARCHITECT] Blueprint: {len(agent_blueprints)} agents, reasoning: {reasoning[:100]}")
+        print(f"[AGENT_ARCHITECT] Blueprint: {len(agent_blueprints)} agents | {reasoning[:100]}", flush=True)
+
+        # ── Step 2-6: Create agents with full configuration ──
+        created_agents: List[Dict[str, Any]] = []
+        creation_details: List[str] = []
+
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            for i, agent_bp in enumerate(agent_blueprints):
+                agent_name = agent_bp.get("name", f"Agent {i+1}")
+                agent_desc = agent_bp.get("description", "Created by Agent Architect")
+                agent_tools = agent_bp.get("tools", ["web_search", "fetch_url"])
+                agent_provider = agent_bp.get("provider", "groq")
+                agent_model = agent_bp.get("model", "llama-3.3-70b-versatile")
+                agent_temp = agent_bp.get("temperature", 0.6)
+                agent_max_tokens = agent_bp.get("max_tokens", 4096)
+                agent_mode = agent_bp.get("mode", "governed")
+                prompt_hint = agent_bp.get("system_prompt_hint", agent_desc)
+
+                # Build full system prompt
+                system_prompt = self._build_system_prompt(agent_name, prompt_hint, agent_tools)
+                safety_config = self._build_safety_config(agent_tools, agent_mode)
+
+                create_payload = {
+                    "name": agent_name,
+                    "description": agent_desc,
+                    "system_prompt": system_prompt,
+                    "provider": agent_provider,
+                    "model": agent_model,
+                    "temperature": agent_temp,
+                    "max_tokens": agent_max_tokens,
+                    "tools": agent_tools,
+                    "mode": agent_mode,
+                    "safety_config": safety_config,
+                    "allowed_actions": agent_tools,
+                    "blocked_actions": ["delete_community", "delete_user", "admin_override"],
+                }
+
+                # ── Create the agent ──
+                result = await self._create_single_agent(client, create_payload, headers)
+                if not result:
+                    creation_details.append(f"❌ **{agent_name}** — creation failed")
+                    continue
+
+                agent_id = result.get("id")
+                agent_hash = result.get("agent_public_hash", "")
+                created_agents.append(result)
+
+                detail_lines = [
+                    f"✅ **{agent_name}** — ID: `{agent_id}`",
+                    f"   Provider: {agent_provider}/{agent_model} | Mode: {agent_mode}",
+                    f"   Tools: {', '.join(agent_tools)}",
+                ]
+
+                # ── Assign goal ──
+                goal_text = agent_bp.get("goal")
+                goal_priority = agent_bp.get("goal_priority", 5)
+                if goal_text and agent_id:
+                    try:
+                        goal_resp = await client.post(
+                            f"{AGENT_ENGINE_URL}/agents/goals/{agent_id}/assign",
+                            headers=headers,
+                            json={
+                                "description": goal_text,
+                                "priority": goal_priority,
+                            },
+                        )
+                        if goal_resp.status_code in (200, 201):
+                            goal_data = goal_resp.json()
+                            detail_lines.append(f"   🎯 Goal: {goal_text[:80]}")
+                            logger.info(f"🎯 Goal assigned to {agent_name}: {goal_text[:60]}")
+                        else:
+                            detail_lines.append(f"   ⚠️ Goal assignment returned {goal_resp.status_code}")
+                    except Exception as e:
+                        logger.warning(f"[ARCHITECT] Goal assignment failed for {agent_name}: {e}")
+                        detail_lines.append(f"   ⚠️ Goal assignment failed: {e}")
+
+                # ── Create schedule ──
+                schedule_bp = agent_bp.get("schedule")
+                if schedule_bp and agent_id:
+                    try:
+                        sched_payload = {
+                            "name": schedule_bp.get("name", f"{agent_name} Schedule"),
+                            "goal": schedule_bp.get("goal", goal_text or agent_desc),
+                        }
+                        if schedule_bp.get("cron_expression"):
+                            sched_payload["cron_expression"] = schedule_bp["cron_expression"]
+                        elif schedule_bp.get("interval_seconds"):
+                            sched_payload["interval_seconds"] = schedule_bp["interval_seconds"]
+                        else:
+                            sched_payload["interval_seconds"] = 21600  # Default 6h
+
+                        sched_resp = await client.post(
+                            f"{AGENT_ENGINE_URL}/agents/{agent_id}/schedules",
+                            headers=headers,
+                            json=sched_payload,
+                        )
+                        if sched_resp.status_code in (200, 201):
+                            sched_data = sched_resp.json()
+                            next_run = sched_data.get("next_run_at", "soon")
+                            cron_str = sched_payload.get("cron_expression") or f"every {sched_payload.get('interval_seconds', '?')}s"
+                            detail_lines.append(f"   ⏰ Schedule: {cron_str} (next: {next_run})")
+                            logger.info(f"⏰ Schedule created for {agent_name}: {cron_str}")
+                        else:
+                            detail_lines.append(f"   ⚠️ Schedule creation returned {sched_resp.status_code}")
+                    except Exception as e:
+                        logger.warning(f"[ARCHITECT] Schedule creation failed for {agent_name}: {e}")
+
+                # ── Create webhook trigger ──
+                wants_webhook = agent_bp.get("webhook", False)
+                has_webhook_tool = "http_request" in agent_tools or "webhook" in agent_name.lower()
+                if (wants_webhook or has_webhook_tool) and agent_id:
+                    try:
+                        wh_resp = await client.post(
+                            f"{AGENT_ENGINE_URL}/webhooks/agent/{agent_id}/create",
+                            headers=headers,
+                            json={"name": f"Webhook for {agent_name}"},
+                        )
+                        if wh_resp.status_code in (200, 201):
+                            wh_data = wh_resp.json()
+                            wh_url = wh_data.get("webhook_url", "")
+                            result["webhook_url"] = wh_url
+                            result["webhook_secret"] = wh_data.get("webhook_secret")
+                            detail_lines.append(f"   🔗 Webhook: `{wh_url}`")
+                            logger.info(f"🔗 Webhook created for {agent_name}: {wh_url}")
+                        elif wh_resp.status_code == 409:
+                            detail_lines.append("   🔗 Webhook: already exists")
+                        else:
+                            detail_lines.append(f"   ⚠️ Webhook creation returned {wh_resp.status_code}")
+                    except Exception as e:
+                        logger.warning(f"[ARCHITECT] Webhook creation failed for {agent_name}: {e}")
+
+                # ── Set autonomy mode ──
+                autonomy_mode = agent_bp.get("autonomy_mode", "governed")
+                if autonomy_mode != "governed" and agent_id:
+                    try:
+                        mode_resp = await client.post(
+                            f"{AGENT_ENGINE_URL}/autonomy/mode/{agent_id}",
+                            headers=headers,
+                            json={"mode": autonomy_mode, "reason": "Set by Agent Architect"},
+                        )
+                        if mode_resp.status_code in (200, 201):
+                            detail_lines.append(f"   🔓 Autonomy: {autonomy_mode}")
+                    except Exception:
+                        pass
+
+                creation_details.append("\n".join(detail_lines))
+
+        # ── Build final summary ──
+        summary = f"🏗️ **Agent Architect — {len(created_agents)}/{len(agent_blueprints)} agents created**\n\n"
+
+        if reasoning:
+            summary += f"*{reasoning}*\n\n"
+
+        summary += "---\n\n"
+        summary += "\n\n".join(creation_details)
+        summary += "\n\n---\n\n"
+
+        if team_name and len(created_agents) > 1:
+            summary += f"**Team:** {team_name} ({team_workflow or 'sequential'} workflow)\n\n"
+
+        # Next steps
+        summary += "**Next steps:**\n"
+        summary += "1. Open **/agents** to view and manage your new agents\n"
+
+        any_has_webhook = any(ca.get("webhook_url") for ca in created_agents)
+        if any_has_webhook:
+            summary += "2. Configure webhook endpoints in your external services using the URLs above\n"
+            summary += "3. Go to **/connect-profiles** to manage API keys and integrations\n"
+        else:
+            summary += "2. Go to **/connect-profiles** to connect external services\n"
+
+        any_has_schedule = any(bp.get("schedule") for bp in agent_blueprints)
+        if any_has_schedule:
+            summary += f"{'3' if any_has_webhook else '2'}. Schedules are active — agents will run automatically\n"
+
+        summary += "\nYou can ask me to modify, start, stop, or reconfigure any of these agents."
+
+        print(f"[AGENT_ARCHITECT] Done: {len(created_agents)} created", flush=True)
+
+        return {
+            "success": len(created_agents) > 0,
+            "action": "open_agents_panel",
+            "panel_url": panel_url,
+            "operation": "agent_architect",
+            "agent_count": len(created_agents),
+            "created_agents": [
+                {
+                    "id": ca.get("id"),
+                    "name": ca.get("name"),
+                    "hash": ca.get("agent_public_hash"),
+                    "webhook_url": ca.get("webhook_url"),
+                }
+                for ca in created_agents
+            ],
+            "blueprint": blueprint,
+            "summary": summary,
+        }
 
     # ============================================
     # RABBIT POST SKILL (uses shared/tools/rabbit.py)
