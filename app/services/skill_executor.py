@@ -2295,84 +2295,240 @@ class SkillExecutor:
             return f"❌ Failed to {action_word} agent: {e}"
 
     # ============================================
-    # AGENT ARCHITECT SKILL — LLM-Powered Meta-Agent
+    # AGENT ARCHITECT SKILL — Intelligent Meta-Agent
+    # ============================================
+    # Architecture inspired by competitive analysis:
+    # - Context Protocol (workspace + tools + memory)
+    # - Intent Classification (brainstorm/build/modify/diagnose/review)
+    # - Goal Crafting Pipeline (8-step structured process)
+    # - Scope Risk Analysis (prevent expensive runaway goals)
+    # - Follow-up Progression (always propose next steps)
     # ============================================
 
-    _ARCHITECT_PLANNING_PROMPT = """You are Agent Architect, an advanced autonomous meta-agent on the Resonant Genesis platform.
-Your job: analyze the user's request and produce a PRECISE JSON blueprint for one or more production-ready agents.
+    # ── Intent Classification ──
+    _INTENT_CLASSIFY_PROMPT = """Classify this user message into exactly ONE intent category.
+Respond with ONLY the category name (no explanation):
 
-AVAILABLE TOOLS (assign the best subset to each agent):
-  web_search, fetch_url, http_request, memory.read, memory.write, github,
-  database, code_execution, create_rabbit_post, list_rabbit_communities,
-  create_rabbit_community
+Categories:
+- BRAINSTORM: User is exploring ideas, vague about what they want, asking "what can you build?" or describing a pain point without a concrete goal
+- BUILD: User has a concrete outcome — "create an agent that does X", "build me a bot for Y", "I need an agent to monitor Z"
+- MODIFY: User wants to change an existing agent — "change my agent to also do Y", "update the schedule", "add tools to my agent"
+- DIAGNOSE: User asking about failures/issues — "why did my agent fail?", "what went wrong?", "check my agent's logs"
+- REVIEW: User asking about current state — "what agents do I have?", "show my agents", "list my schedules"
+
+USER MESSAGE: {message}
+
+CATEGORY:"""
+
+    # ── Scope Risk Patterns ──
+    _HIGH_RISK_PATTERNS = [
+        r"(?:all|every|each)\s+(?:company|companies|business|restaurant|store|listing|property|lead)",
+        r"(?:across|in)\s+(?:all|every|multiple|major)\s+(?:city|cities|state|states|market|region|country)",
+        r"scrape\s+(?:all|every|entire|the whole)",
+        r"find\s+(?:all|every)\s+(?:email|contact|lead|phone|address)",
+        r"(?:thousands?|millions?|unlimited|everything)\s+(?:of|from)",
+    ]
+    _MODERATE_RISK_PATTERNS = [
+        r"(?:companies?|businesses?|stores?|listings?)\s+(?:in|near|around)\s+\w+\s+(?:without|that don't|that lack)",
+        r"find\s+.*?\bthen\b.*?\bcheck\b.*?\bthen\b",
+        r"for\s+each\s+(?:result|item|entry|row|record)",
+    ]
+
+    # ── Enhanced Planning Prompt (context-aware) ──
+    _ARCHITECT_PLANNING_PROMPT = """You are Agent Architect, the most advanced autonomous meta-agent on the Resonant Genesis platform.
+You have DEEP knowledge of the platform and produce PRECISE JSON blueprints for production-ready agents.
+
+PLATFORM CONTEXT:
+{platform_context}
+
+USER'S EXISTING AGENTS:
+{existing_agents}
+
+AVAILABLE TOOLS (159 tools — assign the best subset):
+  Search: web_search, fetch_url, news_search
+  Memory: memory_read, memory_write, memory_search, hs_store, hs_recall
+  Code: execute_code, code_visualizer_scan, code_visualizer_functions, github_repos, github_pull_request
+  Agents: agents_list, agents_create, agents_start, agents_sessions
+  Media: generate_image, generate_audio
+  Community: create_rabbit_post, list_rabbit_communities, search_rabbit_posts
+  Integrations: google_drive, google_calendar, figma, sigma, send_email
+  Developer: http_request, external_http_request
+  Git: git_clone, git_branch, git_push, git_pull
+  Platform API: platform_api_search, platform_api_call
+  State Physics: sp_state, sp_simulate, sp_identity
 
 AVAILABLE PROVIDERS & MODELS:
-  - groq: llama-3.3-70b-versatile (fast, free — best default)
-  - openai: gpt-4o (strongest reasoning)
+  - groq: llama-3.3-70b-versatile (fast, cost-effective — BEST DEFAULT)
+  - groq: llama-3.1-8b-instant (ultra-fast, simple tasks)
+  - openai: gpt-4o (strongest reasoning, expensive)
+  - openai: gpt-4o-mini (good balance, cheaper)
   - anthropic: claude-3-5-sonnet-20241022 (excellent coding/analysis)
-  - google: gemini-pro (good general purpose)
+  - google: gemini-2.0-flash (fast multimodal)
 
-AUTONOMY MODES: "governed" (safe default), "unbounded" (full autonomy — only if user asks)
-
-SCHEDULE FORMATS: cron_expression (e.g. "0 */6 * * *" for every 6h) or interval_seconds
+AUTONOMY MODES:
+  - "governed" (safe default — requires approval for destructive actions)
+  - "supervised" (mostly autonomous, logs everything, can be paused)
+  - "unbounded" (full autonomy — only if user explicitly requests)
 
 Respond with ONLY valid JSON (no markdown, no explanation):
-{
+{{
   "agents": [
-    {
+    {{
       "name": "Descriptive Agent Name",
-      "description": "Clear purpose description",
+      "description": "Clear 1-sentence purpose",
       "provider": "groq",
       "model": "llama-3.3-70b-versatile",
       "temperature": 0.6,
       "max_tokens": 4096,
       "tools": ["web_search", "fetch_url"],
       "mode": "governed",
-      "system_prompt_hint": "Key behaviors and role description for this agent",
-      "goal": "Primary objective for this agent (null if none)",
+      "system_prompt_hint": "You are [role]. Your job is [specific behavior]. Always [constraints].",
+      "goal": "Specific, measurable, outcome-oriented goal in 2-3 sentences",
       "goal_priority": 5,
-      "schedule": {
-        "name": "Schedule name",
-        "goal": "What to do on each run",
-        "cron_expression": "0 */6 * * *",
-        "interval_seconds": null
-      },
-      "webhook": true,
-      "autonomy_mode": "governed",
-      "budget_per_day": null
-    }
+      "schedule": null,
+      "webhook": false,
+      "autonomy_mode": "governed"
+    }}
   ],
-  "team_name": "Optional team name if multiple agents work together (null if single)",
-  "team_workflow": "sequential or parallel_merge (null if single agent)",
-  "reasoning": "Brief explanation of why you chose this configuration"
-}
+  "team_name": null,
+  "team_workflow": null,
+  "reasoning": "Brief explanation of configuration choices",
+  "assumptions": ["List of assumptions made about the user's request"]
+}}
 
 RULES:
-- ALWAYS include web_search and fetch_url as base tools
-- Choose provider/model based on the task complexity
-- For research/analysis tasks: add memory.read, memory.write
-- For web scraping/APIs: add http_request
-- For code tasks: add github, code_execution
-- For content/posting: add create_rabbit_post
-- Set schedule ONLY if user mentions recurring/periodic/scheduled tasks
-- Set webhook=true if agent needs to receive external triggers
-- Create MULTIPLE agents if the task is complex enough to benefit from specialization
-- goal is mandatory — derive the best goal from user's description
-- Keep system_prompt_hint focused on the agent's specific role and behavior"""
+- Choose tools based on ACTUAL need — don't blindly add web_search to everything
+- Choose provider/model matching task complexity (groq for most, openai for complex reasoning)
+- GOAL is mandatory — derive the best outcome-oriented goal from user's description
+- Strip ALL recurrence language from goal (save for schedule field)
+- If user mentions recurring/periodic — set schedule with cron_expression
+- If task benefits from specialization — create MULTIPLE agents with team_workflow
+- Keep system_prompt_hint focused, specific, and actionable
+- Include "assumptions" array listing what you assumed about the user's intent"""
 
-    async def _architect_plan_with_llm(
+    # ── Context Protocol: gather workspace state before planning ──
+    async def _architect_fetch_context(
+        self, user_id: str, headers: Dict[str, str]
+    ) -> Dict[str, Any]:
+        """Fetch workspace snapshot, available tools, and user memory — 3 parallel calls."""
+        import asyncio
+
+        ctx: Dict[str, Any] = {"agents": [], "tools_summary": "", "memory_facts": ""}
+
+        async def _fetch_agents():
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as c:
+                    r = await c.get(f"{AGENT_ENGINE_URL}/agents/", headers=headers)
+                    if r.status_code == 200:
+                        agents = r.json()
+                        if isinstance(agents, list):
+                            ctx["agents"] = [
+                                {"name": a.get("name", "?"), "id": a.get("id"), "model": a.get("model", "?"),
+                                 "tools": a.get("tools", []), "is_active": a.get("is_active", False)}
+                                for a in agents[:20]
+                            ]
+            except Exception as e:
+                logger.debug(f"[ARCHITECT] agents fetch: {e}")
+
+        async def _fetch_tools():
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as c:
+                    r = await c.get(f"{AGENT_ENGINE_URL}/agents/available-tools", headers=headers)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if isinstance(data, dict):
+                            ctx["tools_summary"] = f"{len(data.get('tools', []))} tools available"
+                        elif isinstance(data, list):
+                            ctx["tools_summary"] = f"{len(data)} tools available"
+            except Exception as e:
+                logger.debug(f"[ARCHITECT] tools fetch: {e}")
+
+        async def _fetch_memory():
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as c:
+                    r = await c.get(
+                        f"{MEMORY_SERVICE_URL}/memory/search",
+                        params={"query": "user preferences role", "user_id": user_id, "limit": 3},
+                        headers=headers,
+                    )
+                    if r.status_code == 200:
+                        results = r.json().get("results", [])
+                        if results:
+                            facts = [m.get("content", "")[:200] for m in results[:3]]
+                            ctx["memory_facts"] = " | ".join(f for f in facts if f)
+            except Exception as e:
+                logger.debug(f"[ARCHITECT] memory fetch: {e}")
+
+        await asyncio.gather(_fetch_agents(), _fetch_tools(), _fetch_memory(), return_exceptions=True)
+        return ctx
+
+    # ── Intent Classification ──
+    async def _architect_classify_intent(
         self, message: str, user_api_keys: Optional[Dict[str, str]] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Use LLM to analyze user request and produce agent blueprint JSON."""
-        import json as _json
+    ) -> str:
+        """Classify user intent into BRAINSTORM/BUILD/MODIFY/DIAGNOSE/REVIEW using fast LLM."""
+        # Quick regex shortcuts before calling LLM
+        msg_lower = message.lower().strip()
+        if any(kw in msg_lower for kw in ("what agents", "list agents", "show agents", "my agents", "how many agents")):
+            return "REVIEW"
+        if any(kw in msg_lower for kw in ("why did", "failed", "what went wrong", "error", "diagnose", "debug")):
+            return "DIAGNOSE"
+        if any(kw in msg_lower for kw in ("change my", "update my", "modify my", "add tool", "remove tool", "change schedule")):
+            return "MODIFY"
+        if any(kw in msg_lower for kw in ("create", "build", "make me", "set up", "deploy", "launch", "i need an agent")):
+            return "BUILD"
 
-        prompt = f"""{self._ARCHITECT_PLANNING_PROMPT}
+        # Fallback: LLM classification (fast, single-token-ish response)
+        groq_keys = self._get_groq_keys(user_api_keys)
+        prompt = self._INTENT_CLASSIFY_PROMPT.format(message=message[:500])
+        for api_key in groq_keys:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "llama-3.1-8b-instant",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.0, "max_tokens": 20,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip().upper()
+                        for intent in ("BRAINSTORM", "BUILD", "MODIFY", "DIAGNOSE", "REVIEW"):
+                            if intent in text:
+                                return intent
+            except Exception:
+                continue
+        return "BUILD"  # safe default
 
-USER REQUEST: {message}
+    # ── Scope Risk Analysis ──
+    def _architect_assess_scope_risk(self, message: str) -> Dict[str, Any]:
+        """Analyze user request for scope risk — returns risk level and warning."""
+        msg_lower = message.lower()
+        for pattern in self._HIGH_RISK_PATTERNS:
+            if re.search(pattern, msg_lower):
+                return {
+                    "level": "high",
+                    "warning": (
+                        "**Scope Warning:** This request may involve thousands of API calls or scraped pages, "
+                        "which could be expensive and slow. Consider starting with a small sample (e.g. top 10) "
+                        "and expanding once validated."
+                    ),
+                }
+        for pattern in self._MODERATE_RISK_PATTERNS:
+            if re.search(pattern, msg_lower):
+                return {
+                    "level": "moderate",
+                    "warning": (
+                        "**Note:** This request involves multi-step processing that could scale up. "
+                        "The agent will be configured with sensible limits."
+                    ),
+                }
+        return {"level": "safe", "warning": None}
 
-Produce the JSON blueprint now:"""
-
-        # Use Groq for fast planning (same key rotation as _llm_detect_tool)
+    # ── Helper: gather Groq API keys ──
+    def _get_groq_keys(self, user_api_keys: Optional[Dict[str, str]] = None) -> List[str]:
         groq_api_keys: List[str] = []
         if user_api_keys and user_api_keys.get("groq"):
             groq_api_keys.append(user_api_keys["groq"])
@@ -2382,10 +2538,29 @@ Produce the JSON blueprint now:"""
                 k = k.strip()
                 if k and k not in groq_api_keys:
                     groq_api_keys.append(k)
+        return groq_api_keys
 
-        # Fallback to OpenAI if no Groq keys
+    # ── LLM Planning (context-aware) ──
+    async def _architect_plan_with_llm(
+        self, message: str, user_api_keys: Optional[Dict[str, str]] = None,
+        platform_context: str = "Resonant Genesis — AI agent platform with 159 tools",
+        existing_agents: str = "None yet",
+    ) -> Optional[Dict[str, Any]]:
+        """Use LLM to analyze user request and produce agent blueprint JSON."""
+        import json as _json
+
+        filled_prompt = self._ARCHITECT_PLANNING_PROMPT.format(
+            platform_context=platform_context,
+            existing_agents=existing_agents,
+        )
+        prompt = f"""{filled_prompt}
+
+USER REQUEST: {message}
+
+Produce the JSON blueprint now:"""
+
+        groq_api_keys = self._get_groq_keys(user_api_keys)
         openai_key = os.getenv("OPENAI_API_KEY", "")
-        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 
         messages = [
             {"role": "system", "content": "You are Agent Architect. Respond with valid JSON only. No markdown fences."},
@@ -2440,19 +2615,36 @@ Produce the JSON blueprint now:"""
 
         return None
 
+    # ── Follow-up Options Builder ──
+    def _architect_build_options(
+        self, created_agents: List[Dict], blueprint: Dict, has_schedule: bool = False
+    ) -> List[Dict[str, str]]:
+        """Build structured follow-up options based on what was created."""
+        options: List[Dict[str, str]] = []
+        if created_agents:
+            options.append({"label": "Run an agent now", "action": "run_agent", "hint": "Try an immediate test run"})
+            if not has_schedule:
+                options.append({"label": "Set up a schedule", "action": "set_schedule", "hint": "Automate with cron/interval"})
+            options.append({"label": "View agent config", "action": "view_config", "hint": "Inspect tools, model, goals"})
+            if len(created_agents) >= 2:
+                options.append({"label": "View team overview", "action": "team_overview", "hint": "See how agents collaborate"})
+        options.append({"label": "Build another agent", "action": "build_more", "hint": "Create more agents"})
+        options.append({"label": "Modify an agent", "action": "modify", "hint": "Change tools, model, or schedule"})
+        return options
+
     async def _execute_agent_architect(
         self, message: str, user_id: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Agent Architect: LLM-driven meta-agent that creates fully-configured agents.
+        """Agent Architect: Intelligent meta-agent with full orchestration protocol.
 
         Flow:
-        1. LLM analyzes user request → produces JSON blueprint
-        2. Create each agent via Agent Engine API
-        3. Assign goals to each agent
-        4. Create schedules if specified
-        5. Create webhook triggers if specified
-        6. Set autonomy mode if non-default
-        7. Return comprehensive summary
+        0. Context Protocol — fetch workspace state, tools, user memory (parallel)
+        1. Intent Classification — BRAINSTORM / BUILD / MODIFY / DIAGNOSE / REVIEW
+        2. Scope Risk Analysis — detect expensive/risky goals
+        3. Goal Crafting — structured pipeline with smart defaults
+        4. LLM Planning — context-aware blueprint generation
+        5. Agent Creation — create, configure, assign goals/schedules/webhooks
+        6. Follow-up Progression — always propose structured next steps
         """
         import json as _json
 
@@ -2465,28 +2657,82 @@ Produce the JSON blueprint now:"""
         }
 
         logger.info(f"🏗️ [ARCHITECT] Starting for: {message[:120]!r}")
-        print(f"[AGENT_ARCHITECT] Planning agents for: {message[:120]!r}", flush=True)
+        print(f"[AGENT_ARCHITECT] Starting intelligent protocol for: {message[:120]!r}", flush=True)
 
-        # ── Step 1: LLM Planning ──
         user_api_keys = context.get("user_api_keys") or {}
-        blueprint = await self._architect_plan_with_llm(message, user_api_keys)
+
+        # ── Step 0: Context Protocol (3 parallel calls) ──
+        workspace_ctx = await self._architect_fetch_context(user_id, headers)
+        existing_agents_list = workspace_ctx.get("agents", [])
+        logger.info(f"🏗️ [ARCHITECT] Context: {len(existing_agents_list)} existing agents, memory: {bool(workspace_ctx.get('memory_facts'))}")
+
+        # ── Step 1: Intent Classification ──
+        intent = await self._architect_classify_intent(message, user_api_keys)
+        logger.info(f"🏗️ [ARCHITECT] Intent: {intent}")
+        print(f"[AGENT_ARCHITECT] Intent classified: {intent}", flush=True)
+
+        # ── Handle non-BUILD intents ──
+        if intent == "REVIEW":
+            return self._architect_handle_review(existing_agents_list, panel_url)
+
+        if intent == "DIAGNOSE":
+            return await self._architect_handle_diagnose(message, existing_agents_list, headers, panel_url)
+
+        if intent == "BRAINSTORM":
+            return self._architect_handle_brainstorm(message, existing_agents_list, workspace_ctx)
+
+        if intent == "MODIFY":
+            return self._architect_handle_modify_hint(message, existing_agents_list, panel_url)
+
+        # ── BUILD intent: full agent creation pipeline ──
+
+        # ── Step 2: Scope Risk Analysis ──
+        risk = self._architect_assess_scope_risk(message)
+        if risk["level"] == "high":
+            logger.warning(f"🏗️ [ARCHITECT] HIGH scope risk detected")
+
+        # ── Step 3: Context-Aware LLM Planning ──
+        # Build context strings for the planner
+        platform_context = "Resonant Genesis — AI agent platform"
+        if workspace_ctx.get("tools_summary"):
+            platform_context += f" ({workspace_ctx['tools_summary']})"
+        if workspace_ctx.get("memory_facts"):
+            platform_context += f"\nUser info: {workspace_ctx['memory_facts'][:300]}"
+
+        existing_agents_str = "None yet"
+        if existing_agents_list:
+            agent_descs = [
+                f"- {a['name']} ({a.get('model', '?')}, tools: {', '.join(a.get('tools', [])[:5])})"
+                for a in existing_agents_list[:10]
+            ]
+            existing_agents_str = "\n".join(agent_descs)
+
+        blueprint = await self._architect_plan_with_llm(
+            message, user_api_keys,
+            platform_context=platform_context,
+            existing_agents=existing_agents_str,
+        )
 
         if not blueprint or "agents" not in blueprint:
-            # Fallback: use the existing simple builder
             logger.warning("[ARCHITECT] LLM planning failed, falling back to simple builder")
             payload = self._build_agent_create_payload(message)
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 result = await self._create_single_agent(client, payload, headers)
             if result:
+                options = self._architect_build_options([result], {})
                 return {
                     "success": True,
                     "action": "open_agents_panel",
                     "panel_url": panel_url,
                     "operation": "architect_fallback",
+                    "intent": intent,
                     "created_agents": [{"id": result.get("id"), "name": result.get("name")}],
+                    "followup_options": options,
                     "summary": (
                         f"✅ **Agent created:** {result.get('name')} (ID: `{result.get('id')}`)\n\n"
-                        "*(Agent Architect used simplified builder — LLM planning unavailable)*"
+                        "*(Agent Architect used simplified builder — LLM planning unavailable)*\n\n"
+                        "**What would you like to do next?**\n"
+                        + "\n".join(f"- **{o['label']}** — {o['hint']}" for o in options)
                     ),
                 }
             return {
@@ -2499,15 +2745,17 @@ Produce the JSON blueprint now:"""
 
         agent_blueprints = blueprint.get("agents", [])
         reasoning = blueprint.get("reasoning", "")
+        assumptions = blueprint.get("assumptions", [])
         team_name = blueprint.get("team_name")
         team_workflow = blueprint.get("team_workflow")
 
         logger.info(f"🏗️ [ARCHITECT] Blueprint: {len(agent_blueprints)} agents, reasoning: {reasoning[:100]}")
         print(f"[AGENT_ARCHITECT] Blueprint: {len(agent_blueprints)} agents | {reasoning[:100]}", flush=True)
 
-        # ── Step 2-6: Create agents with full configuration ──
+        # ── Step 4-5: Create agents with full configuration ──
         created_agents: List[Dict[str, Any]] = []
         creation_details: List[str] = []
+        any_has_schedule = False
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for i, agent_bp in enumerate(agent_blueprints):
@@ -2521,7 +2769,6 @@ Produce the JSON blueprint now:"""
                 agent_mode = agent_bp.get("mode", "governed")
                 prompt_hint = agent_bp.get("system_prompt_hint", agent_desc)
 
-                # Build full system prompt
                 system_prompt = self._build_system_prompt(agent_name, prompt_hint, agent_tools)
                 safety_config = self._build_safety_config(agent_tools, agent_mode)
 
@@ -2540,14 +2787,12 @@ Produce the JSON blueprint now:"""
                     "blocked_actions": ["delete_community", "delete_user", "admin_override"],
                 }
 
-                # ── Create the agent ──
                 result = await self._create_single_agent(client, create_payload, headers)
                 if not result:
                     creation_details.append(f"❌ **{agent_name}** — creation failed")
                     continue
 
                 agent_id = result.get("id")
-                agent_hash = result.get("agent_public_hash", "")
                 created_agents.append(result)
 
                 detail_lines = [
@@ -2564,13 +2809,9 @@ Produce the JSON blueprint now:"""
                         goal_resp = await client.post(
                             f"{AGENT_ENGINE_URL}/agents/goals/{agent_id}/assign",
                             headers=headers,
-                            json={
-                                "description": goal_text,
-                                "priority": goal_priority,
-                            },
+                            json={"description": goal_text, "priority": goal_priority},
                         )
                         if goal_resp.status_code in (200, 201):
-                            goal_data = goal_resp.json()
                             detail_lines.append(f"   🎯 Goal: {goal_text[:80]}")
                             logger.info(f"🎯 Goal assigned to {agent_name}: {goal_text[:60]}")
                         else:
@@ -2582,6 +2823,7 @@ Produce the JSON blueprint now:"""
                 # ── Create schedule ──
                 schedule_bp = agent_bp.get("schedule")
                 if schedule_bp and agent_id:
+                    any_has_schedule = True
                     try:
                         sched_payload = {
                             "name": schedule_bp.get("name", f"{agent_name} Schedule"),
@@ -2592,12 +2834,11 @@ Produce the JSON blueprint now:"""
                         elif schedule_bp.get("interval_seconds"):
                             sched_payload["interval_seconds"] = schedule_bp["interval_seconds"]
                         else:
-                            sched_payload["interval_seconds"] = 21600  # Default 6h
+                            sched_payload["interval_seconds"] = 21600
 
                         sched_resp = await client.post(
                             f"{AGENT_ENGINE_URL}/agents/{agent_id}/schedules",
-                            headers=headers,
-                            json=sched_payload,
+                            headers=headers, json=sched_payload,
                         )
                         if sched_resp.status_code in (200, 201):
                             sched_data = sched_resp.json()
@@ -2612,13 +2853,11 @@ Produce the JSON blueprint now:"""
 
                 # ── Create webhook trigger ──
                 wants_webhook = agent_bp.get("webhook", False)
-                has_webhook_tool = "http_request" in agent_tools or "webhook" in agent_name.lower()
-                if (wants_webhook or has_webhook_tool) and agent_id:
+                if wants_webhook and agent_id:
                     try:
                         wh_resp = await client.post(
                             f"{AGENT_ENGINE_URL}/webhooks/agent/{agent_id}/create",
-                            headers=headers,
-                            json={"name": f"Webhook for {agent_name}"},
+                            headers=headers, json={"name": f"Webhook for {agent_name}"},
                         )
                         if wh_resp.status_code in (200, 201):
                             wh_data = wh_resp.json()
@@ -2629,8 +2868,6 @@ Produce the JSON blueprint now:"""
                             logger.info(f"🔗 Webhook created for {agent_name}: {wh_url}")
                         elif wh_resp.status_code == 409:
                             detail_lines.append("   🔗 Webhook: already exists")
-                        else:
-                            detail_lines.append(f"   ⚠️ Webhook creation returned {wh_resp.status_code}")
                     except Exception as e:
                         logger.warning(f"[ARCHITECT] Webhook creation failed for {agent_name}: {e}")
 
@@ -2650,11 +2887,24 @@ Produce the JSON blueprint now:"""
 
                 creation_details.append("\n".join(detail_lines))
 
-        # ── Build final summary ──
+        # ── Step 6: Build intelligent summary with follow-up options ──
+        options = self._architect_build_options(created_agents, blueprint, any_has_schedule)
+
         summary = f"🏗️ **Agent Architect — {len(created_agents)}/{len(agent_blueprints)} agents created**\n\n"
 
         if reasoning:
             summary += f"*{reasoning}*\n\n"
+
+        # Show assumptions made
+        if assumptions:
+            summary += "**Assumptions made:**\n"
+            for assumption in assumptions[:5]:
+                summary += f"- {assumption}\n"
+            summary += "\n"
+
+        # Show scope risk warning if applicable
+        if risk["warning"]:
+            summary += f"\n{risk['warning']}\n\n"
 
         summary += "---\n\n"
         summary += "\n\n".join(creation_details)
@@ -2663,30 +2913,20 @@ Produce the JSON blueprint now:"""
         if team_name and len(created_agents) > 1:
             summary += f"**Team:** {team_name} ({team_workflow or 'sequential'} workflow)\n\n"
 
-        # Next steps
-        summary += "**Next steps:**\n"
-        summary += "1. Open **/agents** to view and manage your new agents\n"
+        # Follow-up progression — always propose next steps
+        summary += "**What would you like to do next?**\n"
+        for opt in options:
+            summary += f"- **{opt['label']}** — {opt['hint']}\n"
 
-        any_has_webhook = any(ca.get("webhook_url") for ca in created_agents)
-        if any_has_webhook:
-            summary += "2. Configure webhook endpoints in your external services using the URLs above\n"
-            summary += "3. Go to **/connect-profiles** to manage API keys and integrations\n"
-        else:
-            summary += "2. Go to **/connect-profiles** to connect external services\n"
-
-        any_has_schedule = any(bp.get("schedule") for bp in agent_blueprints)
-        if any_has_schedule:
-            summary += f"{'3' if any_has_webhook else '2'}. Schedules are active — agents will run automatically\n"
-
-        summary += "\nYou can ask me to modify, start, stop, or reconfigure any of these agents."
-
-        print(f"[AGENT_ARCHITECT] Done: {len(created_agents)} created", flush=True)
+        print(f"[AGENT_ARCHITECT] Done: {len(created_agents)} created, intent={intent}", flush=True)
 
         return {
             "success": len(created_agents) > 0,
             "action": "open_agents_panel",
             "panel_url": panel_url,
             "operation": "agent_architect",
+            "intent": intent,
+            "scope_risk": risk["level"],
             "agent_count": len(created_agents),
             "created_agents": [
                 {
@@ -2698,7 +2938,223 @@ Produce the JSON blueprint now:"""
                 for ca in created_agents
             ],
             "blueprint": blueprint,
+            "followup_options": options,
             "summary": summary,
+        }
+
+    # ── Intent Handlers for non-BUILD intents ──
+
+    def _architect_handle_review(
+        self, agents: List[Dict], panel_url: str
+    ) -> Dict[str, Any]:
+        """Handle REVIEW intent — show workspace snapshot."""
+        if not agents:
+            return {
+                "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                "intent": "REVIEW", "operation": "architect_review",
+                "summary": (
+                    "**Workspace Overview**\n\n"
+                    "You don't have any agents yet. Would you like me to build one?\n\n"
+                    "**What would you like to do?**\n"
+                    "- **Describe what you need** — I'll design the perfect agent\n"
+                    "- **Browse templates** — Start from a pre-built agent\n"
+                    "- **Explore capabilities** — See what agents can do on this platform"
+                ),
+                "followup_options": [
+                    {"label": "Build an agent", "action": "build", "hint": "Tell me what you need automated"},
+                    {"label": "Browse templates", "action": "templates", "hint": "Pre-built agents to start from"},
+                ],
+            }
+
+        lines = [f"**Workspace Overview — {len(agents)} agents**\n"]
+        for a in agents[:15]:
+            status = "🟢 Active" if a.get("is_active") else "🔴 Inactive"
+            tools_str = ", ".join(a.get("tools", [])[:4])
+            if len(a.get("tools", [])) > 4:
+                tools_str += f" +{len(a['tools']) - 4} more"
+            lines.append(f"- **{a['name']}** — {status} | {a.get('model', '?')} | Tools: {tools_str}")
+
+        lines.append("\n**What would you like to do?**")
+        lines.append("- **Run an agent** — Start an immediate execution")
+        lines.append("- **Build a new agent** — Create something new")
+        lines.append("- **Modify an agent** — Change config, tools, or schedule")
+
+        return {
+            "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+            "intent": "REVIEW", "operation": "architect_review",
+            "agent_count": len(agents),
+            "summary": "\n".join(lines),
+            "followup_options": [
+                {"label": "Run an agent", "action": "run_agent", "hint": "Start an execution"},
+                {"label": "Build new agent", "action": "build", "hint": "Create something new"},
+                {"label": "Modify an agent", "action": "modify", "hint": "Change config or tools"},
+            ],
+        }
+
+    async def _architect_handle_diagnose(
+        self, message: str, agents: List[Dict], headers: Dict[str, str], panel_url: str
+    ) -> Dict[str, Any]:
+        """Handle DIAGNOSE intent — investigate agent failures."""
+        if not agents:
+            return {
+                "success": True, "intent": "DIAGNOSE", "operation": "architect_diagnose",
+                "summary": "No agents found to diagnose. Would you like to create one?",
+            }
+
+        # Try to find the agent the user is asking about
+        msg_lower = message.lower()
+        target_agent = None
+        for a in agents:
+            if a.get("name", "").lower() in msg_lower:
+                target_agent = a
+                break
+        if not target_agent and agents:
+            target_agent = agents[0]  # Default to first
+
+        agent_id = target_agent.get("id")
+        diagnosis_lines = [f"**Diagnosing: {target_agent.get('name', '?')}** (ID: `{agent_id}`)\n"]
+
+        # Fetch recent sessions
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(
+                    f"{AGENT_ENGINE_URL}/agents/{agent_id}/sessions",
+                    params={"limit": 5}, headers=headers,
+                )
+                if r.status_code == 200:
+                    sessions = r.json()
+                    if isinstance(sessions, list) and sessions:
+                        for s in sessions[:5]:
+                            status_emoji = {"completed": "✅", "failed": "❌", "running": "🔄", "cancelled": "⏹️"}.get(s.get("status", ""), "❓")
+                            diagnosis_lines.append(
+                                f"- {status_emoji} Session `{s.get('id', '?')[:8]}...` — {s.get('status', '?')} "
+                                f"| Goal: {(s.get('current_goal') or 'none')[:60]} | Loops: {s.get('loop_count', 0)}"
+                            )
+                            if s.get("error_message"):
+                                diagnosis_lines.append(f"  Error: {s['error_message'][:120]}")
+                    else:
+                        diagnosis_lines.append("No sessions found for this agent.")
+        except Exception as e:
+            diagnosis_lines.append(f"Could not fetch sessions: {e}")
+
+        diagnosis_lines.append("\n**What would you like to do?**")
+        diagnosis_lines.append("- **View full trace** — Deep-dive into a specific session")
+        diagnosis_lines.append("- **Fix with rebuild** — Modify the agent to address issues")
+        diagnosis_lines.append("- **Run again** — Retry the agent")
+
+        return {
+            "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+            "intent": "DIAGNOSE", "operation": "architect_diagnose",
+            "summary": "\n".join(diagnosis_lines),
+            "followup_options": [
+                {"label": "View full trace", "action": "trace", "hint": "See every step and decision"},
+                {"label": "Fix with rebuild", "action": "modify", "hint": "Change agent to fix the issue"},
+                {"label": "Run again", "action": "run_agent", "hint": "Retry execution"},
+            ],
+        }
+
+    def _architect_handle_brainstorm(
+        self, message: str, agents: List[Dict], workspace_ctx: Dict
+    ) -> Dict[str, Any]:
+        """Handle BRAINSTORM intent — propose concrete agent ideas based on context."""
+        memory_facts = workspace_ctx.get("memory_facts", "")
+
+        proposals = []
+        msg_lower = message.lower()
+
+        # Context-aware proposals
+        if any(kw in msg_lower for kw in ("research", "monitor", "track", "watch")):
+            proposals.append(
+                "**Research Monitor** — An agent that searches the web daily for specific topics, "
+                "stores findings in memory, and sends you a digest email."
+            )
+        if any(kw in msg_lower for kw in ("automate", "workflow", "pipeline")):
+            proposals.append(
+                "**Workflow Automator** — An agent that connects your tools (Google Drive, Calendar, GitHub) "
+                "into automated pipelines triggered by schedules or webhooks."
+            )
+        if any(kw in msg_lower for kw in ("content", "write", "post", "social")):
+            proposals.append(
+                "**Content Creator** — An agent that researches topics, writes posts, and publishes "
+                "to Rabbit communities or other platforms on a schedule."
+            )
+        if any(kw in msg_lower for kw in ("code", "develop", "github", "repo")):
+            proposals.append(
+                "**Code Assistant** — An agent that scans your repositories, analyzes code quality, "
+                "reviews PRs, and suggests improvements."
+            )
+
+        # Default proposals if nothing matched
+        if not proposals:
+            proposals = [
+                "**Research Agent** — Monitors topics and sends daily summaries via email",
+                "**Data Pipeline Agent** — Fetches data from APIs, transforms it, and stores results",
+                "**Community Agent** — Monitors Rabbit communities and auto-responds or creates posts",
+                "**Integration Agent** — Bridges your Google Drive, Calendar, and other services",
+            ]
+
+        lines = ["**Let me help you figure out what to build.**\n"]
+        if memory_facts:
+            lines.append(f"Based on what I know about you: *{memory_facts[:200]}*\n")
+        lines.append("Here are some ideas that might fit:\n")
+        for p in proposals[:4]:
+            lines.append(f"- {p}")
+        lines.append("\n**Tell me more about what you need**, or pick one of these to get started.")
+        lines.append("The more specific you are, the better agent I can build.")
+
+        return {
+            "success": True, "intent": "BRAINSTORM", "operation": "architect_brainstorm",
+            "summary": "\n".join(lines),
+            "followup_options": [
+                {"label": "Pick an idea above", "action": "build", "hint": "Tell me which one"},
+                {"label": "Describe my own need", "action": "build", "hint": "I'll craft the perfect agent"},
+                {"label": "Show my existing agents", "action": "review", "hint": "See what's already built"},
+            ],
+        }
+
+    def _architect_handle_modify_hint(
+        self, message: str, agents: List[Dict], panel_url: str
+    ) -> Dict[str, Any]:
+        """Handle MODIFY intent — guide user to specify which agent to modify."""
+        if not agents:
+            return {
+                "success": True, "intent": "MODIFY", "operation": "architect_modify",
+                "summary": "You don't have any agents to modify yet. Would you like to create one?",
+                "followup_options": [
+                    {"label": "Build an agent", "action": "build", "hint": "Create a new agent first"},
+                ],
+            }
+
+        # Try to match agent name from message
+        msg_lower = message.lower()
+        matched = [a for a in agents if a.get("name", "").lower() in msg_lower]
+
+        if matched:
+            a = matched[0]
+            return {
+                "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                "intent": "MODIFY", "operation": "architect_modify",
+                "summary": (
+                    f"**Modifying: {a['name']}**\n\n"
+                    f"Current config: {a.get('model', '?')} | Tools: {', '.join(a.get('tools', [])[:5])}\n\n"
+                    "Tell me what you'd like to change:\n"
+                    "- Add or remove tools\n"
+                    "- Change the model or provider\n"
+                    "- Update the goal or schedule\n"
+                    "- Change autonomy mode"
+                ),
+            }
+
+        # Multiple agents — ask which one
+        lines = ["**Which agent would you like to modify?**\n"]
+        for a in agents[:10]:
+            lines.append(f"- **{a['name']}** — {a.get('model', '?')} | {len(a.get('tools', []))} tools")
+        lines.append("\nTell me the agent name and what to change.")
+
+        return {
+            "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+            "intent": "MODIFY", "operation": "architect_modify",
+            "summary": "\n".join(lines),
         }
 
     # ============================================
