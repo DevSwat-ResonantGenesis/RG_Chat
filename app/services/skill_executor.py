@@ -2517,11 +2517,13 @@ RULES:
             return "RUN"
         if re.search(r"\b(run|execute|start|trigger)\b.*\b(now|agent|it|again)\b", msg_lower):
             return "RUN"
-        # SCHEDULE
-        if re.search(r"\b(schedule|set up a|automate|recurring|cron|every\s+(?:day|hour|week|morning|evening))\b", msg_lower):
-            return "SCHEDULE"
-        if any(kw in msg_lower for kw in ("create", "build", "make me", "set up", "deploy", "i need an agent")):
+        # BUILD — check before SCHEDULE so "build me an agent that posts every morning" → BUILD
+        _has_build = any(kw in msg_lower for kw in ("create", "build", "make me", "set up", "deploy", "i need an agent", "i want an agent"))
+        if _has_build:
             return "BUILD"
+        # SCHEDULE — only if no build indicators
+        if re.search(r"\b(schedule|automate|recurring|cron|every\s+(?:day|hour|week|morning|evening))\b", msg_lower):
+            return "SCHEDULE"
 
         # Fallback: LLM classification (fast, single-token-ish response)
         groq_keys = self._get_groq_keys(user_api_keys)
