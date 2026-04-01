@@ -1896,7 +1896,6 @@ class SkillExecutor:
         }
 
         logger.info(f"🤖 Agents OS action detected: {action} for message: {message[:80]!r}")
-        print(f"[AGENTS_OS] action={action} msg={message[:80]!r}", flush=True)
 
         # Handle team/workflow creation locally (no external API needed)
         if action in ("create_team", "list_teams"):
@@ -1907,7 +1906,6 @@ class SkillExecutor:
         # This replaces the old crude single-shot create that had bad UX.
         if action in ("create_agent", "create_agents"):
             logger.info(f"🤖 Agents OS delegating creation to Agent Architect for: {message[:80]!r}")
-            print(f"[AGENTS_OS] Delegating to agent_architect", flush=True)
             return await self._execute_agent_architect(message, user_id, context)
 
         try:
@@ -2594,7 +2592,6 @@ RULES:
         """Detect if user is confirming a previous plan preview."""
         # Check recent context for a prior architect plan preview
         prev_messages = context.get("previousMessages") or context.get("previous_messages") or []
-        print(f"[ARCHITECT_CONFIRM] prev_messages count={len(prev_messages)}", flush=True)
         has_prior_preview = any(
             "Mode: BUILD" in (m.get("content") or "") or "Plan Preview" in (m.get("content") or "")
             or "Here's what I'll create" in (m.get("content") or "")
@@ -2602,13 +2599,11 @@ RULES:
             for m in prev_messages[-5:]
             if m.get("role") == "assistant"
         )
-        print(f"[ARCHITECT_CONFIRM] has_prior_preview={has_prior_preview}", flush=True)
         if not has_prior_preview:
             return False
         # Strip "Agent Architect:" prefix from option clicks before matching
         msg_lower = re.sub(r"^agent\s*architect\s*:\s*", "", message.lower().strip())
         matched = any(re.search(p, msg_lower) for p in self._CONFIRM_PATTERNS)
-        print(f"[ARCHITECT_CONFIRM] msg_lower={msg_lower!r}, matched={matched}", flush=True)
         return matched
 
     # ── Helper: gather Groq API keys ──
@@ -2873,7 +2868,6 @@ Produce the JSON blueprint now:"""
         }
 
         logger.info(f"🏗️ [ARCHITECT] Starting for: {message[:120]!r}")
-        print(f"[AGENT_ARCHITECT] Starting intelligent protocol for: {message[:120]!r}", flush=True)
 
         user_api_keys = context.get("user_api_keys") or {}
 
@@ -2887,7 +2881,6 @@ Produce the JSON blueprint now:"""
         is_confirmation = self._architect_is_confirmation(message, context)
         if is_confirmation:
             logger.info("🏗️ [ARCHITECT] Confirmation detected — entering Phase 2 (build)")
-            print("[AGENT_ARCHITECT] Phase 2: Confirmation detected, building agents", flush=True)
             return await self._architect_execute_build(
                 message, user_id, user_api_keys, headers,
                 workspace_ctx, existing_agents_list, panel_url,
@@ -2896,7 +2889,6 @@ Produce the JSON blueprint now:"""
         # ── Step 2: Intent Classification ──
         intent = await self._architect_classify_intent(message, user_api_keys)
         logger.info(f"🏗️ [ARCHITECT] Intent: {intent}")
-        print(f"[AGENT_ARCHITECT] Intent classified: {intent}", flush=True)
 
         # ── Handle non-BUILD intents with visible mode + present_options ──
         if intent == "REVIEW":
@@ -2965,7 +2957,6 @@ Produce the JSON blueprint now:"""
             )
 
         # Return plan preview (Phase 1) — user must confirm before we create
-        print(f"[AGENT_ARCHITECT] Phase 1: Plan preview with {len(blueprint.get('agents', []))} agents", flush=True)
         return self._architect_build_plan_preview(
             blueprint, risk, intent, workspace_agent_count,
         )
@@ -3038,7 +3029,6 @@ Produce the JSON blueprint now:"""
         team_workflow = blueprint.get("team_workflow")
 
         logger.info(f"🏗️ [ARCHITECT] Building {len(agent_blueprints)} agents")
-        print(f"[AGENT_ARCHITECT] Phase 2: Creating {len(agent_blueprints)} agents", flush=True)
 
         # ── Auto-build missing tools before agent creation ──
         auto_built_tools: List[str] = []
@@ -3216,8 +3206,6 @@ Produce the JSON blueprint now:"""
             created_agents, blueprint, any_has_schedule,
             total_workspace_agents=len(existing_agents_list) + n_created,
         )
-
-        print(f"[AGENT_ARCHITECT] Done: {n_created} created", flush=True)
 
         return {
             "success": n_created > 0,

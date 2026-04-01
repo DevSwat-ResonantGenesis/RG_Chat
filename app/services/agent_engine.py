@@ -159,14 +159,6 @@ class AgentEngine:
             
             # Standard execution (original logic)
             system_prompts = self._get_agent_prompts(agent_type)
-            
-            # DEBUG: Log context to verify it's being passed
-            logger.info(f"[DEBUG] Agent {agent_type} receiving context: {len(context)} messages")
-            if context:
-                logger.debug(f"[DEBUG] Context preview: {context[:2] if len(context) >= 2 else context}")
-            else:
-                logger.warning(f"[DEBUG] Agent {agent_type} has EMPTY context!")
-            
             messages = system_prompts + context
             
             if self.router:
