@@ -2706,23 +2706,31 @@ Produce the JSON blueprint now:"""
 
         summary += "---\n\n**Here's what I'll create:**\n\n"
         for i, abp in enumerate(agent_blueprints):
+            if not isinstance(abp, dict):
+                summary += f"**{i+1}.** {abp}\n\n"
+                continue
             name = abp.get("name", f"Agent {i+1}")
             model = f"{abp.get('provider', 'groq')}/{abp.get('model', 'llama-3.3-70b-versatile')}"
-            tools = ", ".join(abp.get("tools", [])[:5])
-            if len(abp.get("tools", [])) > 5:
-                tools += f" +{len(abp['tools']) - 5} more"
-            goal = abp.get("goal", "No goal specified")
+            raw_tools = abp.get("tools", [])
+            if not isinstance(raw_tools, list):
+                raw_tools = [str(raw_tools)]
+            tools = ", ".join(raw_tools[:5])
+            if len(raw_tools) > 5:
+                tools += f" +{len(raw_tools) - 5} more"
+            goal = str(abp.get("goal", "No goal specified"))
             schedule = abp.get("schedule")
             sched_str = ""
-            if schedule:
+            if schedule and isinstance(schedule, dict):
                 sched_str = f"\n   ⏰ Schedule: {schedule.get('cron_expression') or 'every ' + str(schedule.get('interval_seconds', 21600)) + 's'}"
+            elif schedule:
+                sched_str = f"\n   ⏰ Schedule: {schedule}"
             summary += (
                 f"**{i+1}. {name}**\n"
                 f"   Model: `{model}` · Tools: {tools}\n"
                 f"   🎯 Goal: {goal[:120]}{sched_str}\n\n"
             )
 
-        if assumptions:
+        if assumptions and isinstance(assumptions, list):
             summary += "**Assumptions:**\n"
             for a in assumptions[:5]:
                 summary += f"- {a}\n"
@@ -3021,6 +3029,8 @@ Produce the JSON blueprint now:"""
 
                 # ── Create schedule ──
                 schedule_bp = agent_bp.get("schedule")
+                if schedule_bp and not isinstance(schedule_bp, dict):
+                    schedule_bp = {"interval_seconds": 21600}  # normalize string like "daily" to default
                 if schedule_bp and agent_id:
                     any_has_schedule = True
                     try:
