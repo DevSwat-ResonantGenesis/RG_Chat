@@ -400,22 +400,29 @@ def _extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
 # LLM-DRIVEN TOOL DETECTION
 # ============================================
 
-_SKILL_TOOL_DESCRIPTIONS = {
-    "code_visualizer": "Scan and analyze a GitHub repository or codebase. ONLY when user provides a GitHub URL or explicitly asks to scan/analyze a repo/codebase.",
-    "web_search": "Search the web for real-time information. ONLY for current events, live prices, weather, recent news, or facts that require up-to-date data the AI cannot know.",
-    "image_generation": "Generate an image with DALL-E. ONLY when user explicitly asks to generate/create/draw/make an image, picture, or illustration.",
-    "memory_search": "Search user\'s long-term memory for previously stored information. When user asks \'what did I say about X\' or \'do you remember X\'.",
-    "memory_library": "Open the memory library panel. ONLY when user explicitly says \"open memory library\", \"show my memories\", or \"browse memories\".",
-    "agents_os": "Create, manage, rename, delete, or configure AI agents. ONLY when user explicitly asks to create/build/manage/rename/delete agents or open Agents OS.",
-    "agent_architect": "Design and build advanced autonomous agents from a high-level description. When user wants a powerful/professional/advanced/autonomous agent built with optimal setup — tools, schedules, budgets, webhooks, goals, API connections. Use this instead of agents_os when user describes WHAT they need (not just 'create agent') and wants smart auto-configuration.",
-    "state_physics": "Open State Physics visualization panel. ONLY when user explicitly says \"open state physics\", \"show state physics\", or \"state-space visualization\".",
-    "ide_workspace": "Open the IDE workspace split panel. ONLY when user explicitly says \"open IDE\", \"open editor\", \"open terminal\", or \"open workspace\". Do NOT trigger for coding questions or requests to write code.",
-    "rabbit_post": "Create a post on Rabbit community forum. When user wants to post something to a Rabbit community.",
-    "google_drive": "Access Google Drive files. When user asks about their Drive files, documents, or wants to search/read/create files.",
-    "google_calendar": "Access Google Calendar. When user asks about their schedule, events, meetings, or wants to create/view calendar events.",
-    "figma": "Access Figma designs. When user asks about their Figma projects, design files, or components.",
-    "sigma": "Access Sigma Computing dashboards. When user asks about their Sigma reports or analytics.",
-}
+# Load skill descriptions from the unified tool registry (single source of truth)
+try:
+    from ..rg_tool_registry.builtin_tools import get_chat_skill_descriptions
+    _SKILL_TOOL_DESCRIPTIONS = get_chat_skill_descriptions()
+    logger.info(f"✅ Loaded {len(_SKILL_TOOL_DESCRIPTIONS)} skill descriptions from unified rg_tool_registry")
+except Exception as _import_err:
+    logger.warning(f"⚠️ Failed to import from rg_tool_registry, using fallback: {_import_err}")
+    _SKILL_TOOL_DESCRIPTIONS = {
+        "code_visualizer": "Scan and analyze a GitHub repository or codebase.",
+        "web_search": "Search the web for real-time information.",
+        "image_generation": "Generate an image with DALL-E.",
+        "memory_search": "Search user's long-term memory.",
+        "memory_library": "Open the memory library panel.",
+        "agents_os": "Create, manage, rename, delete, or configure AI agents.",
+        "agent_architect": "Design and build advanced autonomous agents from a high-level description.",
+        "state_physics": "Open State Physics visualization panel.",
+        "ide_workspace": "Open the IDE workspace split panel.",
+        "rabbit_post": "Create a post on Rabbit community forum.",
+        "google_drive": "Access Google Drive files.",
+        "google_calendar": "Access Google Calendar.",
+        "figma": "Access Figma designs.",
+        "sigma": "Access Sigma Computing dashboards.",
+    }
 
 
 async def _llm_detect_tool(
