@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 CODE_VISUALIZER_URL = os.getenv("AST_ANALYSIS_SERVICE_URL") or os.getenv("CODE_VISUALIZER_URL", "http://rg_ast_analysis:8000")
 MEMORY_SERVICE_URL = os.getenv("MEMORY_SERVICE_URL", "http://memory_service:8000")
 AGENT_ENGINE_URL = os.getenv("AGENT_ENGINE_URL", "http://agent_engine_service:8000")
+BUILDER_AGENT_URL = os.getenv("BUILDER_AGENT_URL", "http://builder_agent:8000")
+RUNNER_AGENT_URL = os.getenv("RUNNER_AGENT_URL", "http://runner_agent:8000")
 STATE_PHYSICS_URL = os.getenv("STATE_PHYSICS_URL", "http://rg_users_invarients_sim:8091")
 IDE_SERVICE_URL = os.getenv("IDE_SERVICE_URL", "http://ide_platform_service:8080")
 
@@ -2901,22 +2903,17 @@ Produce the JSON blueprint now:"""
     async def _execute_agent_architect(
         self, message: str, user_id: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Agent Architect: Two-phase intelligent orchestrator.
+        """Agent Architect: Delegates to RG_Builder_Agent + RG_Runner_Agent services.
 
-        Golden Rule: At no point should the user wonder "what should I do next?"
-
-        Phase 1 (PLAN): Show plan preview with assumptions + clickable options
-        Phase 2 (CONFIRM): User confirms → actually create agents
+        Primary path: HTTP calls to dedicated Builder/Runner microservices.
+        Fallback: Inline execution if services are unreachable.
 
         Flow:
-        0. Context Protocol — fetch workspace state, tools, user memory (parallel)
-        1. Confirmation Check — is this a follow-up confirming a prior preview?
-        2. Intent Classification — BRAINSTORM / BUILD / MODIFY / DIAGNOSE / REVIEW
-        3. For BUILD: scope risk → LLM planning → plan preview (Phase 1)
-        4. For CONFIRM: re-plan → create agents → state-aware follow-ups (Phase 2)
+        1. Classify intent via Builder service
+        2. RUN/SCHEDULE → Runner service
+        3. BUILD/BRAINSTORM/MODIFY/DIAGNOSE/REVIEW → Builder service
+        4. After BUILD success → Runner service for batch auto-execute
         """
-        import json as _json
-
         panel_url = "/agents?embed=1"
         headers = {
             "x-user-id": user_id,
@@ -2924,48 +2921,153 @@ Produce the JSON blueprint now:"""
             "x-is-superuser": "true" if bool(context.get("is_superuser", False)) else "false",
             "x-unlimited-credits": "true" if bool(context.get("unlimited_credits", False)) else "false",
         }
+        user_api_keys = context.get("user_api_keys") or {}
 
         logger.info(f"🏗️ [ARCHITECT] Starting for: {message[:120]!r}")
 
-        user_api_keys = context.get("user_api_keys") or {}
+        # ── Build service request payload ──
+        svc_payload = {
+            "message": message,
+            "user_id": user_id,
+            "context": {
+                "messages": context.get("messages") or context.get("conversation_history") or [],
+                "user_role": context.get("user_role", "user"),
+                "is_superuser": context.get("is_superuser", False),
+                "unlimited_credits": context.get("unlimited_credits", False),
+            },
+            "user_api_keys": user_api_keys,
+        }
 
-        # ── Step 0: Context Protocol (3 parallel calls) ──
+        # ── Try Builder + Runner services (primary path) ──
+        try:
+            return await self._architect_delegate_to_services(
+                svc_payload, headers, panel_url,
+            )
+        except Exception as e:
+            logger.warning(f"[ARCHITECT] Service delegation failed ({e}), using inline fallback")
+
+        # ── Fallback: inline execution when services are down ──
+        return await self._architect_inline_fallback(
+            message, user_id, context, headers, user_api_keys, panel_url,
+        )
+
+    async def _architect_delegate_to_services(
+        self, svc_payload: Dict, headers: Dict[str, str], panel_url: str,
+    ) -> Dict[str, Any]:
+        """Primary path: delegate to Builder + Runner microservices."""
+        # Step 1: Classify intent via Builder
+        intent = None
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                f"{BUILDER_AGENT_URL}/builder/classify-intent",
+                headers=headers, json=svc_payload,
+            )
+            if resp.status_code == 200:
+                intent = resp.json().get("intent", "BUILD")
+                logger.info(f"🏗️ [ARCHITECT] Intent from Builder service: {intent}")
+
+        if not intent:
+            raise RuntimeError("Builder service unreachable for intent classification")
+
+        # Step 2: Route RUN/SCHEDULE → Runner service
+        if intent in ("RUN", "SCHEDULE"):
+            agents_list = []
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    r = await client.get(
+                        f"{AGENT_ENGINE_URL}/agents",
+                        headers=headers, params={"limit": 50},
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        agents_list = data if isinstance(data, list) else data.get("agents", [])
+            except Exception:
+                pass
+
+            runner_payload = {**svc_payload, "agents": agents_list}
+            endpoint = "/runner/orchestrate" if intent == "RUN" else "/runner/orchestrate-schedule"
+
+            async with httpx.AsyncClient(timeout=65.0) as client:
+                resp = await client.post(
+                    f"{RUNNER_AGENT_URL}{endpoint}",
+                    headers=headers, json=runner_payload,
+                )
+                if resp.status_code == 200:
+                    result = resp.json()
+                    result.setdefault("action", "open_agents_panel")
+                    result.setdefault("panel_url", panel_url)
+                    return result
+                raise RuntimeError(f"Runner service returned HTTP {resp.status_code}")
+
+        # Step 3: Everything else → Builder service
+        async with httpx.AsyncClient(timeout=50.0) as client:
+            resp = await client.post(
+                f"{BUILDER_AGENT_URL}/builder/orchestrate",
+                headers=headers, json=svc_payload,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"Builder service returned HTTP {resp.status_code}")
+
+            result = resp.json()
+            result.setdefault("action", "open_agents_panel")
+            result.setdefault("panel_url", panel_url)
+
+            # Step 4: After BUILD creates agents → auto-execute via Runner
+            created = result.get("created_agents", [])
+            if result.get("operation") == "build" and created:
+                try:
+                    batch_agents = [
+                        {"id": c.get("id"), "name": c.get("name", "Agent"), "goal": c.get("goal"), "description": c.get("description")}
+                        for c in created if c.get("id")
+                    ]
+                    batch_resp = await client.post(
+                        f"{RUNNER_AGENT_URL}/runner/execute-batch",
+                        headers=headers,
+                        json={"agents": batch_agents, "poll_seconds": 8},
+                    )
+                    if batch_resp.status_code == 200:
+                        batch = batch_resp.json()
+                        if batch.get("summary"):
+                            result["summary"] = result.get("summary", "") + f"\n\n---\n\n{batch['summary']}"
+                        result["execution_results"] = batch.get("results", [])
+                        if batch.get("options"):
+                            result.get("present_options", {})["options"] = batch["options"][:4]
+                except Exception as e:
+                    logger.warning(f"[ARCHITECT] Runner batch-execute failed (non-fatal): {e}")
+
+            return result
+
+    async def _architect_inline_fallback(
+        self, message: str, user_id: str, context: Dict[str, Any],
+        headers: Dict[str, str], user_api_keys: Dict, panel_url: str,
+    ) -> Dict[str, Any]:
+        """Fallback: inline execution when Builder/Runner services are down."""
         workspace_ctx = await self._architect_fetch_context(user_id, headers)
         existing_agents_list = workspace_ctx.get("agents", [])
         workspace_agent_count = len(existing_agents_list)
-        logger.info(f"🏗️ [ARCHITECT] Context: {workspace_agent_count} agents, memory: {bool(workspace_ctx.get('memory_facts'))}")
 
-        # ── Step 1: Confirmation Check (stateless two-phase) ──
         is_confirmation = self._architect_is_confirmation(message, context)
         if is_confirmation:
-            # Extract original build request from conversation history
             original_request = self._architect_extract_original_request(context)
-            logger.info(f"🏗️ [ARCHITECT] Confirmation detected — Phase 2 (build) with original: {original_request[:100]!r}")
             return await self._architect_execute_build(
                 original_request, user_id, user_api_keys, headers,
                 workspace_ctx, existing_agents_list, panel_url,
             )
 
-        # ── Step 2: Intent Classification ──
         intent = await self._architect_classify_intent(message, user_api_keys)
-        logger.info(f"🏗️ [ARCHITECT] Intent: {intent}")
 
-        # ── Handle non-BUILD intents with visible mode + present_options ──
         if intent == "REVIEW":
             result = self._architect_handle_review(existing_agents_list, panel_url)
             result["summary"] = f"**Mode: REVIEW**\n\n{result['summary']}"
             return result
-
         if intent == "DIAGNOSE":
             result = await self._architect_handle_diagnose(message, existing_agents_list, headers, panel_url)
             result["summary"] = f"**Mode: DIAGNOSE**\n\n{result['summary']}"
             return result
-
         if intent == "BRAINSTORM":
             result = await self._architect_handle_brainstorm(message, existing_agents_list, workspace_ctx, user_api_keys)
             result["summary"] = f"**Mode: BRAINSTORM**\n\n{result['summary']}"
             return result
-
         if intent == "MODIFY":
             result = await self._architect_handle_modify_hint(
                 message, existing_agents_list, panel_url,
@@ -2973,25 +3075,16 @@ Produce the JSON blueprint now:"""
             )
             result["summary"] = f"**Mode: MODIFY**\n\n{result['summary']}"
             return result
-
         if intent == "RUN":
             result = await self._architect_handle_run(message, existing_agents_list, headers, panel_url)
             result["summary"] = f"**Mode: RUN**\n\n{result['summary']}"
             return result
-
         if intent == "SCHEDULE":
             result = await self._architect_handle_schedule(message, existing_agents_list, headers, panel_url)
             result["summary"] = f"**Mode: SCHEDULE**\n\n{result['summary']}"
             return result
 
-        # ── BUILD intent: Phase 1 — Plan Preview ──
-
-        # ── Scope Risk → Decision Branches ──
         risk = self._architect_assess_scope_risk(message)
-        if risk["level"] == "high":
-            logger.warning("🏗️ [ARCHITECT] HIGH scope risk → presenting decision branches")
-
-        # ── Context-Aware LLM Planning ──
         platform_context = "Resonant Genesis — AI agent platform"
         if workspace_ctx.get("tools_summary"):
             platform_context += f" ({workspace_ctx['tools_summary']})"
@@ -3013,13 +3106,11 @@ Produce the JSON blueprint now:"""
         )
 
         if not blueprint or "agents" not in blueprint:
-            logger.warning("[ARCHITECT] LLM planning failed — falling back to direct build")
             return await self._architect_execute_build(
                 message, user_id, user_api_keys, headers,
                 workspace_ctx, existing_agents_list, panel_url,
             )
 
-        # Return plan preview (Phase 1) — user must confirm before we create
         return self._architect_build_plan_preview(
             blueprint, risk, intent, workspace_agent_count,
         )
