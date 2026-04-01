@@ -2943,7 +2943,10 @@ Produce the JSON blueprint now:"""
             return result
 
         if intent == "MODIFY":
-            result = self._architect_handle_modify_hint(message, existing_agents_list, panel_url)
+            result = await self._architect_handle_modify_hint(
+                message, existing_agents_list, panel_url,
+                headers=headers, user_api_keys=user_api_keys,
+            )
             result["summary"] = f"**Mode: MODIFY**\n\n{result['summary']}"
             return result
 
@@ -3218,6 +3221,73 @@ Produce the JSON blueprint now:"""
 
                 creation_details.append("\n".join(detail_lines))
 
+        # ── Auto-execute first run for each created agent (Twin-style) ──
+        execution_results: List[Dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            for ca in created_agents:
+                agent_id = ca.get("id")
+                agent_name = ca.get("name", "Agent")
+                if not agent_id:
+                    continue
+                try:
+                    # Activate the agent
+                    await client.patch(
+                        f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json={"is_active": True},
+                    )
+                    # Find the goal from the blueprint
+                    matching_bp = next((bp for bp in agent_blueprints if bp.get("name") == agent_name), None)
+                    task_text = (matching_bp or {}).get("goal") or ca.get("description") or f"Execute {agent_name}"
+                    # Trigger execution
+                    exec_resp = await client.post(
+                        f"{AGENT_ENGINE_URL}/execution/agents/{agent_id}/execute",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json={"task": task_text, "context": {"source": "agent_architect", "first_run": True}},
+                    )
+                    if exec_resp.status_code in (200, 201, 202):
+                        exec_data = exec_resp.json()
+                        execution_results.append({
+                            "agent_name": agent_name, "agent_id": agent_id,
+                            "status": exec_data.get("status", "started"),
+                            "session_id": exec_data.get("session_id") or exec_data.get("id"),
+                        })
+                        logger.info(f"▶️ [ARCHITECT] Auto-started first run for {agent_name} ({agent_id})")
+                    else:
+                        execution_results.append({
+                            "agent_name": agent_name, "agent_id": agent_id,
+                            "status": "launch_failed", "error": f"HTTP {exec_resp.status_code}",
+                        })
+                except Exception as e:
+                    logger.warning(f"[ARCHITECT] Auto-execute failed for {agent_name}: {e}")
+                    execution_results.append({
+                        "agent_name": agent_name, "agent_id": agent_id,
+                        "status": "launch_failed", "error": str(e)[:100],
+                    })
+
+            # ── Brief poll for early results (up to 8 seconds) ──
+            import asyncio
+            for er in execution_results:
+                if er.get("session_id") and er["status"] not in ("launch_failed",):
+                    for _ in range(4):
+                        await asyncio.sleep(2)
+                        try:
+                            poll_r = await client.get(
+                                f"{AGENT_ENGINE_URL}/execution/history/{er['agent_id']}",
+                                headers=headers, params={"limit": 1},
+                            )
+                            if poll_r.status_code == 200:
+                                runs = poll_r.json()
+                                if isinstance(runs, list) and runs:
+                                    latest = runs[0]
+                                    er["status"] = latest.get("status", er["status"])
+                                    er["output"] = latest.get("output") or latest.get("final_output")
+                                    er["steps"] = latest.get("loop_count") or latest.get("steps")
+                                    if er["status"] in ("completed", "failed"):
+                                        break
+                        except Exception:
+                            break
+
         # ── Build progressive summary (clean, not overwhelming) ──
         n_created = len(created_agents)
         n_total = len(agent_blueprints)
@@ -3235,13 +3305,42 @@ Produce the JSON blueprint now:"""
         if team_name and n_created > 1:
             summary += f"\n\n**Team:** {team_name} ({team_workflow or 'sequential'} workflow)"
 
+        # ── Append execution results ──
+        if execution_results:
+            summary += "\n\n---\n\n**🚀 First Run Results:**\n\n"
+            for er in execution_results:
+                status_emoji = {"completed": "✅", "running": "🔄", "started": "🔄", "failed": "❌", "launch_failed": "⚠️"}.get(er.get("status", ""), "❓")
+                summary += f"- {status_emoji} **{er['agent_name']}** — {er.get('status', 'unknown')}"
+                if er.get("steps"):
+                    summary += f" ({er['steps']} steps)"
+                if er.get("output"):
+                    output_str = str(er["output"])[:200]
+                    summary += f"\n  📋 {output_str}"
+                if er.get("error") and er["status"] == "launch_failed":
+                    summary += f" — {er['error']}"
+                summary += "\n"
+
         summary += "\n"
 
-        # State-aware follow-up options
-        options = self._architect_build_options(
-            created_agents, blueprint, any_has_schedule,
-            total_workspace_agents=len(existing_agents_list) + n_created,
-        )
+        # State-aware follow-up options (Twin-style progression)
+        options: List[Dict[str, str]] = []
+        any_running = any(er.get("status") in ("running", "started") for er in execution_results)
+        any_completed = any(er.get("status") == "completed" for er in execution_results)
+        any_failed = any(er.get("status") in ("failed", "launch_failed") for er in execution_results)
+
+        if any_running and created_agents:
+            first = created_agents[0]
+            options.append({"label": f"Check status of {first.get('name', 'agent')}", "value": f"Agent Architect: what's the status of {first.get('name', 'agent')}?", "description": "See if the run completed", "icon": "🔍"})
+        if any_completed and not any_has_schedule:
+            options.append({"label": "Set up schedule", "value": f"Agent Architect: set up a daily schedule for {created_agents[0].get('name', 'agent')}", "description": "Automate with recurring runs", "icon": "⏰"})
+        if any_failed and created_agents:
+            options.append({"label": "Diagnose issues", "value": f"Agent Architect: diagnose {created_agents[0].get('name', 'agent')}", "description": "Investigate what went wrong", "icon": "🔧"})
+        if not options:
+            options = self._architect_build_options(
+                created_agents, blueprint, any_has_schedule,
+                total_workspace_agents=len(existing_agents_list) + n_created,
+            )
+        options.append({"label": "Build another", "value": "Agent Architect: build another agent", "description": "Create something new", "icon": "➕"})
 
         return {
             "success": n_created > 0,
@@ -3260,12 +3359,13 @@ Produce the JSON blueprint now:"""
                 }
                 for ca in created_agents
             ],
+            "execution_results": execution_results,
             "blueprint": blueprint,
             "summary": summary,
             "present_options": {
                 "_type": "present_options",
                 "title": "What's next?",
-                "options": options,
+                "options": options[:4],
                 "allow_custom": True,
             },
         }
@@ -3329,6 +3429,7 @@ Produce the JSON blueprint now:"""
 
         # Actually execute the agent via Agent Engine execution API
         try:
+            import asyncio
             async with httpx.AsyncClient(timeout=60.0) as client:
                 # Ensure agent is active
                 await client.patch(
@@ -3349,21 +3450,68 @@ Produce the JSON blueprint now:"""
                     json={"task": task_text, "context": {"source": "agent_architect"}},
                 )
                 resp.raise_for_status()
-                logger.info(f"▶️ [ARCHITECT] Started agent: {agent_name} ({agent_id})")
+                exec_data = resp.json()
+                session_id = exec_data.get("session_id") or exec_data.get("id")
+                logger.info(f"▶️ [ARCHITECT] Started agent: {agent_name} ({agent_id}), session={session_id}")
 
-                options = [
-                    {"label": "Check status", "value": f"Agent Architect: what's the status of {agent_name}?", "description": "See if the run completed", "icon": "🔍"},
-                    {"label": "View in dashboard", "value": f"Agent Architect: show me {agent_name}", "description": "Open agent details", "icon": "📋"},
-                    {"label": "Build another", "value": "Agent Architect: build another agent", "description": "Create something new", "icon": "🏗️"},
-                ]
+                # ── Poll for results (up to 15 seconds) ──
+                run_status = "running"
+                run_output = None
+                run_steps = 0
+                run_error = None
+                for _ in range(5):
+                    await asyncio.sleep(3)
+                    try:
+                        poll_r = await client.get(
+                            f"{AGENT_ENGINE_URL}/execution/history/{agent_id}",
+                            headers=headers, params={"limit": 1},
+                        )
+                        if poll_r.status_code == 200:
+                            runs = poll_r.json()
+                            if isinstance(runs, list) and runs:
+                                latest = runs[0]
+                                run_status = latest.get("status", run_status)
+                                run_output = latest.get("output") or latest.get("final_output")
+                                run_steps = latest.get("loop_count") or latest.get("steps") or 0
+                                run_error = latest.get("error") or latest.get("error_message")
+                                if run_status in ("completed", "failed"):
+                                    break
+                    except Exception:
+                        break
+
+                # ── Build result summary ──
+                status_emoji = {"completed": "✅", "running": "🔄", "failed": "❌"}.get(run_status, "🔄")
+                summary = f"**{status_emoji} {agent_name}** — {run_status}\n\n"
+                summary += f"Agent ID: `{agent_id}`\n"
+                if run_steps:
+                    summary += f"Steps completed: {run_steps}\n"
+                if run_output:
+                    summary += f"\n**Result:**\n{str(run_output)[:500]}\n"
+                if run_error:
+                    summary += f"\n**Error:** {str(run_error)[:200]}\n"
+                if run_status == "running":
+                    summary += "\nThe agent is still running. Check back in a moment for final results."
+
+                # ── State-aware follow-up options ──
+                options = []
+                if run_status == "completed":
+                    options.append({"label": "Run again", "value": f"Agent Architect: run {agent_name} now", "description": "Execute another run", "icon": "▶️"})
+                    options.append({"label": "Set up schedule", "value": f"Agent Architect: schedule {agent_name} daily", "description": "Automate recurring runs", "icon": "⏰"})
+                elif run_status == "failed":
+                    options.append({"label": "Diagnose", "value": f"Agent Architect: diagnose {agent_name}", "description": "Investigate what went wrong", "icon": "🔧"})
+                    options.append({"label": "Try again", "value": f"Agent Architect: run {agent_name} now", "description": "Retry execution", "icon": "🔄"})
+                else:  # still running
+                    options.append({"label": "Check status", "value": f"Agent Architect: what's the status of {agent_name}?", "description": "See if the run completed", "icon": "🔍"})
+                options.append({"label": "Build another", "value": "Agent Architect: build another agent", "description": "Create something new", "icon": "🏗️"})
 
                 return {
                     "success": True, "action": "open_agents_panel", "panel_url": panel_url,
                     "intent": "RUN", "operation": "architect_run",
-                    "summary": f"▶️ **{agent_name}** has been started!\n\nAgent ID: `{agent_id}`\nThe agent is now running. Check the Agents panel to monitor progress.",
+                    "run_status": run_status,
+                    "summary": summary,
                     "present_options": {
                         "_type": "present_options", "title": "What's next?",
-                        "options": options, "allow_custom": True,
+                        "options": options[:4], "allow_custom": True,
                     },
                 }
         except Exception as e:
@@ -3753,10 +3901,12 @@ Respond with valid JSON only. No markdown fences."""
             },
         }
 
-    def _architect_handle_modify_hint(
-        self, message: str, agents: List[Dict], panel_url: str
+    async def _architect_handle_modify_hint(
+        self, message: str, agents: List[Dict], panel_url: str,
+        headers: Optional[Dict[str, str]] = None,
+        user_api_keys: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        """Handle MODIFY intent — guide user to specify which agent to modify."""
+        """Handle MODIFY intent — actually modify agent config via LLM delta analysis."""
         if not agents:
             return {
                 "success": True, "intent": "MODIFY", "operation": "architect_modify",
@@ -3774,42 +3924,151 @@ Respond with valid JSON only. No markdown fences."""
         # Try to match agent name from message
         msg_lower = message.lower()
         matched = [a for a in agents if a.get("name", "").lower() in msg_lower]
+        if not matched:
+            for a in agents:
+                name_words = a.get("name", "").lower().replace("_", " ").split()
+                if any(w in msg_lower for w in name_words if len(w) > 3):
+                    matched = [a]
+                    break
 
-        if matched:
-            a = matched[0]
-            return {
-                "success": True, "action": "open_agents_panel", "panel_url": panel_url,
-                "intent": "MODIFY", "operation": "architect_modify",
-                "summary": (
-                    f"**Modifying: {a['name']}**\n\n"
-                    f"Current config: {a.get('model', '?')} | Tools: {', '.join(a.get('tools', [])[:5])}\n\n"
-                    "Tell me what you'd like to change:\n"
-                    "- Add or remove tools\n"
-                    "- Change the model or provider\n"
-                    "- Update the goal or schedule\n"
-                    "- Change autonomy mode"
-                ),
-            }
+        if not matched:
+            if len(agents) == 1:
+                matched = [agents[0]]
+            else:
+                # Multiple agents — present as clickable options
+                agent_options = []
+                for a in agents[:4]:
+                    tools_count = len(a.get("tools", []))
+                    agent_options.append({
+                        "label": a["name"],
+                        "value": f"Agent Architect: modify {a['name']}",
+                        "description": f"{a.get('model', '?')} · {tools_count} tools",
+                        "icon": "✏️",
+                    })
+                return {
+                    "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                    "intent": "MODIFY", "operation": "architect_modify",
+                    "summary": "**Which agent would you like to modify?**\n\nPick one below, or type the agent name and what to change.",
+                    "present_options": {
+                        "_type": "present_options",
+                        "title": "Select an agent to modify",
+                        "options": agent_options,
+                        "allow_custom": True,
+                    },
+                }
 
-        # Multiple agents — present as clickable options
-        agent_options = []
-        for a in agents[:4]:
-            tools_count = len(a.get("tools", []))
-            agent_options.append({
-                "label": a["name"],
-                "value": f"Agent Architect: modify {a['name']}",
-                "description": f"{a.get('model', '?')} · {tools_count} tools",
-                "icon": "✏️",
-            })
+        target = matched[0]
+        agent_id = target.get("id")
+        agent_name = target.get("name", "Agent")
 
+        # ── Use LLM to determine what changes to make (Twin-style delta) ──
+        if headers and user_api_keys:
+            import json as _json
+            modify_prompt = f"""You are an agent configuration assistant. Analyze the user's modification request and produce a JSON patch for the agent.
+
+CURRENT AGENT CONFIG:
+- Name: {agent_name}
+- Model: {target.get('model', 'llama-3.3-70b-versatile')}
+- Provider: {target.get('provider', 'groq')}
+- Tools: {target.get('tools', [])}
+- Mode: {target.get('mode', 'governed')}
+- Is Active: {target.get('is_active', False)}
+
+USER REQUEST: {message}
+
+Respond with ONLY valid JSON (no markdown):
+{{
+  "changes": {{field: new_value}},
+  "explanation": "What changes and why",
+  "unchanged": "What stays the same"
+}}
+
+Valid fields: name, description, system_prompt, provider, model, temperature, max_tokens, tools, mode, is_active, tool_mode, safety_config, allowed_actions, blocked_actions
+Only include fields that should change."""
+
+            patch_data = None
+            groq_keys = self._get_groq_keys(user_api_keys)
+            for api_key in groq_keys:
+                try:
+                    async with httpx.AsyncClient(timeout=12.0) as client:
+                        resp = await client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                            json={
+                                "model": "llama-3.3-70b-versatile",
+                                "messages": [{"role": "user", "content": modify_prompt}],
+                                "temperature": 0.1, "max_tokens": 500,
+                                "response_format": {"type": "json_object"},
+                            },
+                        )
+                        if resp.status_code == 200:
+                            content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                            patch_data = _json.loads(content)
+                            break
+                except Exception:
+                    continue
+
+            if patch_data and patch_data.get("changes"):
+                changes = patch_data["changes"]
+                try:
+                    async with httpx.AsyncClient(timeout=15.0) as client:
+                        patch_resp = await client.patch(
+                            f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                            headers={**headers, "Content-Type": "application/json"},
+                            json=changes,
+                        )
+                        if patch_resp.status_code == 200:
+                            explanation = patch_data.get("explanation", "Changes applied")
+                            unchanged = patch_data.get("unchanged", "")
+                            change_summary = ", ".join(f"**{k}** → `{v}`" if not isinstance(v, list) else f"**{k}** → {len(v)} items" for k, v in changes.items())
+                            summary = (
+                                f"✅ **{agent_name}** modified successfully\n\n"
+                                f"**Changes:** {change_summary}\n"
+                                f"*{explanation}*\n"
+                            )
+                            if unchanged:
+                                summary += f"\n*Unchanged:* {unchanged}\n"
+                            return {
+                                "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                                "intent": "MODIFY", "operation": "architect_modify",
+                                "summary": summary,
+                                "present_options": {
+                                    "_type": "present_options",
+                                    "title": "What's next?",
+                                    "options": [
+                                        {"label": f"Run {agent_name}", "value": f"Agent Architect: run {agent_name} now", "description": "Test with the new config", "icon": "▶️"},
+                                        {"label": "Make more changes", "value": f"Agent Architect: modify {agent_name}", "description": "Continue modifying", "icon": "✏️"},
+                                        {"label": "Review agents", "value": "Agent Architect: show me all my agents", "description": "See workspace overview", "icon": "📋"},
+                                    ],
+                                    "allow_custom": True,
+                                },
+                            }
+                        else:
+                            error_detail = patch_resp.text[:200]
+                            logger.warning(f"[ARCHITECT] PATCH failed for {agent_id}: {error_detail}")
+                except Exception as e:
+                    logger.warning(f"[ARCHITECT] Modify PATCH failed: {e}")
+
+        # Fallback: show current config and ask for specifics
         return {
             "success": True, "action": "open_agents_panel", "panel_url": panel_url,
             "intent": "MODIFY", "operation": "architect_modify",
-            "summary": "**Which agent would you like to modify?**\n\nPick one below, or type the agent name and what to change.",
+            "summary": (
+                f"**Modifying: {agent_name}**\n\n"
+                f"Current config: {target.get('model', '?')} | Tools: {', '.join(target.get('tools', [])[:5])}\n\n"
+                "Tell me what you'd like to change — for example:\n"
+                "• \"add web_search and fetch_url tools\"\n"
+                "• \"switch to gpt-4o for better reasoning\"\n"
+                "• \"change the system prompt to focus on X\""
+            ),
             "present_options": {
                 "_type": "present_options",
-                "title": "Select an agent to modify",
-                "options": agent_options,
+                "title": "Common modifications",
+                "options": [
+                    {"label": "Add tools", "value": f"Agent Architect: add web_search and fetch_url tools to {agent_name}", "description": "Expand capabilities", "icon": "🔧"},
+                    {"label": "Change model", "value": f"Agent Architect: switch {agent_name} to gpt-4o for better reasoning", "description": "Upgrade intelligence", "icon": "🧠"},
+                    {"label": "Update goal", "value": f"Agent Architect: update the goal for {agent_name}", "description": "Refine what it does", "icon": "🎯"},
+                ],
                 "allow_custom": True,
             },
         }
