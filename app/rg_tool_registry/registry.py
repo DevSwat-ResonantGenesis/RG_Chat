@@ -51,6 +51,11 @@ class ToolCategory(str, Enum):
     CHECKPOINTS = "checkpoints"
     PLANNING = "planning"
     CUSTOM = "custom"
+    SCRAPING = "scraping"
+    DOCUMENTS = "documents"
+    BILLING = "billing"
+    ORCHESTRATOR = "orchestrator"
+    OAUTH = "oauth"
 
 
 class ParamType(str, Enum):
