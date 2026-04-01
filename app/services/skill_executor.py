@@ -2608,6 +2608,36 @@ RULES:
         matched = any(re.search(p, msg_lower) for p in self._CONFIRM_PATTERNS)
         return matched
 
+    def _architect_extract_original_request(self, context: Dict[str, Any]) -> str:
+        """Extract the original user build request from conversation history.
+
+        Walks backwards through previousMessages to find the user message
+        that triggered Phase 1 (plan preview). Falls back to the most recent
+        user message if no clear build request is found.
+        """
+        prev_messages = context.get("previousMessages") or context.get("previous_messages") or []
+        # Walk backwards — skip the latest (the confirmation) and find the build request
+        user_messages = [
+            m.get("content", "") for m in prev_messages
+            if m.get("role") == "user" and m.get("content")
+        ]
+        # The original request is typically the second-to-last user message
+        # (last is the confirmation, second-to-last is the build request)
+        if len(user_messages) >= 2:
+            original = user_messages[-2]
+            # Strip Agent Architect prefix if present
+            original = re.sub(r"^Agent\s*Architect\s*:\s*", "", original).strip()
+            if original:
+                return original
+        # Fallback: look for any user message with build-like keywords
+        for msg_content in reversed(user_messages):
+            clean = re.sub(r"^Agent\s*Architect\s*:\s*", "", msg_content).strip()
+            lower = clean.lower()
+            if any(kw in lower for kw in ("build", "create", "make", "agent", "deploy", "set up")):
+                return clean
+        # Ultimate fallback: return the last user message
+        return user_messages[-1] if user_messages else "build an agent"
+
     # ── Helper: gather Groq API keys ──
     def _get_groq_keys(self, user_api_keys: Optional[Dict[str, str]] = None) -> List[str]:
         groq_api_keys: List[str] = []
@@ -2882,9 +2912,11 @@ Produce the JSON blueprint now:"""
         # ── Step 1: Confirmation Check (stateless two-phase) ──
         is_confirmation = self._architect_is_confirmation(message, context)
         if is_confirmation:
-            logger.info("🏗️ [ARCHITECT] Confirmation detected — entering Phase 2 (build)")
+            # Extract original build request from conversation history
+            original_request = self._architect_extract_original_request(context)
+            logger.info(f"🏗️ [ARCHITECT] Confirmation detected — Phase 2 (build) with original: {original_request[:100]!r}")
             return await self._architect_execute_build(
-                message, user_id, user_api_keys, headers,
+                original_request, user_id, user_api_keys, headers,
                 workspace_ctx, existing_agents_list, panel_url,
             )
 
