@@ -1732,6 +1732,20 @@ async def send_message(
             agent_type = "agents"
 
 
+    # Force tool-grounded reply for Agent Architect (structured responses with present_options).
+    # Delegating to LLM would destroy the plan preview format and clickable options.
+    if not execute_mode and detected_skill and detected_skill.id == "agent_architect" and skill_result:
+        if skill_result.get("success"):
+            skill_summary = (skill_result.get("summary") or "").strip()
+            response_text = skill_summary or "Agent Architect completed successfully."
+            provider = "tool_agent_architect"
+            agent_type = "agents"
+        else:
+            error_detail = (skill_result.get("error") or "Agent Architect request failed.").strip()
+            response_text = f"Agent Architect error: {error_detail}"
+            provider = "tool_agent_architect_error"
+            agent_type = "agents"
+
     # Force tool-grounded reply for integration skill failures (google_calendar, figma, google_drive, sigma).
     # Without this, failed integration skills silently fall back to LLM which hallucinates.
     _integration_skill_ids = {"figma", "google_drive", "google_calendar", "sigma"}
@@ -2499,6 +2513,15 @@ async def send_message(
                 error=None if skill_success else str(skill_result.get("error") or "Skill execution failed"),
             )
         )
+        # Extract present_options from skill result for frontend clickable buttons
+        if skill_result.get("present_options") and isinstance(skill_result["present_options"], dict):
+            tool_results.append(
+                ToolResultData(
+                    tool_name="present_options",
+                    success=True,
+                    result=skill_result["present_options"],
+                )
+            )
 
     current_meta = assistant_message.meta_data or {}
     if generated_images_data:

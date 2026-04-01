@@ -2502,30 +2502,59 @@ RULES:
                 continue
         return "BUILD"  # safe default
 
-    # ── Scope Risk Analysis ──
+    # ── Scope Risk Analysis → Decision Branching ──
     def _architect_assess_scope_risk(self, message: str) -> Dict[str, Any]:
-        """Analyze user request for scope risk — returns risk level and warning."""
+        """Analyze scope risk and return decision branches (not warnings)."""
         msg_lower = message.lower()
         for pattern in self._HIGH_RISK_PATTERNS:
             if re.search(pattern, msg_lower):
                 return {
                     "level": "high",
-                    "warning": (
-                        "**Scope Warning:** This request may involve thousands of API calls or scraped pages, "
-                        "which could be expensive and slow. Consider starting with a small sample (e.g. top 10) "
-                        "and expanding once validated."
-                    ),
+                    "reason": "This could target thousands of items — potentially expensive.",
+                    "branches": [
+                        {"label": "Run on 10 samples", "value": "Build this agent but limit to 10 items as a test run first", "description": "Safe starting point — validate before scaling", "icon": "🧪", "default": True},
+                        {"label": "Run on 100", "value": "Build this agent limited to 100 items", "description": "Medium scale — good for validation", "icon": "📊"},
+                        {"label": "Run full scale", "value": "Build this agent at full scale with no limits", "description": "Full power — may be costly", "icon": "🚀"},
+                    ],
                 }
         for pattern in self._MODERATE_RISK_PATTERNS:
             if re.search(pattern, msg_lower):
                 return {
                     "level": "moderate",
-                    "warning": (
-                        "**Note:** This request involves multi-step processing that could scale up. "
-                        "The agent will be configured with sensible limits."
-                    ),
+                    "reason": "Multi-step processing that could scale up.",
+                    "branches": [
+                        {"label": "Build with limits", "value": "Build this agent with sensible rate limits and caps", "description": "Safe default — capped at reasonable limits", "icon": "🛡️", "default": True},
+                        {"label": "Build unrestricted", "value": "Build this agent with no restrictions", "description": "Full power — monitor costs", "icon": "⚡"},
+                    ],
                 }
-        return {"level": "safe", "warning": None}
+        return {"level": "safe", "reason": None, "branches": None}
+
+    # ── Confirmation Detection (stateless two-phase) ──
+    _CONFIRM_PATTERNS = [
+        r"^(yes|yep|yeah|yup|sure|ok|okay|go|do it|confirm|approved|lgtm)$",
+        r"build (it|now|them|this|that|the agent|as planned|all)",
+        r"looks? good",
+        r"go ahead",
+        r"as planned",
+        r"create (it|them|the agent|now)",
+        r"ship it",
+        r"let'?s? (do it|go|build)",
+        r"^(build|create|deploy|launch)$",
+    ]
+
+    def _architect_is_confirmation(self, message: str, context: Dict[str, Any]) -> bool:
+        """Detect if user is confirming a previous plan preview."""
+        # Check recent context for a prior architect plan preview
+        prev_messages = context.get("previousMessages") or context.get("previous_messages") or []
+        has_prior_preview = any(
+            "Mode: BUILD" in (m.get("content") or "") or "Plan Preview" in (m.get("content") or "")
+            for m in prev_messages[-3:]
+            if m.get("role") == "assistant"
+        )
+        if not has_prior_preview:
+            return False
+        msg_lower = message.lower().strip()
+        return any(re.search(p, msg_lower) for p in self._CONFIRM_PATTERNS)
 
     # ── Helper: gather Groq API keys ──
     def _get_groq_keys(self, user_api_keys: Optional[Dict[str, str]] = None) -> List[str]:
@@ -2615,36 +2644,150 @@ Produce the JSON blueprint now:"""
 
         return None
 
-    # ── Follow-up Options Builder ──
+    # ── Follow-up Options Builder (state-aware) ──
     def _architect_build_options(
-        self, created_agents: List[Dict], blueprint: Dict, has_schedule: bool = False
+        self, created_agents: List[Dict], blueprint: Dict,
+        has_schedule: bool = False, total_workspace_agents: int = 0,
     ) -> List[Dict[str, str]]:
-        """Build structured follow-up options based on what was created."""
+        """Build state-aware follow-up options matching present_options schema."""
         options: List[Dict[str, str]] = []
         if created_agents:
-            options.append({"label": "Run an agent now", "action": "run_agent", "hint": "Try an immediate test run"})
+            first_name = created_agents[0].get("name", "the agent")
+            options.append({
+                "label": f"Run {first_name}", "icon": "▶️",
+                "value": f"Run {first_name} now",
+                "description": "Start an immediate test run",
+            })
             if not has_schedule:
-                options.append({"label": "Set up a schedule", "action": "set_schedule", "hint": "Automate with cron/interval"})
-            options.append({"label": "View agent config", "action": "view_config", "hint": "Inspect tools, model, goals"})
+                options.append({
+                    "label": "Schedule it", "icon": "⏰",
+                    "value": f"Set up a daily schedule for {first_name}",
+                    "description": "Automate with recurring runs",
+                })
             if len(created_agents) >= 2:
-                options.append({"label": "View team overview", "action": "team_overview", "hint": "See how agents collaborate"})
-        options.append({"label": "Build another agent", "action": "build_more", "hint": "Create more agents"})
-        options.append({"label": "Modify an agent", "action": "modify", "hint": "Change tools, model, or schedule"})
+                options.append({
+                    "label": "View team", "icon": "👥",
+                    "value": "Show me the team overview for the agents you just created",
+                    "description": "See how your agents collaborate",
+                })
+        # State-aware: suggest different things based on workspace maturity
+        if total_workspace_agents == 0 and not created_agents:
+            options.append({
+                "label": "Build my first agent", "icon": "🏗️",
+                "value": "Help me build my first agent",
+                "description": "Get started with a guided build",
+            })
+        elif total_workspace_agents > 5:
+            options.append({
+                "label": "Optimize agents", "icon": "⚡",
+                "value": "Review my agents and suggest optimizations",
+                "description": "Reduce costs or improve performance",
+            })
+        else:
+            options.append({
+                "label": "Build another", "icon": "➕",
+                "value": "Build another agent",
+                "description": "Create something new",
+            })
         return options
+
+    # ── Plan Preview Builder (two-phase BUILD) ──
+    def _architect_build_plan_preview(
+        self, blueprint: Dict, risk: Dict, intent: str, workspace_agents: int,
+    ) -> Dict[str, Any]:
+        """Build a plan preview response for two-phase BUILD (show plan → confirm → create)."""
+        agent_blueprints = blueprint.get("agents", [])
+        reasoning = blueprint.get("reasoning", "")
+        assumptions = blueprint.get("assumptions", [])
+
+        summary = f"**Mode: BUILD** · Plan Preview\n\n"
+        if reasoning:
+            summary += f"*{reasoning}*\n\n"
+
+        summary += "---\n\n**Here's what I'll create:**\n\n"
+        for i, abp in enumerate(agent_blueprints):
+            name = abp.get("name", f"Agent {i+1}")
+            model = f"{abp.get('provider', 'groq')}/{abp.get('model', 'llama-3.3-70b-versatile')}"
+            tools = ", ".join(abp.get("tools", [])[:5])
+            if len(abp.get("tools", [])) > 5:
+                tools += f" +{len(abp['tools']) - 5} more"
+            goal = abp.get("goal", "No goal specified")
+            schedule = abp.get("schedule")
+            sched_str = ""
+            if schedule:
+                sched_str = f"\n   ⏰ Schedule: {schedule.get('cron_expression') or 'every ' + str(schedule.get('interval_seconds', 21600)) + 's'}"
+            summary += (
+                f"**{i+1}. {name}**\n"
+                f"   Model: `{model}` · Tools: {tools}\n"
+                f"   🎯 Goal: {goal[:120]}{sched_str}\n\n"
+            )
+
+        if assumptions:
+            summary += "**Assumptions:**\n"
+            for a in assumptions[:5]:
+                summary += f"- {a}\n"
+            summary += "\n"
+
+        # Scope risk → decision branching
+        if risk.get("branches"):
+            summary += f"⚠️ **Scope:** {risk['reason']}\n\n"
+            summary += "**Choose how to proceed:**\n"
+            return {
+                "success": True, "action": "open_agents_panel", "panel_url": "/agents?embed=1",
+                "operation": "architect_plan_preview", "intent": intent,
+                "scope_risk": risk["level"],
+                "blueprint": blueprint,
+                "summary": summary,
+                "present_options": {
+                    "_type": "present_options",
+                    "title": "Choose scope",
+                    "options": risk["branches"],
+                    "allow_custom": True,
+                },
+            }
+
+        # Normal: confirm/edit/test options
+        options = [
+            {"label": "Build now", "value": "Yes, build the agents as planned", "description": "Create all agents with this configuration", "icon": "🚀"},
+            {"label": "Edit goal", "value": "I'd like to modify the plan before building", "description": "Adjust goals, tools, or models", "icon": "✏️"},
+        ]
+        if len(agent_blueprints) == 1:
+            options.append({"label": "Small test first", "value": "Build a minimal test version first", "description": "Reduced scope to validate", "icon": "🧪"})
+        if workspace_agents > 0:
+            options.append({"label": "Compare to existing", "value": "Show me my existing agents before building", "description": "Review what's already running", "icon": "📋"})
+
+        summary += "**Ready to build?**\n"
+
+        return {
+            "success": True, "action": "open_agents_panel", "panel_url": "/agents?embed=1",
+            "operation": "architect_plan_preview", "intent": intent,
+            "scope_risk": risk["level"],
+            "blueprint": blueprint,
+            "summary": summary,
+            "present_options": {
+                "_type": "present_options",
+                "title": "What would you like to do?",
+                "options": options,
+                "allow_custom": True,
+            },
+        }
 
     async def _execute_agent_architect(
         self, message: str, user_id: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Agent Architect: Intelligent meta-agent with full orchestration protocol.
+        """Agent Architect: Two-phase intelligent orchestrator.
+
+        Golden Rule: At no point should the user wonder "what should I do next?"
+
+        Phase 1 (PLAN): Show plan preview with assumptions + clickable options
+        Phase 2 (CONFIRM): User confirms → actually create agents
 
         Flow:
         0. Context Protocol — fetch workspace state, tools, user memory (parallel)
-        1. Intent Classification — BRAINSTORM / BUILD / MODIFY / DIAGNOSE / REVIEW
-        2. Scope Risk Analysis — detect expensive/risky goals
-        3. Goal Crafting — structured pipeline with smart defaults
-        4. LLM Planning — context-aware blueprint generation
-        5. Agent Creation — create, configure, assign goals/schedules/webhooks
-        6. Follow-up Progression — always propose structured next steps
+        1. Confirmation Check — is this a follow-up confirming a prior preview?
+        2. Intent Classification — BRAINSTORM / BUILD / MODIFY / DIAGNOSE / REVIEW
+        3. For BUILD: scope risk → LLM planning → plan preview (Phase 1)
+        4. For CONFIRM: re-plan → create agents → state-aware follow-ups (Phase 2)
         """
         import json as _json
 
@@ -2664,35 +2807,53 @@ Produce the JSON blueprint now:"""
         # ── Step 0: Context Protocol (3 parallel calls) ──
         workspace_ctx = await self._architect_fetch_context(user_id, headers)
         existing_agents_list = workspace_ctx.get("agents", [])
-        logger.info(f"🏗️ [ARCHITECT] Context: {len(existing_agents_list)} existing agents, memory: {bool(workspace_ctx.get('memory_facts'))}")
+        workspace_agent_count = len(existing_agents_list)
+        logger.info(f"🏗️ [ARCHITECT] Context: {workspace_agent_count} agents, memory: {bool(workspace_ctx.get('memory_facts'))}")
 
-        # ── Step 1: Intent Classification ──
+        # ── Step 1: Confirmation Check (stateless two-phase) ──
+        is_confirmation = self._architect_is_confirmation(message, context)
+        if is_confirmation:
+            logger.info("🏗️ [ARCHITECT] Confirmation detected — entering Phase 2 (build)")
+            print("[AGENT_ARCHITECT] Phase 2: Confirmation detected, building agents", flush=True)
+            return await self._architect_execute_build(
+                message, user_id, user_api_keys, headers,
+                workspace_ctx, existing_agents_list, panel_url,
+            )
+
+        # ── Step 2: Intent Classification ──
         intent = await self._architect_classify_intent(message, user_api_keys)
         logger.info(f"🏗️ [ARCHITECT] Intent: {intent}")
         print(f"[AGENT_ARCHITECT] Intent classified: {intent}", flush=True)
 
-        # ── Handle non-BUILD intents ──
+        # ── Handle non-BUILD intents with visible mode + present_options ──
         if intent == "REVIEW":
-            return self._architect_handle_review(existing_agents_list, panel_url)
+            result = self._architect_handle_review(existing_agents_list, panel_url)
+            result["summary"] = f"**Mode: REVIEW**\n\n{result['summary']}"
+            return result
 
         if intent == "DIAGNOSE":
-            return await self._architect_handle_diagnose(message, existing_agents_list, headers, panel_url)
+            result = await self._architect_handle_diagnose(message, existing_agents_list, headers, panel_url)
+            result["summary"] = f"**Mode: DIAGNOSE**\n\n{result['summary']}"
+            return result
 
         if intent == "BRAINSTORM":
-            return self._architect_handle_brainstorm(message, existing_agents_list, workspace_ctx)
+            result = self._architect_handle_brainstorm(message, existing_agents_list, workspace_ctx)
+            result["summary"] = f"**Mode: BRAINSTORM**\n\n{result['summary']}"
+            return result
 
         if intent == "MODIFY":
-            return self._architect_handle_modify_hint(message, existing_agents_list, panel_url)
+            result = self._architect_handle_modify_hint(message, existing_agents_list, panel_url)
+            result["summary"] = f"**Mode: MODIFY**\n\n{result['summary']}"
+            return result
 
-        # ── BUILD intent: full agent creation pipeline ──
+        # ── BUILD intent: Phase 1 — Plan Preview ──
 
-        # ── Step 2: Scope Risk Analysis ──
+        # ── Scope Risk → Decision Branches ──
         risk = self._architect_assess_scope_risk(message)
         if risk["level"] == "high":
-            logger.warning(f"🏗️ [ARCHITECT] HIGH scope risk detected")
+            logger.warning("🏗️ [ARCHITECT] HIGH scope risk → presenting decision branches")
 
-        # ── Step 3: Context-Aware LLM Planning ──
-        # Build context strings for the planner
+        # ── Context-Aware LLM Planning ──
         platform_context = "Resonant Genesis — AI agent platform"
         if workspace_ctx.get("tools_summary"):
             platform_context += f" ({workspace_ctx['tools_summary']})"
@@ -2714,45 +2875,89 @@ Produce the JSON blueprint now:"""
         )
 
         if not blueprint or "agents" not in blueprint:
-            logger.warning("[ARCHITECT] LLM planning failed, falling back to simple builder")
+            logger.warning("[ARCHITECT] LLM planning failed — falling back to direct build")
+            return await self._architect_execute_build(
+                message, user_id, user_api_keys, headers,
+                workspace_ctx, existing_agents_list, panel_url,
+            )
+
+        # Return plan preview (Phase 1) — user must confirm before we create
+        print(f"[AGENT_ARCHITECT] Phase 1: Plan preview with {len(blueprint.get('agents', []))} agents", flush=True)
+        return self._architect_build_plan_preview(
+            blueprint, risk, intent, workspace_agent_count,
+        )
+
+    # ── Phase 2: Execute Build (create agents from plan) ──
+    async def _architect_execute_build(
+        self, message: str, user_id: str,
+        user_api_keys: Dict, headers: Dict[str, str],
+        workspace_ctx: Dict, existing_agents_list: List[Dict],
+        panel_url: str,
+    ) -> Dict[str, Any]:
+        """Phase 2: Actually create agents. Called on confirmation or fallback."""
+        import json as _json
+
+        # Re-plan with context (stateless — no stored blueprint)
+        platform_context = "Resonant Genesis — AI agent platform"
+        if workspace_ctx.get("tools_summary"):
+            platform_context += f" ({workspace_ctx['tools_summary']})"
+        if workspace_ctx.get("memory_facts"):
+            platform_context += f"\nUser info: {workspace_ctx['memory_facts'][:300]}"
+
+        existing_agents_str = "None yet"
+        if existing_agents_list:
+            agent_descs = [
+                f"- {a['name']} ({a.get('model', '?')}, tools: {', '.join(a.get('tools', [])[:5])})"
+                for a in existing_agents_list[:10]
+            ]
+            existing_agents_str = "\n".join(agent_descs)
+
+        blueprint = await self._architect_plan_with_llm(
+            message, user_api_keys,
+            platform_context=platform_context,
+            existing_agents=existing_agents_str,
+        )
+
+        if not blueprint or "agents" not in blueprint:
+            # Ultimate fallback: simple builder
             payload = self._build_agent_create_payload(message)
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 result = await self._create_single_agent(client, payload, headers)
             if result:
-                options = self._architect_build_options([result], {})
+                options = self._architect_build_options(
+                    [result], {}, total_workspace_agents=len(existing_agents_list),
+                )
                 return {
-                    "success": True,
-                    "action": "open_agents_panel",
-                    "panel_url": panel_url,
-                    "operation": "architect_fallback",
-                    "intent": intent,
+                    "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                    "operation": "architect_fallback", "intent": "BUILD",
                     "created_agents": [{"id": result.get("id"), "name": result.get("name")}],
-                    "followup_options": options,
                     "summary": (
-                        f"✅ **Agent created:** {result.get('name')} (ID: `{result.get('id')}`)\n\n"
-                        "*(Agent Architect used simplified builder — LLM planning unavailable)*\n\n"
-                        "**What would you like to do next?**\n"
-                        + "\n".join(f"- **{o['label']}** — {o['hint']}" for o in options)
+                        f"**Mode: BUILD** · Agent Created\n\n"
+                        f"✅ **{result.get('name')}** — ID: `{result.get('id')}`\n\n"
+                        "*(Used simplified builder — LLM planning unavailable)*\n"
                     ),
+                    "present_options": {
+                        "_type": "present_options",
+                        "title": "What's next?",
+                        "options": options,
+                        "allow_custom": True,
+                    },
                 }
             return {
-                "success": False,
-                "action": "open_agents_panel",
-                "panel_url": panel_url,
-                "error": "Agent Architect planning failed and fallback creation also failed.",
-                "summary": "❌ Failed to create agent. Please try again or use the Agents OS panel directly.",
+                "success": False, "action": "open_agents_panel", "panel_url": panel_url,
+                "error": "Agent creation failed.",
+                "summary": "**Mode: BUILD** · Failed\n\n❌ Could not create agent. Please try again or use the Agents panel directly.",
             }
 
         agent_blueprints = blueprint.get("agents", [])
         reasoning = blueprint.get("reasoning", "")
-        assumptions = blueprint.get("assumptions", [])
         team_name = blueprint.get("team_name")
         team_workflow = blueprint.get("team_workflow")
 
-        logger.info(f"🏗️ [ARCHITECT] Blueprint: {len(agent_blueprints)} agents, reasoning: {reasoning[:100]}")
-        print(f"[AGENT_ARCHITECT] Blueprint: {len(agent_blueprints)} agents | {reasoning[:100]}", flush=True)
+        logger.info(f"🏗️ [ARCHITECT] Building {len(agent_blueprints)} agents")
+        print(f"[AGENT_ARCHITECT] Phase 2: Creating {len(agent_blueprints)} agents", flush=True)
 
-        # ── Step 4-5: Create agents with full configuration ──
+        # ── Create agents with full configuration ──
         created_agents: List[Dict[str, Any]] = []
         creation_details: List[str] = []
         any_has_schedule = False
@@ -2795,11 +3000,7 @@ Produce the JSON blueprint now:"""
                 agent_id = result.get("id")
                 created_agents.append(result)
 
-                detail_lines = [
-                    f"✅ **{agent_name}** — ID: `{agent_id}`",
-                    f"   Provider: {agent_provider}/{agent_model} | Mode: {agent_mode}",
-                    f"   Tools: {', '.join(agent_tools)}",
-                ]
+                detail_lines = [f"✅ **{agent_name}** — `{agent_id}`"]
 
                 # ── Assign goal ──
                 goal_text = agent_bp.get("goal")
@@ -2812,13 +3013,11 @@ Produce the JSON blueprint now:"""
                             json={"description": goal_text, "priority": goal_priority},
                         )
                         if goal_resp.status_code in (200, 201):
-                            detail_lines.append(f"   🎯 Goal: {goal_text[:80]}")
-                            logger.info(f"🎯 Goal assigned to {agent_name}: {goal_text[:60]}")
+                            detail_lines.append(f"   🎯 {goal_text[:80]}")
                         else:
-                            detail_lines.append(f"   ⚠️ Goal assignment returned {goal_resp.status_code}")
+                            detail_lines.append(f"   ⚠️ Goal: status {goal_resp.status_code}")
                     except Exception as e:
                         logger.warning(f"[ARCHITECT] Goal assignment failed for {agent_name}: {e}")
-                        detail_lines.append(f"   ⚠️ Goal assignment failed: {e}")
 
                 # ── Create schedule ──
                 schedule_bp = agent_bp.get("schedule")
@@ -2841,19 +3040,13 @@ Produce the JSON blueprint now:"""
                             headers=headers, json=sched_payload,
                         )
                         if sched_resp.status_code in (200, 201):
-                            sched_data = sched_resp.json()
-                            next_run = sched_data.get("next_run_at", "soon")
                             cron_str = sched_payload.get("cron_expression") or f"every {sched_payload.get('interval_seconds', '?')}s"
-                            detail_lines.append(f"   ⏰ Schedule: {cron_str} (next: {next_run})")
-                            logger.info(f"⏰ Schedule created for {agent_name}: {cron_str}")
-                        else:
-                            detail_lines.append(f"   ⚠️ Schedule creation returned {sched_resp.status_code}")
+                            detail_lines.append(f"   ⏰ {cron_str}")
                     except Exception as e:
                         logger.warning(f"[ARCHITECT] Schedule creation failed for {agent_name}: {e}")
 
                 # ── Create webhook trigger ──
-                wants_webhook = agent_bp.get("webhook", False)
-                if wants_webhook and agent_id:
+                if agent_bp.get("webhook", False) and agent_id:
                     try:
                         wh_resp = await client.post(
                             f"{AGENT_ENGINE_URL}/webhooks/agent/{agent_id}/create",
@@ -2861,11 +3054,8 @@ Produce the JSON blueprint now:"""
                         )
                         if wh_resp.status_code in (200, 201):
                             wh_data = wh_resp.json()
-                            wh_url = wh_data.get("webhook_url", "")
-                            result["webhook_url"] = wh_url
-                            result["webhook_secret"] = wh_data.get("webhook_secret")
-                            detail_lines.append(f"   🔗 Webhook: `{wh_url}`")
-                            logger.info(f"🔗 Webhook created for {agent_name}: {wh_url}")
+                            result["webhook_url"] = wh_data.get("webhook_url", "")
+                            detail_lines.append(f"   🔗 Webhook: `{result['webhook_url']}`")
                         elif wh_resp.status_code == 409:
                             detail_lines.append("   🔗 Webhook: already exists")
                     except Exception as e:
@@ -2875,59 +3065,48 @@ Produce the JSON blueprint now:"""
                 autonomy_mode = agent_bp.get("autonomy_mode", "governed")
                 if autonomy_mode != "governed" and agent_id:
                     try:
-                        mode_resp = await client.post(
+                        await client.post(
                             f"{AGENT_ENGINE_URL}/autonomy/mode/{agent_id}",
                             headers=headers,
                             json={"mode": autonomy_mode, "reason": "Set by Agent Architect"},
                         )
-                        if mode_resp.status_code in (200, 201):
-                            detail_lines.append(f"   🔓 Autonomy: {autonomy_mode}")
                     except Exception:
                         pass
 
                 creation_details.append("\n".join(detail_lines))
 
-        # ── Step 6: Build intelligent summary with follow-up options ──
-        options = self._architect_build_options(created_agents, blueprint, any_has_schedule)
+        # ── Build progressive summary (clean, not overwhelming) ──
+        n_created = len(created_agents)
+        n_total = len(agent_blueprints)
 
-        summary = f"🏗️ **Agent Architect — {len(created_agents)}/{len(agent_blueprints)} agents created**\n\n"
-
+        summary = f"**Mode: BUILD** · {n_created}/{n_total} agents created\n\n"
         if reasoning:
             summary += f"*{reasoning}*\n\n"
 
-        # Show assumptions made
-        if assumptions:
-            summary += "**Assumptions made:**\n"
-            for assumption in assumptions[:5]:
-                summary += f"- {assumption}\n"
-            summary += "\n"
-
-        # Show scope risk warning if applicable
-        if risk["warning"]:
-            summary += f"\n{risk['warning']}\n\n"
-
         summary += "---\n\n"
         summary += "\n\n".join(creation_details)
-        summary += "\n\n---\n\n"
 
-        if team_name and len(created_agents) > 1:
-            summary += f"**Team:** {team_name} ({team_workflow or 'sequential'} workflow)\n\n"
+        if team_name and n_created > 1:
+            summary += f"\n\n**Team:** {team_name} ({team_workflow or 'sequential'} workflow)"
 
-        # Follow-up progression — always propose next steps
-        summary += "**What would you like to do next?**\n"
-        for opt in options:
-            summary += f"- **{opt['label']}** — {opt['hint']}\n"
+        summary += "\n"
 
-        print(f"[AGENT_ARCHITECT] Done: {len(created_agents)} created, intent={intent}", flush=True)
+        # State-aware follow-up options
+        options = self._architect_build_options(
+            created_agents, blueprint, any_has_schedule,
+            total_workspace_agents=len(existing_agents_list) + n_created,
+        )
+
+        print(f"[AGENT_ARCHITECT] Done: {n_created} created", flush=True)
 
         return {
-            "success": len(created_agents) > 0,
+            "success": n_created > 0,
             "action": "open_agents_panel",
             "panel_url": panel_url,
             "operation": "agent_architect",
-            "intent": intent,
-            "scope_risk": risk["level"],
-            "agent_count": len(created_agents),
+            "intent": "BUILD",
+            "scope_risk": "safe",
+            "agent_count": n_created,
             "created_agents": [
                 {
                     "id": ca.get("id"),
@@ -2938,8 +3117,13 @@ Produce the JSON blueprint now:"""
                 for ca in created_agents
             ],
             "blueprint": blueprint,
-            "followup_options": options,
             "summary": summary,
+            "present_options": {
+                "_type": "present_options",
+                "title": "What's next?",
+                "options": options,
+                "allow_custom": True,
+            },
         }
 
     # ── Intent Handlers for non-BUILD intents ──
@@ -2954,16 +3138,18 @@ Produce the JSON blueprint now:"""
                 "intent": "REVIEW", "operation": "architect_review",
                 "summary": (
                     "**Workspace Overview**\n\n"
-                    "You don't have any agents yet. Would you like me to build one?\n\n"
-                    "**What would you like to do?**\n"
-                    "- **Describe what you need** — I'll design the perfect agent\n"
-                    "- **Browse templates** — Start from a pre-built agent\n"
-                    "- **Explore capabilities** — See what agents can do on this platform"
+                    "You don't have any agents yet.\n\n"
+                    "I can design and build one for you — just describe what you need."
                 ),
-                "followup_options": [
-                    {"label": "Build an agent", "action": "build", "hint": "Tell me what you need automated"},
-                    {"label": "Browse templates", "action": "templates", "hint": "Pre-built agents to start from"},
-                ],
+                "present_options": {
+                    "_type": "present_options",
+                    "title": "Get started",
+                    "options": [
+                        {"label": "Build an agent", "value": "Help me build my first agent", "description": "Tell me what you need automated", "icon": "🏗️"},
+                        {"label": "Explore ideas", "value": "What kinds of agents can you build?", "description": "See what's possible on this platform", "icon": "💡"},
+                    ],
+                    "allow_custom": True,
+                },
             }
 
         lines = [f"**Workspace Overview — {len(agents)} agents**\n"]
@@ -2974,21 +3160,27 @@ Produce the JSON blueprint now:"""
                 tools_str += f" +{len(a['tools']) - 4} more"
             lines.append(f"- **{a['name']}** — {status} | {a.get('model', '?')} | Tools: {tools_str}")
 
-        lines.append("\n**What would you like to do?**")
-        lines.append("- **Run an agent** — Start an immediate execution")
-        lines.append("- **Build a new agent** — Create something new")
-        lines.append("- **Modify an agent** — Change config, tools, or schedule")
+        # State-aware options based on workspace maturity
+        options = [
+            {"label": f"Run {agents[0]['name']}", "value": f"Run {agents[0]['name']} now", "description": "Start an immediate execution", "icon": "▶️"},
+            {"label": "Build new agent", "value": "Build a new agent", "description": "Create something new", "icon": "🏗️"},
+        ]
+        if len(agents) > 3:
+            options.append({"label": "Optimize agents", "value": "Review my agents and suggest optimizations", "description": "Reduce costs or improve performance", "icon": "⚡"})
+        else:
+            options.append({"label": "Modify an agent", "value": f"Modify {agents[0]['name']}", "description": "Change config, tools, or schedule", "icon": "✏️"})
 
         return {
             "success": True, "action": "open_agents_panel", "panel_url": panel_url,
             "intent": "REVIEW", "operation": "architect_review",
             "agent_count": len(agents),
             "summary": "\n".join(lines),
-            "followup_options": [
-                {"label": "Run an agent", "action": "run_agent", "hint": "Start an execution"},
-                {"label": "Build new agent", "action": "build", "hint": "Create something new"},
-                {"label": "Modify an agent", "action": "modify", "hint": "Change config or tools"},
-            ],
+            "present_options": {
+                "_type": "present_options",
+                "title": "What would you like to do?",
+                "options": options,
+                "allow_custom": True,
+            },
         }
 
     async def _architect_handle_diagnose(
@@ -3037,20 +3229,20 @@ Produce the JSON blueprint now:"""
         except Exception as e:
             diagnosis_lines.append(f"Could not fetch sessions: {e}")
 
-        diagnosis_lines.append("\n**What would you like to do?**")
-        diagnosis_lines.append("- **View full trace** — Deep-dive into a specific session")
-        diagnosis_lines.append("- **Fix with rebuild** — Modify the agent to address issues")
-        diagnosis_lines.append("- **Run again** — Retry the agent")
-
         return {
             "success": True, "action": "open_agents_panel", "panel_url": panel_url,
             "intent": "DIAGNOSE", "operation": "architect_diagnose",
             "summary": "\n".join(diagnosis_lines),
-            "followup_options": [
-                {"label": "View full trace", "action": "trace", "hint": "See every step and decision"},
-                {"label": "Fix with rebuild", "action": "modify", "hint": "Change agent to fix the issue"},
-                {"label": "Run again", "action": "run_agent", "hint": "Retry execution"},
-            ],
+            "present_options": {
+                "_type": "present_options",
+                "title": "What would you like to do?",
+                "options": [
+                    {"label": "View full trace", "value": f"Show me the full trace for {target_agent.get('name', 'this agent')}", "description": "See every step and decision", "icon": "🔍"},
+                    {"label": "Fix with rebuild", "value": f"Modify {target_agent.get('name', 'this agent')} to fix the issues", "description": "Change agent to address problems", "icon": "🔧"},
+                    {"label": "Run again", "value": f"Run {target_agent.get('name', 'this agent')} now", "description": "Retry execution", "icon": "▶️"},
+                ],
+                "allow_custom": True,
+            },
         }
 
     def _architect_handle_brainstorm(
@@ -3099,17 +3291,33 @@ Produce the JSON blueprint now:"""
         lines.append("Here are some ideas that might fit:\n")
         for p in proposals[:4]:
             lines.append(f"- {p}")
-        lines.append("\n**Tell me more about what you need**, or pick one of these to get started.")
-        lines.append("The more specific you are, the better agent I can build.")
+        lines.append("\nPick one to get started, or describe your own need.")
+
+        # Build present_options from proposals (first 3 become clickable)
+        proposal_options = []
+        for p in proposals[:3]:
+            # Extract the bolded name from "**Name** — description"
+            name_match = re.search(r"\*\*(.+?)\*\*", p)
+            name = name_match.group(1) if name_match else "This idea"
+            desc = p.replace(f"**{name}**", "").strip(" —-")
+            proposal_options.append({
+                "label": name, "value": f"Build me a {name}",
+                "description": desc[:80], "icon": "🏗️",
+            })
+        proposal_options.append({
+            "label": "Describe my own", "value": "I have a specific idea — let me describe it",
+            "description": "Tell me exactly what you need", "icon": "✏️",
+        })
 
         return {
             "success": True, "intent": "BRAINSTORM", "operation": "architect_brainstorm",
             "summary": "\n".join(lines),
-            "followup_options": [
-                {"label": "Pick an idea above", "action": "build", "hint": "Tell me which one"},
-                {"label": "Describe my own need", "action": "build", "hint": "I'll craft the perfect agent"},
-                {"label": "Show my existing agents", "action": "review", "hint": "See what's already built"},
-            ],
+            "present_options": {
+                "_type": "present_options",
+                "title": "Pick an idea or describe your own",
+                "options": proposal_options,
+                "allow_custom": True,
+            },
         }
 
     def _architect_handle_modify_hint(
@@ -3119,10 +3327,15 @@ Produce the JSON blueprint now:"""
         if not agents:
             return {
                 "success": True, "intent": "MODIFY", "operation": "architect_modify",
-                "summary": "You don't have any agents to modify yet. Would you like to create one?",
-                "followup_options": [
-                    {"label": "Build an agent", "action": "build", "hint": "Create a new agent first"},
-                ],
+                "summary": "You don't have any agents to modify yet.",
+                "present_options": {
+                    "_type": "present_options",
+                    "title": "Get started",
+                    "options": [
+                        {"label": "Build an agent", "value": "Build me an agent", "description": "Create your first agent", "icon": "🏗️"},
+                    ],
+                    "allow_custom": True,
+                },
             }
 
         # Try to match agent name from message
@@ -3145,16 +3358,27 @@ Produce the JSON blueprint now:"""
                 ),
             }
 
-        # Multiple agents — ask which one
-        lines = ["**Which agent would you like to modify?**\n"]
-        for a in agents[:10]:
-            lines.append(f"- **{a['name']}** — {a.get('model', '?')} | {len(a.get('tools', []))} tools")
-        lines.append("\nTell me the agent name and what to change.")
+        # Multiple agents — present as clickable options
+        agent_options = []
+        for a in agents[:4]:
+            tools_count = len(a.get("tools", []))
+            agent_options.append({
+                "label": a["name"],
+                "value": f"Modify {a['name']}",
+                "description": f"{a.get('model', '?')} · {tools_count} tools",
+                "icon": "✏️",
+            })
 
         return {
             "success": True, "action": "open_agents_panel", "panel_url": panel_url,
             "intent": "MODIFY", "operation": "architect_modify",
-            "summary": "\n".join(lines),
+            "summary": "**Which agent would you like to modify?**\n\nPick one below, or type the agent name and what to change.",
+            "present_options": {
+                "_type": "present_options",
+                "title": "Select an agent to modify",
+                "options": agent_options,
+                "allow_custom": True,
+            },
         }
 
     # ============================================
