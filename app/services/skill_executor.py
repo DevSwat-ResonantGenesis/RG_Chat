@@ -2166,26 +2166,28 @@ class SkillExecutor:
             return f"❌ Could not find an agent named **{agent_name}**."
 
         agent_id = agent.get("id")
-        endpoint = "start" if start else "stop"
         try:
-            resp = await client.post(
-                f"{AGENT_ENGINE_URL}/agents/{agent_id}/{endpoint}",
-                headers=headers,
-            )
-            if resp.status_code == 404:
-                # Fallback: update enabled status
-                status_val = True if start else False
+            if start:
+                # Activate the agent
+                await client.patch(
+                    f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                    headers={**headers, "Content-Type": "application/json"},
+                    json={"is_active": True},
+                )
+                # Execute via the execution endpoint
+                task_text = agent.get("description") or f"Run {agent_name}"
+                resp = await client.post(
+                    f"{AGENT_ENGINE_URL}/execution/agents/{agent_id}/execute",
+                    headers={**headers, "Content-Type": "application/json"},
+                    json={"task": task_text, "context": {"source": "chat_skill"}},
+                )
+            else:
+                # Deactivate the agent
                 resp = await client.patch(
                     f"{AGENT_ENGINE_URL}/agents/{agent_id}",
                     headers={**headers, "Content-Type": "application/json"},
-                    json={"enabled": status_val, "status": "active" if start else "paused"},
+                    json={"is_active": False},
                 )
-                if resp.status_code == 405:
-                    resp = await client.put(
-                        f"{AGENT_ENGINE_URL}/agents/{agent_id}",
-                        headers={**headers, "Content-Type": "application/json"},
-                        json={**agent, "enabled": status_val, "status": "active" if start else "paused"},
-                    )
             resp.raise_for_status()
             emoji = "▶️" if start else "⏸️"
             action_word = "started" if start else "stopped"
@@ -3325,27 +3327,27 @@ Produce the JSON blueprint now:"""
         agent_id = target_agent.get("id")
         agent_name = target_agent.get("name", "Agent")
 
-        # Actually start the agent via Agent Engine API
+        # Actually execute the agent via Agent Engine execution API
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                # Try /agents/{id}/start endpoint
-                resp = await client.post(
-                    f"{AGENT_ENGINE_URL}/agents/{agent_id}/start",
-                    headers=headers,
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # Ensure agent is active
+                await client.patch(
+                    f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                    headers={**headers, "Content-Type": "application/json"},
+                    json={"is_active": True},
                 )
-                if resp.status_code == 404:
-                    # Fallback: update enabled + status
-                    resp = await client.patch(
-                        f"{AGENT_ENGINE_URL}/agents/{agent_id}",
-                        headers={**headers, "Content-Type": "application/json"},
-                        json={"enabled": True, "status": "active"},
-                    )
-                    if resp.status_code == 405:
-                        resp = await client.put(
-                            f"{AGENT_ENGINE_URL}/agents/{agent_id}",
-                            headers={**headers, "Content-Type": "application/json"},
-                            json={**target_agent, "enabled": True, "status": "active"},
-                        )
+
+                # Execute via the execution endpoint
+                task_text = (
+                    target_agent.get("description")
+                    or target_agent.get("system_prompt", "")[:200]
+                    or f"Run {agent_name}"
+                )
+                resp = await client.post(
+                    f"{AGENT_ENGINE_URL}/execution/agents/{agent_id}/execute",
+                    headers={**headers, "Content-Type": "application/json"},
+                    json={"task": task_text, "context": {"source": "agent_architect"}},
+                )
                 resp.raise_for_status()
                 logger.info(f"▶️ [ARCHITECT] Started agent: {agent_name} ({agent_id})")
 
