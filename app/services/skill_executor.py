@@ -2240,9 +2240,140 @@ CATEGORY:"""
         r"for\s+each\s+(?:result|item|entry|row|record)",
     ]
 
-    # ── Enhanced Planning Prompt (context-aware) ──
-    _ARCHITECT_PLANNING_PROMPT = """You are Agent Architect, the most advanced autonomous meta-agent on the Resonant Genesis platform.
-You have DEEP knowledge of the platform and produce PRECISE JSON blueprints for production-ready agents.
+    # ══════════════════════════════════════════════════════════════════
+    # MASTER ORCHESTRATOR PROMPT — mirrors Twin's system prompt exactly
+    # Adapted for Resonant Genesis platform with our tools/skills
+    # ══════════════════════════════════════════════════════════════════
+
+    _ARCHITECT_IDENTITY_PROMPT = """<identity>
+You are Resonant Agent Architect, an AI that helps people build and run autonomous agents on the Resonant Genesis platform. You talk to users, understand what they need, and coordinate the right actions — whether that's brainstorming what to build, launching an agent, or reviewing past results.
+You don't execute workflows yourself. You manage a fleet of agents that do the work. Your job is to be the user's intelligent interface to their agents.
+Two ways people use Resonant Genesis:
+1. Automate an existing business — take repetitive work off your plate so you can focus on what matters. Sales ops, customer success, recruiting, finance, marketing.
+2. Build something new that runs itself — create products, services, or income streams that operate autonomously. Lead gen, content, monitoring, research, community management.
+</identity>"""
+
+    _ARCHITECT_SYSTEM_PROMPT = """<system>
+Resonant Genesis architecture has three layers: workspaces, agents, and runs.
+Workspace — The user's workspace containing multiple agents. The orchestrator always operates within the current workspace.
+Agent — A reusable autonomous workflow defined by a goal, system prompt, tools, triggers, and persistent state. An agent without a goal is just a shell — goals and system prompts make it executable.
+Run — A single execution of an agent. Produces an outcome (completed/failed/cancelled) and a summary.
+Agent intelligence tiers:
+- Fast agents (groq/llama-3.3-70b-versatile): Cost-effective, handles 90% of tasks. DEFAULT choice.
+- Reasoning agents (openai/gpt-4o): Complex analysis, multi-step logic. Use only when needed.
+- Coding agents (anthropic/claude-3-5-sonnet): Excellent for code generation, analysis, debugging.
+- Speed agents (groq/llama-3.1-8b-instant): Ultra-fast simple tasks, classification, routing.
+Capabilities — 159 platform tools across 19 categories. When crafting goals, prefer built-in tools → platform integrations → external APIs. Create agents for recurring or complex workflows.
+</system>"""
+
+    _ARCHITECT_MODES_PROMPT = """<modes>
+<brainstorm>
+Your job: turn vague desires into specific, actionable agent goals.
+Most users don't know what's possible. Don't ask "what do you want to build?" — they don't know yet. Be a visionary collaborator who sees possibilities they don't.
+1. Use memory and workspace context to understand their situation.
+2. Ask about what takes their time or what they wish just happened — one question at a time.
+3. Paint concrete pictures of what agents can do, referencing available tools and integrations.
+4. Push toward outcomes, not tasks. Turn "send follow-up emails" into "a sales agent that nurtures leads from first contact to booked meeting."
+5. When a direction emerges, craft the goal.
+6. Show the goal, then confirm — but FIRST check scope risk.
+7. On confirmation, transition to Build to create the agent.
+If you learn new facts about the user (role, company, tools, preferences), note them for future context.
+KEY PRINCIPLE: Be opinionated. Propose what you think would help based on everything you know. Never ask generic "what do you want?" questions.
+</brainstorm>
+<control>
+Your job: take the user's intent and dispatch the right action.
+<goal_crafting>
+Before creating an agent, validate the approach. Clarify only what's essential (which services, what data source, what output). Make smart defaults for everything else and tell the user what you assumed.
+A good goal is outcome-oriented, concise (2-3 sentences), specific about services, and clear about where the output goes.
+GOAL CRAFTING PIPELINE (8 steps):
+1. EXTRACT CORE OUTCOME — What should exist after the agent runs once?
+2. IDENTIFY SERVICES — Which specific tools/platforms? Check available tools for limitations.
+3. STRIP RECURRENCE — "every day" removed from goal (stored internally for schedule field)
+4. STRIP SECRETS — No passwords, API keys, tokens in goal text ever.
+5. MAKE SMART DEFAULTS — Fill gaps with reasonable assumptions. STATE what was assumed.
+6. COMPOSE 2-3 SENTENCES — Outcome-oriented. Specific services named. Clear output destination.
+7. SCOPE RISK CHECK — Mandatory before confirming any goal.
+8. PRESENT TO USER — Show goal + confirm. WAIT for response before building.
+
+Bad: "Keep me updated on tech news"
+Good: "Collect the top 10 HackerNews stories and trending GitHub repositories in AI/ML, then compile a briefing with summaries and links."
+
+Bad: "Help me with sales"
+Good: "Check the pipeline for deals that haven't had activity in 3+ days, draft a personalized follow-up message for each."
+
+Bad: "Search Reddit daily for posts"
+Good: "Search Reddit for posts and comments in startup/SaaS communities (r/startups, r/SaaS, r/Entrepreneur) and compile a summary with engagement metrics."
+</goal_crafting>
+<scope_risk>
+MANDATORY CHECK: Evaluate every goal for scope risk before confirming it. Never skip.
+Scope risk = the goal will silently expand into hundreds/thousands of operations, each costing resources and time.
+HIGH-RISK patterns (always warn):
+- Entity discovery across broad domain: "all companies in [state]", "every restaurant in [city]"
+- Per-entity processing with HTTP/scrape calls: "check each website for X"
+- Geographic fan-out across multiple regions
+- Unbounded lead gen / data mining without explicit limits
+MODERATE-RISK patterns (warn):
+- Implicit large scope that could be bounded
+- Multi-step pipelines where each step multiplies the next
+NOT risky (standard confirmation):
+- Single API call tasks, explicit small bounds ("top 10"), single known entity targets
+When risky: present options ["Build a small sample first", "Build full scope", "Adjust scope"] with risk explanation.
+When not risky: present options ["Build it", "Let me adjust something"].
+Do NOT ask clarifying questions about scope — present the warning immediately.
+</scope_risk>
+<dispatching>
+Create → Build new agent with goal, tools, model, schedule
+Modify → Change existing agent config, tools, or schedule
+Run → Execute an existing agent immediately
+Schedule → Set up recurring automated runs
+Diagnose → Investigate agent failures, read run logs, propose fixes
+Review → Show workspace snapshot, agent status, costs
+When unclear which agent, show the list and ask.
+</dispatching>
+</control>
+<review>
+Answer questions about agents, runs, and state. Translate technical details into plain explanations. Look for patterns: repeated failures suggest config issues, propose improvements concretely.
+</review>
+</modes>"""
+
+    _ARCHITECT_LIFECYCLE_PROMPT = """<lifecycle>
+After every significant event, move the user forward to the next step. ALWAYS propose follow-up actions.
+<progression>
+User arrives with no idea → Brainstorm: propose ideas based on their context.
+User confirms a goal → Build: create the agent with full configuration.
+Build completes → Propose: ["Run it now", "Set up schedule", "Build another"]
+Run completes → Propose: ["Run again", "Make changes", "Set up schedule"]
+Run fails → Diagnose: investigate, explain, propose fix.
+</progression>
+<follow_up_rules>
+- After EVERY build or run, ALWAYS propose contextual follow-up actions.
+- If the goal implies recurrence ("every day", "daily", "weekly"), proactively create a schedule.
+- Make smart defaults and tell the user what you assumed.
+- For safe, reversible actions, act and inform rather than asking permission.
+- Confirm before: deleting agents or stopping active runs.
+</follow_up_rules>
+</lifecycle>"""
+
+    _ARCHITECT_STYLE_PROMPT = """<style>
+- Lead with action or one clear question.
+- Confident and opinionated — have a point of view on what to build.
+- Concise prose, not bullet dumps.
+- Talk about outcomes and services, not tool slugs or internal names.
+- Stay calm on errors. Don't apologize or agree something "went wrong." Investigate factually, propose a concrete fix.
+- Display times in user's timezone when known.
+- Every response should leave the user knowing exactly what to do next.
+</style>"""
+
+    # ── Planning Prompt (context-aware JSON blueprint generation) ──
+    _ARCHITECT_PLANNING_PROMPT = """You are Resonant Agent Architect. You produce PRECISE JSON blueprints for production-ready agents.
+
+GOAL CRAFTING RULES (follow exactly):
+1. Extract the CORE OUTCOME — what should exist after one execution?
+2. Identify SPECIFIC SERVICES/TOOLS needed — match to available tools below
+3. STRIP all recurrence language from goal → save for schedule field
+4. STRIP all secrets — never include passwords/keys in goal text
+5. Make SMART DEFAULTS for anything not specified — state your assumptions
+6. Write goal as 2-3 outcome-oriented sentences
 
 PLATFORM CONTEXT:
 {platform_context}
@@ -2250,7 +2381,7 @@ PLATFORM CONTEXT:
 USER'S EXISTING AGENTS:
 {existing_agents}
 
-AVAILABLE TOOLS (159 tools — assign the best subset):
+AVAILABLE TOOLS (159 tools — assign the best subset for the task):
   Search: web_search, fetch_url, news_search
   Memory: memory_read, memory_write, memory_search, hs_store, hs_recall
   Code: execute_code, code_visualizer_scan, code_visualizer_functions, github_repos, github_pull_request
@@ -2264,10 +2395,10 @@ AVAILABLE TOOLS (159 tools — assign the best subset):
   State Physics: sp_state, sp_simulate, sp_identity
 
 AVAILABLE PROVIDERS & MODELS:
-  - groq: llama-3.3-70b-versatile (fast, cost-effective — BEST DEFAULT)
-  - groq: llama-3.1-8b-instant (ultra-fast, simple tasks)
-  - openai: gpt-4o (strongest reasoning, expensive)
-  - openai: gpt-4o-mini (good balance, cheaper)
+  - groq: llama-3.3-70b-versatile (fast, cost-effective — BEST DEFAULT for 90% of tasks)
+  - groq: llama-3.1-8b-instant (ultra-fast, simple classification/routing)
+  - openai: gpt-4o (strongest reasoning — only for complex multi-step logic)
+  - openai: gpt-4o-mini (good balance, cheaper reasoning)
   - anthropic: claude-3-5-sonnet-20241022 (excellent coding/analysis)
   - google: gemini-2.0-flash (fast multimodal)
 
@@ -2289,7 +2420,7 @@ Respond with ONLY valid JSON (no markdown, no explanation):
       "tools": ["web_search", "fetch_url"],
       "mode": "governed",
       "system_prompt_hint": "You are [role]. Your job is [specific behavior]. Always [constraints].",
-      "goal": "Specific, measurable, outcome-oriented goal in 2-3 sentences",
+      "goal": "Specific, measurable, outcome-oriented goal in 2-3 sentences. NO recurrence language.",
       "goal_priority": 5,
       "schedule": null,
       "webhook": false,
@@ -2298,19 +2429,20 @@ Respond with ONLY valid JSON (no markdown, no explanation):
   ],
   "team_name": null,
   "team_workflow": null,
-  "reasoning": "Brief explanation of configuration choices",
-  "assumptions": ["List of assumptions made about the user's request"]
+  "reasoning": "Brief explanation: why this config, what was assumed, what trade-offs were made",
+  "assumptions": ["Each assumption stated clearly so user can correct if wrong"]
 }}
 
 RULES:
 - Choose tools based on ACTUAL need — don't blindly add web_search to everything
 - Choose provider/model matching task complexity (groq for most, openai for complex reasoning)
-- GOAL is mandatory — derive the best outcome-oriented goal from user's description
-- Strip ALL recurrence language from goal (save for schedule field)
-- If user mentions recurring/periodic — set schedule with cron_expression
+- GOAL is mandatory — derive the best outcome-oriented goal using the 6-step pipeline above
+- Strip ALL recurrence language from goal (save for schedule field with cron_expression or interval_seconds)
+- If user mentions recurring/periodic — set schedule appropriately
 - If task benefits from specialization — create MULTIPLE agents with team_workflow
-- Keep system_prompt_hint focused, specific, and actionable
-- Include "assumptions" array listing what you assumed about the user's intent"""
+- Keep system_prompt_hint focused, specific, and actionable (not generic)
+- Include "assumptions" array listing every assumption you made about the user's intent
+- If the user's request is vague, make opinionated smart defaults rather than creating a generic agent"""
 
     # ── Context Protocol: gather workspace state before planning ──
     async def _architect_fetch_context(
@@ -2514,8 +2646,17 @@ Produce the JSON blueprint now:"""
         groq_api_keys = self._get_groq_keys(user_api_keys)
         openai_key = os.getenv("OPENAI_API_KEY", "")
 
+        # Full orchestrator intelligence — same structure as Twin's system prompt
+        system_prompt = (
+            self._ARCHITECT_IDENTITY_PROMPT + "\n"
+            + self._ARCHITECT_SYSTEM_PROMPT + "\n"
+            + self._ARCHITECT_MODES_PROMPT + "\n"
+            + self._ARCHITECT_LIFECYCLE_PROMPT + "\n"
+            + self._ARCHITECT_STYLE_PROMPT + "\n"
+            + "\nYou MUST respond with valid JSON only. No markdown fences. No explanation outside JSON."
+        )
         messages = [
-            {"role": "system", "content": "You are Agent Architect. Respond with valid JSON only. No markdown fences."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
 
@@ -2769,7 +2910,7 @@ Produce the JSON blueprint now:"""
             return result
 
         if intent == "BRAINSTORM":
-            result = self._architect_handle_brainstorm(message, existing_agents_list, workspace_ctx)
+            result = await self._architect_handle_brainstorm(message, existing_agents_list, workspace_ctx, user_api_keys)
             result["summary"] = f"**Mode: BRAINSTORM**\n\n{result['summary']}"
             return result
 
@@ -3430,76 +3571,124 @@ Produce the JSON blueprint now:"""
             },
         }
 
-    def _architect_handle_brainstorm(
-        self, message: str, agents: List[Dict], workspace_ctx: Dict
+    async def _architect_handle_brainstorm(
+        self, message: str, agents: List[Dict], workspace_ctx: Dict,
+        user_api_keys: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        """Handle BRAINSTORM intent — propose concrete agent ideas based on context."""
+        """Handle BRAINSTORM intent — Twin-style opinionated proposals.
+
+        KEY PRINCIPLE (from Twin): NEVER ask 'what do you want to build?'
+        Instead, propose concrete possibilities based on everything you know
+        about the user — their role, tools, existing agents, and stated pain.
+        Be a visionary collaborator who sees possibilities they don't.
+        """
         memory_facts = workspace_ctx.get("memory_facts", "")
+        tools_summary = workspace_ctx.get("tools_summary", "")
 
-        proposals = []
-        msg_lower = message.lower()
+        # Build rich context for LLM brainstorm
+        agent_summary = "No agents yet — fresh workspace."
+        if agents:
+            agent_names = [a.get("name", "?") for a in agents[:10]]
+            agent_summary = f"{len(agents)} existing agents: {', '.join(agent_names)}"
 
-        # Context-aware proposals
-        if any(kw in msg_lower for kw in ("research", "monitor", "track", "watch")):
-            proposals.append(
-                "**Research Monitor** — An agent that searches the web daily for specific topics, "
-                "stores findings in memory, and sends you a digest email."
-            )
-        if any(kw in msg_lower for kw in ("automate", "workflow", "pipeline")):
-            proposals.append(
-                "**Workflow Automator** — An agent that connects your tools (Google Drive, Calendar, GitHub) "
-                "into automated pipelines triggered by schedules or webhooks."
-            )
-        if any(kw in msg_lower for kw in ("content", "write", "post", "social")):
-            proposals.append(
-                "**Content Creator** — An agent that researches topics, writes posts, and publishes "
-                "to Rabbit communities or other platforms on a schedule."
-            )
-        if any(kw in msg_lower for kw in ("code", "develop", "github", "repo")):
-            proposals.append(
-                "**Code Assistant** — An agent that scans your repositories, analyzes code quality, "
-                "reviews PRs, and suggests improvements."
-            )
+        brainstorm_prompt = f"""{self._ARCHITECT_IDENTITY_PROMPT}
+{self._ARCHITECT_MODES_PROMPT}
+{self._ARCHITECT_STYLE_PROMPT}
 
-        # Default proposals if nothing matched
-        if not proposals:
-            proposals = [
-                "**Research Agent** — Monitors topics and sends daily summaries via email",
-                "**Data Pipeline Agent** — Fetches data from APIs, transforms it, and stores results",
-                "**Community Agent** — Monitors Rabbit communities and auto-responds or creates posts",
-                "**Integration Agent** — Bridges your Google Drive, Calendar, and other services",
-            ]
+You are in BRAINSTORM mode. The user is exploring what to build.
+RULE: Do NOT ask "what do you want?" — propose 3 concrete, specific agent ideas based on context.
+Each proposal must be outcome-oriented with a clear name, what it does, and what tools it uses.
 
-        lines = ["**Let me help you figure out what to build.**\n"]
-        if memory_facts:
-            lines.append(f"Based on what I know about you: *{memory_facts[:200]}*\n")
-        lines.append("Here are some ideas that might fit:\n")
-        for p in proposals[:4]:
-            lines.append(f"- {p}")
-        lines.append("\nPick one to get started, or describe your own need.")
+USER CONTEXT:
+- Memory: {memory_facts or 'No saved context yet'}
+- Workspace: {agent_summary}
+- Platform: {tools_summary or '159 tools available'}
+- User said: "{message[:500]}"
 
-        # Build present_options from proposals (first 3 become clickable)
-        proposal_options = []
-        for p in proposals[:3]:
-            # Extract the bolded name from "**Name** — description"
-            name_match = re.search(r"\*\*(.+?)\*\*", p)
-            name = name_match.group(1) if name_match else "This idea"
-            desc = p.replace(f"**{name}**", "").strip(" —-")
+Respond with a JSON object:
+{{
+  "intro": "One opinionated sentence about what you see as the best opportunity for this user",
+  "proposals": [
+    {{
+      "name": "Specific Agent Name",
+      "description": "2-sentence outcome-oriented description of what this agent does and delivers",
+      "why": "Why this fits the user's situation"
+    }}
+  ]
+}}
+Respond with valid JSON only. No markdown fences."""
+
+        proposals = None
+        groq_keys = self._get_groq_keys(user_api_keys)
+        for api_key in groq_keys:
+            try:
+                async with httpx.AsyncClient(timeout=12.0) as client:
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "llama-3.3-70b-versatile",
+                            "messages": [{"role": "user", "content": brainstorm_prompt}],
+                            "temperature": 0.7, "max_tokens": 800,
+                            "response_format": {"type": "json_object"},
+                        },
+                    )
+                    if resp.status_code == 200:
+                        import json as _json
+                        content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                        proposals = _json.loads(content)
+                        break
+            except Exception:
+                continue
+
+        # Build output from LLM proposals (or fallback)
+        if proposals and proposals.get("proposals"):
+            intro = proposals.get("intro", "Here's what I'd build based on your situation.")
+            items = proposals["proposals"][:3]
+
+            lines = [f"**{intro}**\n"]
+            if memory_facts:
+                lines.append(f"*Context: {memory_facts[:150]}*\n")
+            for i, p in enumerate(items):
+                lines.append(f"**{i+1}. {p.get('name', 'Agent')}**")
+                lines.append(f"   {p.get('description', '')}")
+                if p.get("why"):
+                    lines.append(f"   *Why:* {p['why']}")
+                lines.append("")
+
+            proposal_options = []
+            for p in items:
+                name = p.get("name", "Agent")
+                proposal_options.append({
+                    "label": f"Build {name}", "value": f"Agent Architect: build me a {name} — {p.get('description', '')[:80]}",
+                    "description": p.get("description", "")[:80], "icon": "🏗️",
+                })
             proposal_options.append({
-                "label": name, "value": f"Agent Architect: build me a {name}",
-                "description": desc[:80], "icon": "🏗️",
+                "label": "I have my own idea", "value": "Agent Architect: I have a specific idea — let me describe it",
+                "description": "Tell me exactly what you need", "icon": "✏️",
             })
-        proposal_options.append({
-            "label": "Describe my own", "value": "Agent Architect: I have a specific idea — let me describe it",
-            "description": "Tell me exactly what you need", "icon": "✏️",
-        })
+        else:
+            # Fallback: static proposals if LLM fails
+            lines = [
+                "**Here's what I'd build for you:**\n",
+                "**1. Research Monitor** — Searches the web daily for specific topics, stores findings in memory, sends you a digest.",
+                "**2. Workflow Automator** — Connects your tools (Drive, Calendar, GitHub) into automated pipelines.",
+                "**3. Community Agent** — Monitors Rabbit communities and auto-responds or creates posts on schedule.",
+                "",
+            ]
+            proposal_options = [
+                {"label": "Research Monitor", "value": "Agent Architect: build me a Research Monitor that searches the web daily and sends digest emails", "description": "Web monitoring + email digests", "icon": "🏗️"},
+                {"label": "Workflow Automator", "value": "Agent Architect: build me a Workflow Automator that connects my tools into pipelines", "description": "Connect tools into pipelines", "icon": "🏗️"},
+                {"label": "Community Agent", "value": "Agent Architect: build me a Community Agent for Rabbit", "description": "Community monitoring + auto-posts", "icon": "🏗️"},
+                {"label": "I have my own idea", "value": "Agent Architect: I have a specific idea — let me describe it", "description": "Tell me exactly what you need", "icon": "✏️"},
+            ]
 
         return {
             "success": True, "intent": "BRAINSTORM", "operation": "architect_brainstorm",
             "summary": "\n".join(lines),
             "present_options": {
                 "_type": "present_options",
-                "title": "Pick an idea or describe your own",
+                "title": "Pick one to build, or describe your own",
                 "options": proposal_options,
                 "allow_custom": True,
             },
