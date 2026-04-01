@@ -2640,6 +2640,30 @@ RULES:
         # Ultimate fallback: return the last user message
         return user_messages[-1] if user_messages else "build an agent"
 
+    # ── Memory Persistence (Twin-style: store facts immediately when learned) ──
+    async def _architect_store_memory(
+        self, user_id: str, content: str, source: str = "agent_architect",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Store a user fact in the memory service. Fire-and-forget."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
+                    f"{MEMORY_SERVICE_URL}/memory/ingest",
+                    json={
+                        "user_id": user_id,
+                        "source": source,
+                        "content": content,
+                        "metadata": metadata or {"type": "user_fact", "origin": "agent_architect"},
+                    },
+                )
+                if resp.status_code in (200, 201):
+                    logger.debug(f"[ARCHITECT] Stored memory for {user_id}: {content[:60]}")
+                    return True
+        except Exception as e:
+            logger.debug(f"[ARCHITECT] Memory store failed (non-fatal): {e}")
+        return False
+
     # ── Helper: gather Groq API keys ──
     def _get_groq_keys(self, user_api_keys: Optional[Dict[str, str]] = None) -> List[str]:
         groq_api_keys: List[str] = []
@@ -3287,6 +3311,15 @@ Produce the JSON blueprint now:"""
                                         break
                         except Exception:
                             break
+
+        # ── Persist build facts to memory (Twin-style: store immediately) ──
+        if created_agents:
+            agent_names = [ca.get("name", "?") for ca in created_agents]
+            memory_content = f"User built {len(created_agents)} agent(s): {', '.join(agent_names)}. Request: {message[:200]}"
+            await self._architect_store_memory(
+                user_id, memory_content,
+                metadata={"type": "build_event", "agent_count": len(created_agents), "agent_names": agent_names},
+            )
 
         # ── Build progressive summary (clean, not overwhelming) ──
         n_created = len(created_agents)
