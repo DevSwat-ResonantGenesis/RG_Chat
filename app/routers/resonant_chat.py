@@ -2514,14 +2514,17 @@ async def send_message(
             )
         )
         # Extract present_options from skill result for frontend clickable buttons
-        if skill_result.get("present_options") and isinstance(skill_result["present_options"], dict):
+        has_po = skill_result.get("present_options")
+        print(f"[PRESENT_OPTIONS] skill has present_options={bool(has_po)}, type={type(has_po).__name__}, keys={list(has_po.keys()) if isinstance(has_po, dict) else 'N/A'}", flush=True)
+        if has_po and isinstance(has_po, dict):
             tool_results.append(
                 ToolResultData(
                     tool_name="present_options",
                     success=True,
-                    result=skill_result["present_options"],
+                    result=has_po,
                 )
             )
+            print(f"[PRESENT_OPTIONS] Appended to tool_results, total={len(tool_results)}", flush=True)
 
     current_meta = assistant_message.meta_data or {}
     if generated_images_data:

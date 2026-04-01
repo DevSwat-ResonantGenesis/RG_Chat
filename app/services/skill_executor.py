@@ -2512,9 +2512,9 @@ RULES:
                     "level": "high",
                     "reason": "This could target thousands of items — potentially expensive.",
                     "branches": [
-                        {"label": "Run on 10 samples", "value": "Build this agent but limit to 10 items as a test run first", "description": "Safe starting point — validate before scaling", "icon": "🧪", "default": True},
-                        {"label": "Run on 100", "value": "Build this agent limited to 100 items", "description": "Medium scale — good for validation", "icon": "📊"},
-                        {"label": "Run full scale", "value": "Build this agent at full scale with no limits", "description": "Full power — may be costly", "icon": "🚀"},
+                        {"label": "Run on 10 samples", "value": "Agent Architect: build this agent but limit to 10 items as a test run first", "description": "Safe starting point — validate before scaling", "icon": "🧪", "default": True},
+                        {"label": "Run on 100", "value": "Agent Architect: build this agent limited to 100 items", "description": "Medium scale — good for validation", "icon": "📊"},
+                        {"label": "Run full scale", "value": "Agent Architect: build this agent at full scale with no limits", "description": "Full power — may be costly", "icon": "🚀"},
                     ],
                 }
         for pattern in self._MODERATE_RISK_PATTERNS:
@@ -2523,8 +2523,8 @@ RULES:
                     "level": "moderate",
                     "reason": "Multi-step processing that could scale up.",
                     "branches": [
-                        {"label": "Build with limits", "value": "Build this agent with sensible rate limits and caps", "description": "Safe default — capped at reasonable limits", "icon": "🛡️", "default": True},
-                        {"label": "Build unrestricted", "value": "Build this agent with no restrictions", "description": "Full power — monitor costs", "icon": "⚡"},
+                        {"label": "Build with limits", "value": "Agent Architect: build this agent with sensible rate limits and caps", "description": "Safe default — capped at reasonable limits", "icon": "🛡️", "default": True},
+                        {"label": "Build unrestricted", "value": "Agent Architect: build this agent with no restrictions", "description": "Full power — monitor costs", "icon": "⚡"},
                     ],
                 }
         return {"level": "safe", "reason": None, "branches": None}
@@ -2553,7 +2553,8 @@ RULES:
         )
         if not has_prior_preview:
             return False
-        msg_lower = message.lower().strip()
+        # Strip "Agent Architect:" prefix from option clicks before matching
+        msg_lower = re.sub(r"^agent\s*architect\s*:\s*", "", message.lower().strip())
         return any(re.search(p, msg_lower) for p in self._CONFIRM_PATTERNS)
 
     # ── Helper: gather Groq API keys ──
@@ -2655,38 +2656,38 @@ Produce the JSON blueprint now:"""
             first_name = created_agents[0].get("name", "the agent")
             options.append({
                 "label": f"Run {first_name}", "icon": "▶️",
-                "value": f"Run {first_name} now",
+                "value": f"Agent Architect: run {first_name} now",
                 "description": "Start an immediate test run",
             })
             if not has_schedule:
                 options.append({
                     "label": "Schedule it", "icon": "⏰",
-                    "value": f"Set up a daily schedule for {first_name}",
+                    "value": f"Agent Architect: set up a daily schedule for {first_name}",
                     "description": "Automate with recurring runs",
                 })
             if len(created_agents) >= 2:
                 options.append({
                     "label": "View team", "icon": "👥",
-                    "value": "Show me the team overview for the agents you just created",
+                    "value": "Agent Architect: show me the team overview for the agents you just created",
                     "description": "See how your agents collaborate",
                 })
         # State-aware: suggest different things based on workspace maturity
         if total_workspace_agents == 0 and not created_agents:
             options.append({
                 "label": "Build my first agent", "icon": "🏗️",
-                "value": "Help me build my first agent",
+                "value": "Agent Architect: help me build my first agent",
                 "description": "Get started with a guided build",
             })
         elif total_workspace_agents > 5:
             options.append({
                 "label": "Optimize agents", "icon": "⚡",
-                "value": "Review my agents and suggest optimizations",
+                "value": "Agent Architect: review my agents and suggest optimizations",
                 "description": "Reduce costs or improve performance",
             })
         else:
             options.append({
                 "label": "Build another", "icon": "➕",
-                "value": "Build another agent",
+                "value": "Agent Architect: build another agent",
                 "description": "Create something new",
             })
         return options
@@ -2755,14 +2756,15 @@ Produce the JSON blueprint now:"""
             }
 
         # Normal: confirm/edit/test options
+        # NOTE: All values MUST contain 'architect' keyword so LLM routes to agent_architect skill
         options = [
-            {"label": "Build now", "value": "Yes, build the agents as planned", "description": "Create all agents with this configuration", "icon": "🚀"},
-            {"label": "Edit goal", "value": "I'd like to modify the plan before building", "description": "Adjust goals, tools, or models", "icon": "✏️"},
+            {"label": "Build now", "value": "Agent Architect: yes, build the agents as planned", "description": "Create all agents with this configuration", "icon": "🚀"},
+            {"label": "Edit plan", "value": "Agent Architect: I'd like to modify the plan before building", "description": "Adjust goals, tools, or models", "icon": "✏️"},
         ]
         if len(agent_blueprints) == 1:
-            options.append({"label": "Small test first", "value": "Build a minimal test version first", "description": "Reduced scope to validate", "icon": "🧪"})
+            options.append({"label": "Small test first", "value": "Agent Architect: build a minimal test version first", "description": "Reduced scope to validate", "icon": "🧪"})
         if workspace_agents > 0:
-            options.append({"label": "Compare to existing", "value": "Show me my existing agents before building", "description": "Review what's already running", "icon": "📋"})
+            options.append({"label": "Compare to existing", "value": "Agent Architect: show me my existing agents before building", "description": "Review what's already running", "icon": "📋"})
 
         summary += "**Ready to build?**\n"
 
@@ -3155,8 +3157,8 @@ Produce the JSON blueprint now:"""
                     "_type": "present_options",
                     "title": "Get started",
                     "options": [
-                        {"label": "Build an agent", "value": "Help me build my first agent", "description": "Tell me what you need automated", "icon": "🏗️"},
-                        {"label": "Explore ideas", "value": "What kinds of agents can you build?", "description": "See what's possible on this platform", "icon": "💡"},
+                        {"label": "Build an agent", "value": "Agent Architect: help me build my first agent", "description": "Tell me what you need automated", "icon": "🏗️"},
+                        {"label": "Explore ideas", "value": "Agent Architect: what kinds of agents can you build?", "description": "See what's possible on this platform", "icon": "💡"},
                     ],
                     "allow_custom": True,
                 },
@@ -3172,13 +3174,13 @@ Produce the JSON blueprint now:"""
 
         # State-aware options based on workspace maturity
         options = [
-            {"label": f"Run {agents[0]['name']}", "value": f"Run {agents[0]['name']} now", "description": "Start an immediate execution", "icon": "▶️"},
-            {"label": "Build new agent", "value": "Build a new agent", "description": "Create something new", "icon": "🏗️"},
+            {"label": f"Run {agents[0]['name']}", "value": f"Agent Architect: run {agents[0]['name']} now", "description": "Start an immediate execution", "icon": "▶️"},
+            {"label": "Build new agent", "value": "Agent Architect: build a new agent", "description": "Create something new", "icon": "🏗️"},
         ]
         if len(agents) > 3:
-            options.append({"label": "Optimize agents", "value": "Review my agents and suggest optimizations", "description": "Reduce costs or improve performance", "icon": "⚡"})
+            options.append({"label": "Optimize agents", "value": "Agent Architect: review my agents and suggest optimizations", "description": "Reduce costs or improve performance", "icon": "⚡"})
         else:
-            options.append({"label": "Modify an agent", "value": f"Modify {agents[0]['name']}", "description": "Change config, tools, or schedule", "icon": "✏️"})
+            options.append({"label": "Modify an agent", "value": f"Agent Architect: modify {agents[0]['name']}", "description": "Change config, tools, or schedule", "icon": "✏️"})
 
         return {
             "success": True, "action": "open_agents_panel", "panel_url": panel_url,
@@ -3247,9 +3249,9 @@ Produce the JSON blueprint now:"""
                 "_type": "present_options",
                 "title": "What would you like to do?",
                 "options": [
-                    {"label": "View full trace", "value": f"Show me the full trace for {target_agent.get('name', 'this agent')}", "description": "See every step and decision", "icon": "🔍"},
-                    {"label": "Fix with rebuild", "value": f"Modify {target_agent.get('name', 'this agent')} to fix the issues", "description": "Change agent to address problems", "icon": "🔧"},
-                    {"label": "Run again", "value": f"Run {target_agent.get('name', 'this agent')} now", "description": "Retry execution", "icon": "▶️"},
+                    {"label": "View full trace", "value": f"Agent Architect: show me the full trace for {target_agent.get('name', 'this agent')}", "description": "See every step and decision", "icon": "🔍"},
+                    {"label": "Fix with rebuild", "value": f"Agent Architect: modify {target_agent.get('name', 'this agent')} to fix the issues", "description": "Change agent to address problems", "icon": "🔧"},
+                    {"label": "Run again", "value": f"Agent Architect: run {target_agent.get('name', 'this agent')} now", "description": "Retry execution", "icon": "▶️"},
                 ],
                 "allow_custom": True,
             },
@@ -3311,11 +3313,11 @@ Produce the JSON blueprint now:"""
             name = name_match.group(1) if name_match else "This idea"
             desc = p.replace(f"**{name}**", "").strip(" —-")
             proposal_options.append({
-                "label": name, "value": f"Build me a {name}",
+                "label": name, "value": f"Agent Architect: build me a {name}",
                 "description": desc[:80], "icon": "🏗️",
             })
         proposal_options.append({
-            "label": "Describe my own", "value": "I have a specific idea — let me describe it",
+            "label": "Describe my own", "value": "Agent Architect: I have a specific idea — let me describe it",
             "description": "Tell me exactly what you need", "icon": "✏️",
         })
 
@@ -3342,7 +3344,7 @@ Produce the JSON blueprint now:"""
                     "_type": "present_options",
                     "title": "Get started",
                     "options": [
-                        {"label": "Build an agent", "value": "Build me an agent", "description": "Create your first agent", "icon": "🏗️"},
+                        {"label": "Build an agent", "value": "Agent Architect: build me an agent", "description": "Create your first agent", "icon": "🏗️"},
                     ],
                     "allow_custom": True,
                 },
@@ -3374,7 +3376,7 @@ Produce the JSON blueprint now:"""
             tools_count = len(a.get("tools", []))
             agent_options.append({
                 "label": a["name"],
-                "value": f"Modify {a['name']}",
+                "value": f"Agent Architect: modify {a['name']}",
                 "description": f"{a.get('model', '?')} · {tools_count} tools",
                 "icon": "✏️",
             })
