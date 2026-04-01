@@ -3040,6 +3040,38 @@ Produce the JSON blueprint now:"""
         logger.info(f"🏗️ [ARCHITECT] Building {len(agent_blueprints)} agents")
         print(f"[AGENT_ARCHITECT] Phase 2: Creating {len(agent_blueprints)} agents", flush=True)
 
+        # ── Auto-build missing tools before agent creation ──
+        auto_built_tools: List[str] = []
+        try:
+            builder = self._get_tool_builder()
+            all_blueprint_tools = set()
+            for abp in agent_blueprints:
+                for t in (abp.get("tools") or []):
+                    if isinstance(t, str):
+                        all_blueprint_tools.add(t)
+
+            for tool_name in all_blueprint_tools:
+                if not builder.has_tool(tool_name):
+                    logger.info(f"🔧 [ARCHITECT] Tool '{tool_name}' not in registry — auto-building")
+                    build_ctx = {
+                        "user_id": user_id,
+                        "connected_services": list(user_api_keys.keys()),
+                        "workspace_tools": [t for t in all_blueprint_tools if t != tool_name],
+                        "api_keys": user_api_keys,
+                    }
+                    ok, msg, _ = await builder.build_tool(
+                        need_description=f"Tool called '{tool_name}' for an autonomous agent",
+                        context=build_ctx,
+                        llm_call_fn=self._llm_call_for_builder,
+                    )
+                    if ok:
+                        auto_built_tools.append(tool_name)
+                        logger.info(f"🔧 [ARCHITECT] Auto-built '{tool_name}' successfully")
+                    else:
+                        logger.warning(f"🔧 [ARCHITECT] Could not auto-build '{tool_name}': {msg}")
+        except Exception as e:
+            logger.warning(f"[ARCHITECT] Auto-build scan failed (non-fatal): {e}")
+
         # ── Create agents with full configuration ──
         created_agents: List[Dict[str, Any]] = []
         creation_details: List[str] = []
@@ -3167,6 +3199,9 @@ Produce the JSON blueprint now:"""
         summary = f"**Mode: BUILD** · {n_created}/{n_total} agents created\n\n"
         if reasoning:
             summary += f"*{reasoning}*\n\n"
+
+        if auto_built_tools:
+            summary += f"🔧 **Auto-built {len(auto_built_tools)} missing tool(s):** {', '.join(f'`{t}`' for t in auto_built_tools)}\n\n"
 
         summary += "---\n\n"
         summary += "\n\n".join(creation_details)
@@ -3900,6 +3935,209 @@ Respond with valid JSON only. No markdown fences."""
                 body = "\n".join(lines[1:]).strip() if len(lines) > 1 else first
 
         return title, body, community_slug
+
+
+    # ============================================
+    # AUTONOMOUS TOOL BUILDER — Self-Extending Platform
+    # ============================================
+
+    def _get_tool_builder(self):
+        """Lazy-init the autonomous tool builder."""
+        if not hasattr(self, '_tool_builder') or self._tool_builder is None:
+            from ..rg_tool_registry.autonomous_tool_builder import get_tool_builder
+            self._tool_builder = get_tool_builder()
+        return self._tool_builder
+
+    async def _llm_call_for_builder(self, system_prompt: str, user_prompt: str) -> str:
+        """Make an LLM call for the autonomous tool builder."""
+        from ..domain.provider import get_router_for_internal_use
+        router = get_router_for_internal_use()
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        response = await router.route_query(
+            message=user_prompt,
+            context=messages,
+            preferred_provider="groq",
+        )
+        return response.get("response", "")
+
+    async def _handle_auto_build_tool(
+        self, message: str, user_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Handle auto_build_tool — design, validate, register a new tool at runtime."""
+        builder = self._get_tool_builder()
+
+        # Parse need_description from the message
+        need = message.strip()
+        if not need:
+            return {"success": False, "error": "Need description is required"}
+
+        # Build context for the builder
+        build_ctx = {
+            "user_id": user_id,
+            "connected_services": list((context.get("user_api_keys") or {}).keys()),
+            "workspace_tools": [],
+            "api_keys": context.get("user_api_keys", {}),
+        }
+
+        success, msg, tool_def = await builder.build_tool(
+            need_description=need,
+            context=build_ctx,
+            llm_call_fn=self._llm_call_for_builder,
+        )
+
+        if not success:
+            return {"success": False, "error": msg, "action": "auto_build_tool"}
+
+        result = {
+            "success": True,
+            "action": "auto_build_tool",
+            "tool_name": tool_def.name if tool_def else "unknown",
+            "tool_description": tool_def.description if tool_def else "",
+            "message": msg,
+            "response": f"🔧 **Tool Built:** `{tool_def.name}`\n\n{tool_def.description}\n\n"
+                        f"The tool is now registered and ready to use. "
+                        f"Call it with `execute_built_tool` or it will appear in the tool registry.",
+        }
+
+        # Auto-execute if requested
+        auto_exec = context.get("auto_execute", False)
+        exec_params = context.get("execute_params")
+        if auto_exec and exec_params and tool_def:
+            try:
+                exec_result = await builder.execute_built_tool(
+                    tool_def.name, exec_params, build_ctx
+                )
+                result["execution_result"] = exec_result
+                result["response"] += f"\n\n**Auto-executed result:**\n```json\n{json.dumps(exec_result, indent=2, default=str)}\n```"
+            except Exception as e:
+                result["execution_error"] = str(e)
+                result["response"] += f"\n\n⚠️ Auto-execution failed: {e}"
+
+        return result
+
+    async def _handle_list_built_tools(
+        self, message: str, user_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Handle list_built_tools — show all dynamically created tools."""
+        builder = self._get_tool_builder()
+        tools = builder.get_built_tools()
+
+        if not tools:
+            return {
+                "success": True,
+                "action": "list_built_tools",
+                "tools": [],
+                "response": "No dynamically built tools in this session. "
+                            "Use `auto_build_tool` to create new capabilities on the fly.",
+            }
+
+        lines = ["🔧 **Dynamically Built Tools:**\n"]
+        for t in tools:
+            param_names = ", ".join(p["name"] for p in t.get("params", []))
+            lines.append(f"- **`{t['name']}`** — {t['description']}")
+            if param_names:
+                lines.append(f"  Params: `{param_names}`")
+            lines.append(f"  Built: {t['created_at'][:19]} | Hash: `{t['code_hash']}`")
+
+        return {
+            "success": True,
+            "action": "list_built_tools",
+            "tools": tools,
+            "response": "\n".join(lines),
+        }
+
+    async def _handle_execute_built_tool(
+        self, message: str, user_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Handle execute_built_tool — run a dynamically built tool."""
+        builder = self._get_tool_builder()
+
+        # Parse tool_name and params from message/context
+        tool_name = context.get("tool_name", "")
+        params = context.get("params", {})
+
+        if not tool_name:
+            # Try to parse from message
+            match = re.match(r"(\w+)\s*(.*)", message.strip())
+            if match:
+                tool_name = match.group(1)
+                try:
+                    params = json.loads(match.group(2)) if match.group(2).strip() else {}
+                except json.JSONDecodeError:
+                    params = {"input": match.group(2).strip()}
+
+        if not tool_name:
+            return {"success": False, "error": "tool_name is required", "action": "execute_built_tool"}
+
+        try:
+            exec_ctx = {
+                "user_id": user_id,
+                "api_keys": context.get("user_api_keys", {}),
+                "headers": context.get("headers", {}),
+            }
+            result = await builder.execute_built_tool(tool_name, params, exec_ctx)
+            return {
+                "success": True,
+                "action": "execute_built_tool",
+                "tool_name": tool_name,
+                "result": result,
+                "response": f"✅ **`{tool_name}`** executed:\n```json\n{json.dumps(result, indent=2, default=str)}\n```",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "action": "execute_built_tool",
+                "tool_name": tool_name,
+                "error": str(e),
+            }
+
+    async def _handle_check_tool_exists(
+        self, message: str, user_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Handle check_tool_exists — look up a capability and suggest building if missing."""
+        builder = self._get_tool_builder()
+        capability = context.get("capability", message.strip())
+
+        if builder.has_tool(capability):
+            tool_def = builder._registry.get(capability)
+            return {
+                "success": True,
+                "action": "check_tool_exists",
+                "exists": True,
+                "tool_name": capability,
+                "description": tool_def.description if tool_def else "",
+                "response": f"✅ Tool `{capability}` exists: {tool_def.description if tool_def else 'N/A'}",
+            }
+
+        # Check by capability description (fuzzy)
+        similar = builder._find_similar_tool(capability)
+        if similar:
+            return {
+                "success": True,
+                "action": "check_tool_exists",
+                "exists": True,
+                "tool_name": similar.name,
+                "description": similar.description,
+                "response": f"🔍 Found similar tool: `{similar.name}` — {similar.description}\n"
+                            f"This may satisfy your need for: _{capability}_",
+            }
+
+        return {
+            "success": True,
+            "action": "check_tool_exists",
+            "exists": False,
+            "suggestion": "auto_build_tool",
+            "response": f"❌ No tool matches `{capability}`.\n\n"
+                        f"💡 I can **build it** right now. Say: "
+                        f"_\"Build a tool that {capability}\"_ and I'll design, validate, and register it.",
+            "present_options": [
+                {"label": f"🔧 Build it now", "value": f"auto_build_tool: {capability}"},
+                {"label": "Skip", "value": "Never mind"},
+            ],
+        }
 
 
 # Global singleton

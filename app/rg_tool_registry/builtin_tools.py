@@ -938,6 +938,58 @@ def get_chat_skill_descriptions() -> Dict[str, str]:
     return descs
 
 
+# ── AUTONOMOUS TOOL BUILDER ──
+# These tools let the orchestrator/agents BUILD new tools at runtime.
+# The platform can extend itself — fully autonomous.
+AUTONOMOUS_BUILDER_TOOLS = [
+    ToolDef(
+        name="auto_build_tool",
+        description="Autonomously design, validate, and register a NEW tool at runtime. "
+                    "Use when no existing tool satisfies the need. The platform builds its own capabilities.",
+        category=ToolCategory.CUSTOM,
+        params=[
+            ToolParam("need_description", ParamType.STRING, "Natural language description of what the tool should do", required=True),
+            ToolParam("auto_execute", ParamType.BOOLEAN, "If true, immediately execute the built tool with execute_params", default=False),
+            ToolParam("execute_params", ParamType.OBJECT, "Parameters to pass if auto_execute is true", default=None),
+        ],
+        handler="_handle_auto_build_tool",
+        access={_R, ToolAccess.AGENT},
+        priority=15,
+    ),
+    ToolDef(
+        name="list_built_tools",
+        description="List all dynamically built tools created by the autonomous builder during this session.",
+        category=ToolCategory.CUSTOM,
+        params=[],
+        handler="_handle_list_built_tools",
+        access={_R, ToolAccess.AGENT},
+        priority=40,
+    ),
+    ToolDef(
+        name="execute_built_tool",
+        description="Execute a dynamically built tool by name with given parameters.",
+        category=ToolCategory.CUSTOM,
+        params=[
+            ToolParam("tool_name", ParamType.STRING, "Name of the dynamically built tool to execute", required=True),
+            ToolParam("params", ParamType.OBJECT, "Parameters to pass to the tool handler", required=True),
+        ],
+        handler="_handle_execute_built_tool",
+        access={_R, ToolAccess.AGENT},
+        priority=20,
+    ),
+    ToolDef(
+        name="check_tool_exists",
+        description="Check if a tool or capability exists in the registry. Returns the tool if found, or suggests building it.",
+        category=ToolCategory.CUSTOM,
+        params=[
+            ToolParam("capability", ParamType.STRING, "Description of the capability to check for", required=True),
+        ],
+        handler="_handle_check_tool_exists",
+        access={_R, ToolAccess.AGENT},
+        priority=35,
+    ),
+]
+
 # ═══════════════════════════════════════════════════════════
 # ALL_TOOLS — single flat list of every tool on the platform
 # ═══════════════════════════════════════════════════════════
@@ -970,6 +1022,8 @@ ALL_TOOLS = (
     + FILE_OPS_TOOLS
     + STOCK_MARKET_TOOLS
     + OAUTH_TOOLS
+    # ── Autonomous self-extension ──
+    + AUTONOMOUS_BUILDER_TOOLS
     # ── Chat skills (must be last — detection layer) ──
     + CHAT_SKILL_TOOLS
 )

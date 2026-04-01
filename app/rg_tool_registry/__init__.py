@@ -28,6 +28,7 @@ from .builtin_tools import (
     ALL_TOOLS,
     build_registry,
 )
+from .autonomous_tool_builder import AutonomousToolBuilder, get_tool_builder
 
 __version__ = "1.0.0"
 
@@ -44,4 +45,6 @@ __all__ = [
     "get_chat_skill_descriptions",
     "ALL_TOOLS",
     "build_registry",
+    "AutonomousToolBuilder",
+    "get_tool_builder",
 ]
