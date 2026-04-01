@@ -1718,9 +1718,16 @@ async def send_message(
 
     # Force tool-grounded reply for ALL Agents OS operations (including create).
     # Delegating create ops to the LLM caused hallucinated fake URLs/configs.
+    # When agents_os delegates creation to agent_architect, the result contains
+    # architect-specific keys ('intent', operation starting with 'architect_').
+    # Detect this and treat as architect response for proper present_options handling.
     if not execute_mode and detected_skill and detected_skill.id == "agents_os" and skill_result:
-        operation = skill_result.get("operation", "")
-        if skill_result.get("success"):
+        _is_architect_delegation = skill_result.get("intent") or (skill_result.get("operation") or "").startswith("architect_")
+        if _is_architect_delegation:
+            # Treat exactly like agent_architect — fall through to next block
+            print(f"[AGENTS_OS] Detected architect delegation, treating as agent_architect", flush=True)
+            pass  # handled by the agent_architect block below
+        elif skill_result.get("success"):
             skill_summary = (skill_result.get("summary") or "").strip()
             response_text = skill_summary or "Agents OS operation completed successfully."
             provider = "tool_agents_os"
@@ -1734,7 +1741,12 @@ async def send_message(
 
     # Force tool-grounded reply for Agent Architect (structured responses with present_options).
     # Delegating to LLM would destroy the plan preview format and clickable options.
-    if not execute_mode and detected_skill and detected_skill.id == "agent_architect" and skill_result:
+    # Also matches when agents_os delegates creation to architect (detected_skill.id may be "agents_os").
+    _is_architect_result = (
+        skill_result and skill_result.get("intent")
+        or (skill_result and (skill_result.get("operation") or "").startswith("architect_"))
+    )
+    if not execute_mode and detected_skill and (detected_skill.id == "agent_architect" or _is_architect_result) and skill_result:
         if skill_result.get("success"):
             skill_summary = (skill_result.get("summary") or "").strip()
             response_text = skill_summary or "Agent Architect completed successfully."

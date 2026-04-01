@@ -1902,41 +1902,20 @@ class SkillExecutor:
         if action in ("create_team", "list_teams"):
             return await self._handle_team_action(action, message, user_id)
 
-        # Follow-up confirmation handling:
-        # When user sends a short confirmation like "yes create all" and the previous
-        # assistant message described agents, parse the agent descriptions from context
-        # and upgrade to multi-agent creation.
-        prev_content = context.get("prev_assistant_content", "")
-        if action == "create_agent" and prev_content:
-            parsed_from_context = self._parse_multiple_agents(prev_content)
-            if len(parsed_from_context) >= 1:
-                logger.info(f"🤖 Follow-up confirmation: parsed {len(parsed_from_context)} agents from previous assistant message")
-                action = "create_agents"
-                # Use the context-parsed agents instead of the short confirmation message
-                context["_parsed_agents_from_context"] = parsed_from_context
+        # ── Delegate ALL creation to Agent Architect (two-phase flow) ──
+        # The architect provides: plan preview → user confirms → intelligent build
+        # This replaces the old crude single-shot create that had bad UX.
+        if action in ("create_agent", "create_agents"):
+            logger.info(f"🤖 Agents OS delegating creation to Agent Architect for: {message[:80]!r}")
+            print(f"[AGENTS_OS] Delegating to agent_architect", flush=True)
+            return await self._execute_agent_architect(message, user_id, context)
 
         try:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 created_agents: List[Dict[str, Any]] = []
                 action_summary = ""
 
-                if action == "create_agents":
-                    parsed = context.get("_parsed_agents_from_context") or self._parse_multiple_agents(message)
-                    logger.info(f"🤖 Multi-agent creation: {len(parsed)} agents to create")
-                    for agent_def in parsed:
-                        payload = self._build_payload_from_parsed(agent_def)
-                        result = await self._create_single_agent(client, payload, headers)
-                        if result:
-                            created_agents.append(result)
-                            logger.info(f"✅ Created agent: {result.get('name')} (ID: {result.get('id')})")
-
-                elif action == "create_agent":
-                    create_payload = self._build_agent_create_payload(message)
-                    result = await self._create_single_agent(client, create_payload, headers)
-                    if result:
-                        created_agents.append(result)
-
-                elif action == "rename_agent":
+                if action == "rename_agent":
                     action_summary = await self._handle_rename_agent(client, message, headers, user_id)
 
                 elif action == "delete_agent":
@@ -1974,75 +1953,11 @@ class SkillExecutor:
                 if isinstance(agent, dict):
                     top_agents.append(agent.get("name") or agent.get("id") or "agent")
 
-            # Build summary
+            # Build summary (creation is handled by agent_architect, so no created_agents here)
             summary = ""
 
             if action_summary:
                 summary = action_summary + "\n\n"
-            elif created_agents:
-                summary = f"✅ **Created {len(created_agents)} agent(s) via Agent Engine API:**\n\n"
-                for ca in created_agents:
-                    ca_name = ca.get("name", "Agent")
-                    ca_id = ca.get("id", "?")
-                    ca_hash = ca.get("agent_public_hash", "")
-                    ca_tools = ca.get("tools", [])
-                    summary += f"- **{ca_name}** — ID: `{ca_id}`"
-                    if ca_hash:
-                        summary += f" — Hash: `{ca_hash}`"
-                    summary += "\n"
-                summary += "\n"
-
-                # Show real webhook URLs if auto-created
-                agents_with_webhooks = [
-                    ca for ca in created_agents if ca.get("webhook_url")
-                ]
-                if agents_with_webhooks:
-                    summary += "**Webhook Endpoint(s):**\n"
-                    for ca in agents_with_webhooks:
-                        summary += (
-                            f"- **{ca.get('name', 'Agent')}**: `{ca['webhook_url']}`\n"
-                            f"  - Method: `POST`\n"
-                            f"  - Content-Type: `application/json`\n"
-                        )
-                    summary += "\n"
-
-                # Add accurate post-creation guidance
-                any_has_webhook = bool(agents_with_webhooks) or any(
-                    "http_request" in (ca.get("tools") or []) or
-                    "webhook" in (ca.get("name") or "").lower()
-                    for ca in created_agents
-                )
-                any_has_discord = any(
-                    "discord" in (ca.get("name") or "").lower() or
-                    "discord" in (ca.get("description") or "").lower()
-                    for ca in created_agents
-                )
-
-                summary += "**Next steps:**\n"
-                summary += "1. Open the agent dashboard at **/agents** to view and configure your agent(s).\n"
-                if agents_with_webhooks:
-                    summary += (
-                        "2. Use the webhook URL above as the Endpoint URL in your external service "
-                        "(Discord, GitHub, Slack, etc.).\n"
-                    )
-                    summary += (
-                        "3. To manage API keys and other integrations, go to **/connect-profiles**.\n"
-                    )
-                elif any_has_webhook or any_has_discord:
-                    summary += (
-                        "2. To connect external services (Discord webhooks, GitHub, Slack, etc.), "
-                        "go to **/connect-profiles** — this is where you add webhook URLs, API keys, "
-                        "and connect integrations.\n"
-                    )
-                    if any_has_discord:
-                        summary += (
-                            "3. For Discord: Go to your Discord server → Server Settings → Integrations → "
-                            "Webhooks → New Webhook → Copy the webhook URL → Paste it at **/connect-profiles** "
-                            "under the Discord card.\n"
-                        )
-                else:
-                    summary += "2. To connect external services, go to **/connect-profiles**.\n"
-                summary += "\n"
 
             if not summary:
                 summary = "**Agents OS is ready.**\n\n"
@@ -2054,10 +1969,6 @@ class SkillExecutor:
             if top_agents:
                 summary += "\n**Your agents:**\n" + "\n".join([f"- {name}" for name in top_agents])
 
-            created_agent_id = created_agents[0].get("id") if created_agents else None
-            created_agent_name = created_agents[0].get("name") if created_agents else None
-            created_agent_hash = created_agents[0].get("agent_public_hash") if created_agents else None
-
             return {
                 "success": True,
                 "action": "open_agents_panel",
@@ -2065,13 +1976,6 @@ class SkillExecutor:
                 "operation": action,
                 "agent_count": len(agents),
                 "agents": agents[:10],
-                "created_agent_id": created_agent_id,
-                "created_agent_name": created_agent_name,
-                "created_agent_public_hash": created_agent_hash,
-                "created_agents": [
-                    {"id": ca.get("id"), "name": ca.get("name"), "hash": ca.get("agent_public_hash")}
-                    for ca in created_agents
-                ],
                 "summary": summary,
             }
         except Exception as e:
