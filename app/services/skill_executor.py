@@ -32,6 +32,7 @@ MEMORY_SERVICE_URL = os.getenv("MEMORY_SERVICE_URL", "http://memory_service:8000
 AGENT_ENGINE_URL = os.getenv("AGENT_ENGINE_URL", "http://agent_engine_service:8000")
 BUILDER_AGENT_URL = os.getenv("BUILDER_AGENT_URL", "http://builder_agent:8000")
 RUNNER_AGENT_URL = os.getenv("RUNNER_AGENT_URL", "http://runner_agent:8000")
+AGENT_ARCHITECT_URL = os.getenv("AGENT_ARCHITECT_URL", "http://agent_architect:8000")
 STATE_PHYSICS_URL = os.getenv("STATE_PHYSICS_URL", "http://rg_users_invarients_sim:8091")
 IDE_SERVICE_URL = os.getenv("IDE_SERVICE_URL", "http://ide_platform_service:8080")
 
@@ -2954,87 +2955,23 @@ Produce the JSON blueprint now:"""
     async def _architect_delegate_to_services(
         self, svc_payload: Dict, headers: Dict[str, str], panel_url: str,
     ) -> Dict[str, Any]:
-        """Primary path: delegate to Builder + Runner microservices."""
-        # Step 1: Classify intent via Builder
-        intent = None
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+        """Primary path: delegate to unified Agent Architect service.
+
+        Single call to /architect/orchestrate — the service handles intent
+        classification, routing, building, running, scheduling internally.
+        """
+        async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
             resp = await client.post(
-                f"{BUILDER_AGENT_URL}/builder/classify-intent",
-                headers=headers, json=svc_payload,
-            )
-            if resp.status_code == 200:
-                intent = resp.json().get("intent", "BUILD")
-                logger.info(f"🏗️ [ARCHITECT] Intent from Builder service: {intent}")
-
-        if not intent:
-            raise RuntimeError("Builder service unreachable for intent classification")
-
-        # Step 2: Route RUN/SCHEDULE → Runner service
-        if intent in ("RUN", "SCHEDULE"):
-            agents_list = []
-            try:
-                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-                    r = await client.get(
-                        f"{AGENT_ENGINE_URL}/agents",
-                        headers=headers, params={"limit": 50},
-                    )
-                    if r.status_code == 200:
-                        data = r.json()
-                        agents_list = data if isinstance(data, list) else data.get("agents", [])
-            except Exception:
-                pass
-
-            runner_payload = {**svc_payload, "agents": agents_list}
-            endpoint = "/runner/orchestrate" if intent == "RUN" else "/runner/orchestrate-schedule"
-
-            async with httpx.AsyncClient(timeout=65.0, follow_redirects=True) as client:
-                resp = await client.post(
-                    f"{RUNNER_AGENT_URL}{endpoint}",
-                    headers=headers, json=runner_payload,
-                )
-                if resp.status_code == 200:
-                    result = resp.json()
-                    result.setdefault("action", "open_agents_panel")
-                    result.setdefault("panel_url", panel_url)
-                    return result
-                raise RuntimeError(f"Runner service returned HTTP {resp.status_code}")
-
-        # Step 3: Everything else → Builder service
-        async with httpx.AsyncClient(timeout=50.0, follow_redirects=True) as client:
-            resp = await client.post(
-                f"{BUILDER_AGENT_URL}/builder/orchestrate",
+                f"{AGENT_ARCHITECT_URL}/architect/orchestrate",
                 headers=headers, json=svc_payload,
             )
             if resp.status_code != 200:
-                raise RuntimeError(f"Builder service returned HTTP {resp.status_code}")
+                raise RuntimeError(f"Agent Architect service returned HTTP {resp.status_code}: {resp.text[:200]}")
 
             result = resp.json()
             result.setdefault("action", "open_agents_panel")
             result.setdefault("panel_url", panel_url)
-
-            # Step 4: After BUILD creates agents → auto-execute via Runner
-            created = result.get("created_agents", [])
-            if result.get("operation") == "build" and created:
-                try:
-                    batch_agents = [
-                        {"id": c.get("id"), "name": c.get("name", "Agent"), "goal": c.get("goal"), "description": c.get("description")}
-                        for c in created if c.get("id")
-                    ]
-                    batch_resp = await client.post(
-                        f"{RUNNER_AGENT_URL}/runner/execute-batch",
-                        headers=headers,
-                        json={"agents": batch_agents, "poll_seconds": 8},
-                    )
-                    if batch_resp.status_code == 200:
-                        batch = batch_resp.json()
-                        if batch.get("summary"):
-                            result["summary"] = result.get("summary", "") + f"\n\n---\n\n{batch['summary']}"
-                        result["execution_results"] = batch.get("results", [])
-                        if batch.get("options"):
-                            result.get("present_options", {})["options"] = batch["options"][:4]
-                except Exception as e:
-                    logger.warning(f"[ARCHITECT] Runner batch-execute failed (non-fatal): {e}")
-
+            logger.info(f"🏗️ [ARCHITECT] Response from service: intent={result.get('intent')}, op={result.get('operation')}")
             return result
 
     async def _architect_inline_fallback(
