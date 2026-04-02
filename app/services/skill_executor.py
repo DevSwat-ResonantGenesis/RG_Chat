@@ -2957,7 +2957,7 @@ Produce the JSON blueprint now:"""
         """Primary path: delegate to Builder + Runner microservices."""
         # Step 1: Classify intent via Builder
         intent = None
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
             resp = await client.post(
                 f"{BUILDER_AGENT_URL}/builder/classify-intent",
                 headers=headers, json=svc_payload,
@@ -2973,7 +2973,7 @@ Produce the JSON blueprint now:"""
         if intent in ("RUN", "SCHEDULE"):
             agents_list = []
             try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
+                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
                     r = await client.get(
                         f"{AGENT_ENGINE_URL}/agents",
                         headers=headers, params={"limit": 50},
@@ -2987,7 +2987,7 @@ Produce the JSON blueprint now:"""
             runner_payload = {**svc_payload, "agents": agents_list}
             endpoint = "/runner/orchestrate" if intent == "RUN" else "/runner/orchestrate-schedule"
 
-            async with httpx.AsyncClient(timeout=65.0) as client:
+            async with httpx.AsyncClient(timeout=65.0, follow_redirects=True) as client:
                 resp = await client.post(
                     f"{RUNNER_AGENT_URL}{endpoint}",
                     headers=headers, json=runner_payload,
@@ -3000,7 +3000,7 @@ Produce the JSON blueprint now:"""
                 raise RuntimeError(f"Runner service returned HTTP {resp.status_code}")
 
         # Step 3: Everything else → Builder service
-        async with httpx.AsyncClient(timeout=50.0) as client:
+        async with httpx.AsyncClient(timeout=50.0, follow_redirects=True) as client:
             resp = await client.post(
                 f"{BUILDER_AGENT_URL}/builder/orchestrate",
                 headers=headers, json=svc_payload,
