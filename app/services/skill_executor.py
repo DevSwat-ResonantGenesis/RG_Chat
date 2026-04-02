@@ -1250,6 +1250,7 @@ class SkillExecutor:
         positives from casual mentions.
         """
         msg = (message or "").lower()
+        print(f"[AGENTS_OS_ACTION] Detecting action for: {msg[:120]!r}", flush=True)
 
         # Multi-agent detection: message describes multiple named agents
         # e.g. "Context Agent: ..., Code Analysis Agent: ..., Content Creation Agent: ..."
@@ -1273,8 +1274,14 @@ class SkillExecutor:
             return "rename_agent"
 
         # ── Delete agent ──
-        if re.search(r"\b(delete|remove|destroy|kill)\s+(?:the\s+|my\s+|this\s+)?(?:agent|agents)\b", msg) or \
-           re.search(r"\bagents?\b.*\b(delete|remove|destroy)\b", msg):
+        # Match: "delete agent X", "delete the agent X", "delete X" (without 'agent'), "remove X agent"
+        _del_match = (
+            re.search(r"\b(delete|remove|destroy|kill)\s+(?:the\s+|my\s+|this\s+)?(?:agent|agents)\b", msg) or
+            re.search(r"\bagents?\b.*\b(delete|remove|destroy)\b", msg) or
+            re.search(r"\b(delete|remove|destroy|kill)\s+(?:the\s+|my\s+)?.{2,60}$", msg)
+        )
+        if _del_match:
+            print(f"[AGENTS_OS_ACTION] ✅ DELETE detected: {_del_match.group()!r}", flush=True)
             return "delete_agent"
 
         # ── Update/edit agent ──
@@ -1316,6 +1323,7 @@ class SkillExecutor:
             "agents list",
         ]) or re.search(r"\b(list|show|open|view)\s+(my\s+|all\s+|the\s+)?agents?\b", msg):
             return "list_agents"
+        print(f"[AGENTS_OS_ACTION] ⚠️ No specific action detected, falling back to open_panel", flush=True)
         return "open_panel"
 
     def _extract_agent_name(self, message: str) -> str:
@@ -1899,6 +1907,7 @@ class SkillExecutor:
         }
 
         logger.info(f"🤖 Agents OS action detected: {action} for message: {message[:80]!r}")
+        print(f"[AGENTS_OS] action={action!r} msg={message[:100]!r}", flush=True)
 
         # Handle team/workflow creation locally (no external API needed)
         if action in ("create_team", "list_teams"):
@@ -1920,7 +1929,9 @@ class SkillExecutor:
                     action_summary = await self._handle_rename_agent(client, message, headers, user_id)
 
                 elif action == "delete_agent":
+                    print(f"[AGENTS_OS] Routing to _handle_delete_agent", flush=True)
                     action_summary = await self._handle_delete_agent(client, message, headers, user_id)
+                    print(f"[AGENTS_OS] Delete result: {action_summary[:200]!r}", flush=True)
 
                 elif action == "update_agent":
                     action_summary = await self._handle_update_agent(client, message, headers, user_id)
@@ -1997,33 +2008,42 @@ class SkillExecutor:
     ) -> Optional[Dict[str, Any]]:
         """Find an agent by name (fuzzy match) from the user's agent list."""
         try:
+            print(f"[FIND_AGENT] Looking for {name_query!r} at {AGENT_ENGINE_URL}/agents/", flush=True)
             resp = await client.get(
                 f"{AGENT_ENGINE_URL}/agents/",
                 headers=headers,
                 params={"limit": 50},
             )
+            print(f"[FIND_AGENT] API status={resp.status_code}", flush=True)
             resp.raise_for_status()
             payload = resp.json()
             agents_list = payload if isinstance(payload, list) else (
                 payload.get("agents") or payload.get("items") or payload.get("data") or []
             )
+            agent_names = [a.get("name", "?") for a in agents_list if isinstance(a, dict)]
+            print(f"[FIND_AGENT] Found {len(agents_list)} agents: {agent_names[:10]}", flush=True)
             query_lower = name_query.lower().strip()
             # Exact match first
             for ag in agents_list:
                 if isinstance(ag, dict) and (ag.get("name") or "").lower() == query_lower:
+                    print(f"[FIND_AGENT] ✅ Exact match: {ag.get('name')!r}", flush=True)
                     return ag
             # Partial match
             for ag in agents_list:
                 if isinstance(ag, dict) and query_lower in (ag.get("name") or "").lower():
+                    print(f"[FIND_AGENT] ✅ Partial match: {ag.get('name')!r} contains {query_lower!r}", flush=True)
                     return ag
+            print(f"[FIND_AGENT] ❌ No match for {query_lower!r} in {agent_names}", flush=True)
             return None
         except Exception as e:
+            print(f"[FIND_AGENT] ❌ Exception: {e}", flush=True)
             logger.warning(f"Failed to find agent by name '{name_query}': {e}")
             return None
 
     def _extract_agent_name_from_action(self, message: str, action_verb: str) -> str:
         """Extract the target agent name from an action message like 'rename agent X to Y'."""
         msg = (message or "").strip()
+        print(f"[EXTRACT_NAME] msg={msg[:120]!r} verb={action_verb!r}", flush=True)
         # Try patterns like: rename agent "X" / rename "X" agent / delete agent named X
         # Also handle: "delete X" / "remove X" / "delete the X agent"
         patterns = [
@@ -2033,14 +2053,16 @@ class SkillExecutor:
             # Direct: "delete Tech News Compiler" without "agent" keyword
             rf'{action_verb}\s+([A-Za-z0-9][A-Za-z0-9 _\-]{{2,60}})(?:\s+agent)?(?:\s*$|,)',
         ]
-        for p in patterns:
+        for i, p in enumerate(patterns):
             m = re.search(p, msg, re.IGNORECASE)
             if m:
                 name = m.group(1).strip()
-                # Clean up trailing words
                 name = re.sub(r'\s+(?:agent|now|please|for me)$', '', name, flags=re.IGNORECASE).strip()
                 if name:
+                    print(f"[EXTRACT_NAME] ✅ Pattern {i} matched: {name!r}", flush=True)
                     return name
+                print(f"[EXTRACT_NAME] Pattern {i} matched but name empty after cleanup", flush=True)
+        print(f"[EXTRACT_NAME] ❌ No pattern matched for msg={msg[:80]!r}", flush=True)
         return ""
 
     async def _handle_rename_agent(
@@ -2091,24 +2113,32 @@ class SkillExecutor:
         self, client: httpx.AsyncClient, message: str, headers: Dict[str, str], user_id: str
     ) -> str:
         """Handle deleting an agent via Agent Engine API."""
+        print(f"[DELETE] Starting delete for message: {message[:120]!r}", flush=True)
         agent_name = self._extract_agent_name_from_action(message, "delete|remove|destroy")
+        print(f"[DELETE] Extracted agent name: {agent_name!r}", flush=True)
         if not agent_name:
+            print(f"[DELETE] ❌ FAILED: Could not extract agent name from message", flush=True)
             return "❌ Could not determine which agent to delete. Use: **delete agent [name]**"
 
         agent = await self._find_agent_by_name(client, agent_name, headers, user_id)
+        print(f"[DELETE] Agent lookup result: {agent.get('name') if agent else 'NOT FOUND'} (id={agent.get('id') if agent else 'N/A'})", flush=True)
         if not agent:
+            print(f"[DELETE] ❌ FAILED: No agent found matching {agent_name!r}", flush=True)
             return f"❌ Could not find an agent named **{agent_name}**."
 
         agent_id = agent.get("id")
         try:
+            print(f"[DELETE] Calling DELETE {AGENT_ENGINE_URL}/agents/{agent_id}", flush=True)
             resp = await client.delete(
                 f"{AGENT_ENGINE_URL}/agents/{agent_id}",
                 headers=headers,
             )
+            print(f"[DELETE] API response: status={resp.status_code} body={resp.text[:200]!r}", flush=True)
             resp.raise_for_status()
             logger.info(f"🗑️ Deleted agent: {agent_name} ({agent_id})")
             return f"🗑️ **Agent deleted:** {agent_name} (ID: `{agent_id}`)"
         except Exception as e:
+            print(f"[DELETE] ❌ API EXCEPTION: {e}", flush=True)
             logger.error(f"Failed to delete agent {agent_id}: {e}")
             return f"❌ Failed to delete agent: {e}"
 
