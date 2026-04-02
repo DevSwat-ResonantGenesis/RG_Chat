@@ -2025,15 +2025,22 @@ class SkillExecutor:
         """Extract the target agent name from an action message like 'rename agent X to Y'."""
         msg = (message or "").strip()
         # Try patterns like: rename agent "X" / rename "X" agent / delete agent named X
+        # Also handle: "delete X" / "remove X" / "delete the X agent"
         patterns = [
             rf'{action_verb}\s+(?:the\s+|my\s+)?(?:agent\s+)?["\']([^"\']+)["\']',
             rf'{action_verb}\s+(?:the\s+|my\s+)?(?:agent\s+)?(?:named?\s+|called?\s+)?([A-Za-z0-9][A-Za-z0-9 _\-]{{2,50}}?)(?:\s+(?:to|agent|$))',
-            rf'(?:agent\s+)["\']?([^"\']+?)["\']?\s*(?:$|to\s|from\s)',
+            rf'(?:agent\s+)?["\']?([^"\']+?)["\']?\s*(?:$|to\s|from\s)',
+            # Direct: "delete Tech News Compiler" without "agent" keyword
+            rf'{action_verb}\s+([A-Za-z0-9][A-Za-z0-9 _\-]{{2,60}})(?:\s+agent)?(?:\s*$|,)',
         ]
         for p in patterns:
             m = re.search(p, msg, re.IGNORECASE)
             if m:
-                return m.group(1).strip()
+                name = m.group(1).strip()
+                # Clean up trailing words
+                name = re.sub(r'\s+(?:agent|now|please|for me)$', '', name, flags=re.IGNORECASE).strip()
+                if name:
+                    return name
         return ""
 
     async def _handle_rename_agent(
