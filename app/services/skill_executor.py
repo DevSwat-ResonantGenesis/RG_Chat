@@ -2931,7 +2931,7 @@ Produce the JSON blueprint now:"""
             "message": message,
             "user_id": user_id,
             "context": {
-                "messages": context.get("messages") or context.get("conversation_history") or [],
+                "messages": context.get("messages") or context.get("previousMessages") or context.get("conversation_history") or [],
                 "user_role": context.get("user_role", "user"),
                 "is_superuser": context.get("is_superuser", False),
                 "unlimited_credits": context.get("unlimited_credits", False),
