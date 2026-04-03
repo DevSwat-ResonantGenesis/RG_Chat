@@ -1896,15 +1896,14 @@ class SkillExecutor:
     async def _execute_agents_os(
         self, message: str, user_id: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Open Agents OS and perform real agent operations when requested."""
+        """Open Agents OS — delegates ALL operations to Agent Architect ReAct loop.
+
+        The architect uses LLM function-calling to decide what to do:
+        list, delete, create, run, modify, schedule, diagnose — all handled
+        by the LLM picking the right tool. No more fragile regex routing.
+        """
         panel_url = "/agents?embed=1"
         action = self._detect_agents_os_action(message)
-        headers = {
-            "x-user-id": user_id,
-            "x-user-role": str(context.get("user_role", "user")),
-            "x-is-superuser": "true" if bool(context.get("is_superuser", False)) else "false",
-            "x-unlimited-credits": "true" if bool(context.get("unlimited_credits", False)) else "false",
-        }
 
         logger.info(f"🤖 Agents OS action detected: {action} for message: {message[:80]!r}")
         print(f"[AGENTS_OS] action={action!r} msg={message[:100]!r}", flush=True)
@@ -1913,34 +1912,35 @@ class SkillExecutor:
         if action in ("create_team", "list_teams"):
             return await self._handle_team_action(action, message, user_id)
 
-        # ── Delegate ALL creation to Agent Architect (two-phase flow) ──
-        # The architect provides: plan preview → user confirms → intelligent build
-        # This replaces the old crude single-shot create that had bad UX.
-        if action in ("create_agent", "create_agents"):
-            logger.info(f"🤖 Agents OS delegating creation to Agent Architect for: {message[:80]!r}")
+        # ── Delegate ALL agent operations to Agent Architect ReAct loop ──
+        # The architect's LLM decides: delete_agent, create_agent, run_agent, etc.
+        # No more local regex-based handlers for individual operations.
+        if action in ("create_agent", "create_agents", "delete_agent", "rename_agent",
+                       "update_agent", "start_agent", "stop_agent", "list_agents"):
+            logger.info(f"🤖 Agents OS delegating to Agent Architect ReAct loop: action={action}")
+            print(f"[AGENTS_OS] Delegating {action} to architect ReAct loop", flush=True)
             return await self._execute_agent_architect(message, user_id, context)
+
+        # open_panel fallback: also try architect for intelligence
+        if action == "open_panel":
+            logger.info(f"🤖 Agents OS open_panel — trying architect for: {message[:80]!r}")
+            print(f"[AGENTS_OS] open_panel — trying architect", flush=True)
+            architect_result = await self._execute_agent_architect(message, user_id, context)
+            if architect_result and architect_result.get("success"):
+                return architect_result
+
+        # Legacy fallback: fetch agent list and show panel
+        headers = {
+            "x-user-id": user_id,
+            "x-user-role": str(context.get("user_role", "user")),
+            "x-is-superuser": "true" if bool(context.get("is_superuser", False)) else "false",
+            "x-unlimited-credits": "true" if bool(context.get("unlimited_credits", False)) else "false",
+        }
 
         try:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 created_agents: List[Dict[str, Any]] = []
                 action_summary = ""
-
-                if action == "rename_agent":
-                    action_summary = await self._handle_rename_agent(client, message, headers, user_id)
-
-                elif action == "delete_agent":
-                    print(f"[AGENTS_OS] Routing to _handle_delete_agent", flush=True)
-                    action_summary = await self._handle_delete_agent(client, message, headers, user_id)
-                    print(f"[AGENTS_OS] Delete result: {action_summary[:200]!r}", flush=True)
-
-                elif action == "update_agent":
-                    action_summary = await self._handle_update_agent(client, message, headers, user_id)
-
-                elif action == "start_agent":
-                    action_summary = await self._handle_start_stop_agent(client, message, headers, user_id, start=True)
-
-                elif action == "stop_agent":
-                    action_summary = await self._handle_start_stop_agent(client, message, headers, user_id, start=False)
 
                 # Always fetch current agent list
                 resp = await client.get(
