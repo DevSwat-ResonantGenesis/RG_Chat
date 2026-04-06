@@ -46,7 +46,7 @@ except ImportError:
 from ..db import get_session
 from ..models import ResonantChat, ResonantChatMessage
 from ..domain.provider import route_query
-from ..domain.agent import maybe_run_debate, maybe_spawn_agent
+# fake agent facade deleted — all responses now go through direct LLM call
 from ..services.resonance_hashing import ResonanceHasher
 from ..services.rag_engine import rag_engine
 from ..services.memory_merge import merge_and_rank_memories
@@ -68,11 +68,7 @@ from ..services.autonomous_error_correction import error_correction
 from ..services.causal_reasoning import causal_reasoner
 from ..services.neural_gravity_engine import neural_gravity_engine
 from ..services.user_api_keys import user_api_key_service
-# New Autonomous Services (L3-L5)
-from ..services.agent_router import agent_router, route_message, RoutingDecision
 from ..services.response_cache import response_cache, get_cached_response, cache_response
-from ..services.self_improving_agent import self_improving_agent, FeedbackType
-from ..services.autonomous_planner import autonomous_planner, create_task_plan
 # DSID-P Integration (HSU-Spec Layer 1-2)
 from ..services.dsid_integration import dsid_integration, create_message_dsid, MessageDSID
 # Web Search & Image Generation (optional - requires rebuild)
@@ -1467,37 +1463,7 @@ async def send_message(
     user_api_keys = await _get_user_api_keys(session, user_id)
     logger.info(f"🔑 User API keys retrieved: {list(user_api_keys.keys()) if user_api_keys else 'None'}")
     
-    # ============================================
-    # STEP 7.5: AUTONOMOUS AGENT ROUTING (L3 Autonomy)
-    # ============================================
-    # Use Agent Router to automatically select best agent/team
-    routing_decision = None
-    try:
-        context_for_routing = [{"content": m.content, "role": m.role} for m in recent_messages[:-1]]
-        routing_decision = route_message(
-            message=safe_user_message,
-            context=context_for_routing,
-            preferred_agent=request_body.agent_hash
-        )
-        logger.info(f"🎯 Agent Router: decision={routing_decision.decision.value}, "
-                   f"agent={routing_decision.primary_agent}, "
-                   f"confidence={routing_decision.confidence:.2f}")
-        
-        # Add routing-based prompt adjustments from Self-Improving Agent (L4)
-        if routing_decision.primary_agent:
-            prompt_adjustments = self_improving_agent.get_prompt_adjustments(
-                routing_decision.primary_agent, 
-                safe_user_message
-            )
-            if prompt_adjustments:
-                adjustment_prompt = {
-                    "role": "system",
-                    "content": "LEARNING-BASED ADJUSTMENTS:\n" + "\n".join(prompt_adjustments)
-                }
-                context_messages.append(adjustment_prompt)
-                logger.info(f"🧠 Added {len(prompt_adjustments)} learning-based prompt adjustments")
-    except Exception as e:
-        logger.warning(f"Agent routing failed: {e}")
+    # Fake agent routing removed — was in-memory fake "autonomous" routing
     
     # ============================================
     # STEP 7.6: CHECK RESPONSE CACHE
@@ -1930,146 +1896,14 @@ async def send_message(
         })
         logger.info("🛡️ HALLUCINATION GUARD: Agent creation question detected but no agents_os tool ran; injected accuracy prompt.")
 
-    # Try team workflow first (Phase 1: Internal Teams)
-    team_used = False
-    team_name = None
-    forced_agent_type = None
-    allowed_forced_agents = {
-        "reasoning",
-        "code",
-        "debug",
-        "research",
-        "summary",
-        "planning",
-        "math",
-        "security",
-        "architecture",
-        "test",
-        "review",
-        "explain",
-        "optimization",
-        "documentation",
-        "migration",
-        "api",
-        "database",
-        "devops",
-        "refactor",
-        "accessibility",
-        "i18n",
-        "regex",
-        "git",
-        "css",
-    }
-    if request_body.agent_hash and request_body.agent_hash in allowed_forced_agents:
-        forced_agent_type = request_body.agent_hash
-
-    if not execute_mode and not response_text and not forced_agent_type:
-        try:
-            from ..domain.agent import maybe_run_team
-            team_response, team_name, team_used = await maybe_run_team(
-                message=message_with_images,
-                context_messages=context_messages,
-                preferred_provider=request_body.preferred_provider,
-                user_id=user_id,
-                user_api_keys=user_api_keys,
-                images=request_body.images,
-            )
-            if team_used and team_response:
-                response_text = team_response
-                provider = f"team_{team_name.lower().replace(' ', '_')}" if team_name else "team"
-                logger.info(f"👥 Used team: {team_name}")
-        except Exception as e:
-            logger.warning(f"Team engine failed: {e}")
-    
-    # Try multi-agent debate if no team (Patch #41) - skip in execute mode for speed
-    if not response_text and not execute_mode and not forced_agent_type:
-        try:
-            debate_response, debate_used = await maybe_run_debate(
-                message=message_with_images,
-                context_messages=context_messages,
-                preferred_provider=request_body.preferred_provider,
-                user_api_keys=user_api_keys,
-                images=request_body.images,
-            )
-            if debate_used and debate_response:
-                response_text = debate_response
-                provider = "debate_engine"
-                logger.info("🧠 Used multi-agent debate")
-        except Exception as e:
-            logger.warning(f"Debate engine failed: {e}")
-    
-    # Try agent spawn if no debate/team (Patch #40)
+    # ============================================
+    # STEP 9: LLM Response (Direct — fake agent layers removed)
+    # ============================================
     actual_llm_provider = None
-    agent_type = None
-    router_metadata = None  # model, fallback_chain, was_fallback, usage
+    router_metadata = None
     if not response_text:
-        logger.info(f"🔍 Attempting agent spawn with preferred_provider={request_body.preferred_provider}...")
-        logger.info(f"🔍 Context has {len(context_messages)} messages before agent spawn")
+        logger.info(f"🔍 Calling LLM with preferred_provider={request_body.preferred_provider}, {len(context_messages)} context msgs")
         try:
-            agent_response, agent_type, actual_llm_provider, router_metadata = await maybe_spawn_agent(
-                message=message_with_images,
-                context_messages=context_messages,
-                user_id=user_id,
-                user_api_keys=user_api_keys,
-                preferred_provider=request_body.preferred_provider,
-                forced_agent_type=forced_agent_type,
-                images=request_body.images,
-            )
-            logger.info(f"🔍 Agent spawn returned: agent_type={agent_type}, provider={actual_llm_provider}, model={router_metadata.get('model') if router_metadata else None}, has_response={bool(agent_response)}")
-            if router_metadata and router_metadata.get("was_fallback"):
-                logger.info(f"⚠️ FALLBACK occurred: chain={router_metadata.get('fallback_chain')}")
-            if agent_type and agent_response:
-                response_text = agent_response
-                provider = f"agent_{agent_type}"
-                logger.info(f"🤖 Used agent: {agent_type} via {actual_llm_provider}")
-            else:
-                logger.info(f"🔍 Agent spawn returned None/empty, will try fallback")
-        except Exception as e:
-            logger.warning(f"Agent spawn failed: {e}")
-    
-    # ============================================
-    # STEP 9: FORCE Agent Response (Direct LLM blocked for quality)
-    # ============================================
-    # NOTE: Direct LLM calls are blocked. All responses must go through agents.
-    # The agent_engine.should_spawn_agent() now ALWAYS returns an agent type.
-    # This fallback only triggers if agent spawn completely failed.
-    if not response_text:
-        logger.info(f"⚠️ Agent/Debate failed, forcing reasoning agent as fallback")
-        
-        # Force reasoning agent instead of direct LLM
-        try:
-            from ..services.agent_engine import agent_engine
-            from ..domain.provider import get_router_for_internal_use
-            
-            router = get_router_for_internal_use()
-            if user_api_keys:
-                router.set_user_api_keys(user_api_keys)
-            agent_engine.set_router(router)
-            
-            result = await agent_engine.spawn(
-                task=message_with_images,
-                context=context_messages,
-                agent_type="reasoning",  # Always use reasoning as final fallback
-                model=request_body.preferred_provider,
-                images=request_body.images,
-            )
-            response_text = result.get("content", "")
-            actual_llm_provider = result.get("provider", None)
-            provider = "agent_reasoning"
-            agent_type = "reasoning"
-            # Capture router_metadata from forced spawn too
-            router_metadata = {
-                "model": result.get("model"),
-                "fallback_chain": result.get("fallback_chain"),
-                "was_fallback": result.get("was_fallback", False),
-                "preferred_provider": result.get("preferred_provider"),
-                "usage": result.get("usage"),
-            }
-            logger.info(f"🤖 Forced reasoning agent response via {actual_llm_provider}, model={router_metadata.get('model')}")
-            logger.info(f"🔍 Fallback result: provider={actual_llm_provider}, content_length={len(response_text) if response_text else 0}")
-        except Exception as e:
-            logger.error(f"Forced agent also failed: {e}")
-            # Only as absolute last resort, use direct LLM
             ai_response = await route_query(
                 message=message_with_images,
                 context=context_messages,
@@ -2079,7 +1913,7 @@ async def send_message(
             )
             response_text = ai_response.get("response", "")
             provider = ai_response.get("provider", "unknown")
-            # Capture router_metadata from direct route_query fallback
+            actual_llm_provider = provider
             direct_meta = ai_response.get("metadata", {})
             router_metadata = {
                 "model": direct_meta.get("model"),
@@ -2088,6 +1922,9 @@ async def send_message(
                 "preferred_provider": direct_meta.get("preferred_provider"),
                 "usage": direct_meta.get("usage"),
             }
+            logger.info(f"✅ LLM response: provider={provider}, model={router_metadata.get('model')}, {len(response_text)} chars")
+        except Exception as e:
+            logger.error(f"LLM call failed: {e}")
     
     is_error = response_text.startswith("Error calling") if response_text else True
     
@@ -2301,21 +2138,7 @@ async def send_message(
         except Exception as e:
             logger.warning(f"Response caching failed: {e}")
     
-    # Record interaction for Self-Improving Agent learning
-    if routing_decision and routing_decision.primary_agent:
-        try:
-            await self_improving_agent.record_feedback(
-                agent_id=routing_decision.primary_agent,
-                message=safe_user_message,
-                response=response_text,
-                feedback_type=FeedbackType.AUTO_SUCCESS,
-                metadata={
-                    "resonance_score": resonance_score
-                }
-            )
-            logger.info(f"📝 Recorded interaction for agent learning")
-        except Exception as e:
-            logger.warning(f"Learning record failed: {e}")
+    # Fake self-improving agent learning removed — was in-memory only
     
     # ============================================
     # STEP 11: Queue Background Tasks (Fire-and-forget) - PRODUCTION READY
@@ -4734,21 +4557,8 @@ async def get_resonance_clusters(
 
 @router.get("/teams")
 async def list_available_teams():
-    """List all available internal teams."""
-    try:
-        from ..domain.agent import get_team_list
-        teams = get_team_list()
-        return {
-            "status": "ok",
-            "teams": teams,
-        }
-    except Exception as e:
-        logger.error(f"Failed to list teams: {e}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "teams": [],
-        }
+    """List all available internal teams. (Fake team engine removed.)"""
+    return {"status": "ok", "teams": []}
 
 
 @router.get("/agents/list")
@@ -4907,94 +4717,12 @@ async def get_feedback_statistics(
         }
     except Exception as e:
         logger.error(f"Failed to get feedback stats: {e}")
-        # Fall back to in-memory stats
-        from ..domain.agent import get_feedback_stats
-        stats = get_feedback_stats()
-        return {"status": "ok", "data": stats}
+        return {"status": "error", "error": str(e), "data": {"all_stats": {}, "best_agents": [], "needs_improvement": []}}
 
 
-@router.get("/chains")
-async def list_agent_chains(user_id: Optional[str] = None):
-    """List available agent chains/pipelines."""
-    try:
-        from ..domain.agent import get_chain_list
-        chains = get_chain_list(user_id)
-        return {"status": "ok", "chains": chains}
-    except Exception as e:
-        logger.error(f"Failed to list chains: {e}")
-        return {"status": "error", "error": str(e)}
-
-
-class CreateChainRequest(BaseModel):
-    name: str
-    description: str
-    steps: List[Dict[str, Any]]
-
-
-@router.post("/chains")
-async def create_agent_chain(
-    request: Request,
-    body: CreateChainRequest,
-):
-    """Create a custom agent chain."""
-    try:
-        from ..domain.agent import create_chain
-        user_id = request.state.user_id if hasattr(request.state, 'user_id') else "anonymous"
-        
-        result = create_chain(
-            user_id=user_id,
-            name=body.name,
-            description=body.description,
-            steps=body.steps,
-        )
-        return {"status": "ok", "chain": result}
-    except Exception as e:
-        logger.error(f"Failed to create chain: {e}")
-        return {"status": "error", "error": str(e)}
-
-
-class ExecuteChainRequest(BaseModel):
-    chain_id: str
-    task: str
-    context: List[Dict[str, Any]] = []
-
-
-@router.post("/chains/execute")
-async def execute_agent_chain(body: ExecuteChainRequest):
-    """Execute an agent chain."""
-    try:
-        from ..domain.agent import run_chain
-        result = await run_chain(
-            chain_id=body.chain_id,
-            task=body.task,
-            context_messages=body.context,
-        )
-        return {"status": "ok", "data": result}
-    except Exception as e:
-        logger.error(f"Chain execution failed: {e}")
-        return {"status": "error", "error": str(e)}
-
-
-class ExecuteCodeRequest(BaseModel):
-    code: str
-    language: Optional[str] = None
-    test_input: str = ""
-
-
-@router.post("/sandbox/execute")
-async def execute_code_sandbox(body: ExecuteCodeRequest):
-    """Execute code in sandbox environment."""
-    try:
-        from ..domain.agent import execute_code
-        result = await execute_code(
-            code=body.code,
-            language=body.language,
-            test_input=body.test_input,
-        )
-        return {"status": "ok", "data": result}
-    except Exception as e:
-        logger.error(f"Code execution failed: {e}")
-        return {"status": "error", "error": str(e)}
+    # Fake Phase 5 endpoints removed: /chains, /chains/execute, /sandbox/execute,
+    # /analyze/confidence, /analyze/citations, /validate, /voting
+    # — all depended on deleted in-memory fake agent services.
 
 
 class AnalyzeRequest(BaseModel):
@@ -5003,87 +4731,15 @@ class AnalyzeRequest(BaseModel):
     agent_type: str = ""
 
 
-@router.post("/analyze/confidence")
-async def analyze_response_confidence(body: AnalyzeRequest):
-    """Analyze confidence level of a response."""
-    try:
-        from ..domain.agent import analyze_confidence
-        result = analyze_confidence(body.response, body.task)
-        return {"status": "ok", "data": result}
-    except Exception as e:
-        logger.error(f"Confidence analysis failed: {e}")
-        return {"status": "error", "error": str(e)}
-
-
 @router.post("/analyze/hallucinations")
 async def analyze_hallucinations(body: AnalyzeRequest):
     """Detect potential hallucinations in a response."""
     try:
-        from ..domain.agent import detect_hallucinations
-        result = detect_hallucinations(body.response, body.task)
+        from ..services.hallucination_detector import hallucination_detector
+        result = hallucination_detector.detect(body.response, body.task)
         return {"status": "ok", "data": result}
     except Exception as e:
         logger.error(f"Hallucination detection failed: {e}")
-        return {"status": "error", "error": str(e)}
-
-
-@router.post("/analyze/citations")
-async def add_response_citations(body: AnalyzeRequest):
-    """Add citations to a response."""
-    try:
-        from ..domain.agent import add_citations
-        result = add_citations(body.response, body.task, body.agent_type)
-        return {"status": "ok", "data": result}
-    except Exception as e:
-        logger.error(f"Citation addition failed: {e}")
-        return {"status": "error", "error": str(e)}
-
-
-class ValidateRequest(BaseModel):
-    response: str
-    task: str
-    agent_type: str
-    context: List[Dict[str, Any]] = []
-
-
-@router.post("/validate")
-async def cross_validate_response(body: ValidateRequest):
-    """Cross-validate an agent response with another agent."""
-    try:
-        from ..domain.agent import validate_response
-        result = await validate_response(
-            response=body.response,
-            task=body.task,
-            agent_type=body.agent_type,
-            context_messages=body.context,
-        )
-        return {"status": "ok", "data": result}
-    except Exception as e:
-        logger.error(f"Cross-validation failed: {e}")
-        return {"status": "error", "error": str(e)}
-
-
-class VotingRequest(BaseModel):
-    task: str
-    context: List[Dict[str, Any]] = []
-    candidate_agents: Optional[List[str]] = None
-    voter_agents: Optional[List[str]] = None
-
-
-@router.post("/voting")
-async def run_agent_voting(body: VotingRequest):
-    """Run agent voting on a task."""
-    try:
-        from ..domain.agent import run_voting
-        result = await run_voting(
-            task=body.task,
-            context_messages=body.context,
-            candidate_agents=body.candidate_agents,
-            voter_agents=body.voter_agents,
-        )
-        return {"status": "ok", "data": result}
-    except Exception as e:
-        logger.error(f"Voting failed: {e}")
         return {"status": "error", "error": str(e)}
 
 
@@ -5176,16 +4832,8 @@ async def get_or_create_project_context(
     request: Request,
     body: ProjectContextRequest,
 ):
-    """Get or create project context for persistent memory."""
-    try:
-        from ..domain.agent import get_project_context
-        user_id = request.state.user_id if hasattr(request.state, 'user_id') else "anonymous"
-        
-        result = get_project_context(user_id, body.project_name)
-        return {"status": "ok", "data": result}
-    except Exception as e:
-        logger.error(f"Project context failed: {e}")
-        return {"status": "error", "error": str(e)}
+    """Get or create project context for persistent memory. (Fake context_persistence removed.)"""
+    return {"status": "ok", "data": {"project_name": body.project_name, "context": {}}}
 
 
 @router.get("/agents/list")
@@ -5315,87 +4963,17 @@ async def execute_code(request: Request):
         return {"error": str(e)}
 
 
-# ============================================
-# AUTONOMOUS SERVICES ENDPOINTS (L3-L5)
-# ============================================
-
-@router.get("/autonomous/stats")
-async def get_autonomous_stats(request: Request):
-    """
-    Get statistics for all autonomous services.
-    Returns routing stats, cache stats, learning stats, and planning stats.
-    """
-    try:
-        return {
-            "status": "ok",
-            "routing": agent_router.get_routing_stats(),
-            "cache": response_cache.get_stats(),
-            "learning": self_improving_agent.get_all_stats(),
-            "planning": autonomous_planner.get_planning_stats()
-        }
-    except Exception as e:
-        logger.error(f"Autonomous stats error: {e}")
-        return {"error": str(e)}
-
-
-@router.get("/autonomous/routing/stats")
-async def get_routing_stats(request: Request):
-    """Get Agent Router statistics."""
-    try:
-        return {
-            "status": "ok",
-            "stats": agent_router.get_routing_stats()
-        }
-    except Exception as e:
-        logger.error(f"Routing stats error: {e}")
-        return {"error": str(e)}
-
-
-@router.post("/autonomous/routing/test")
-async def test_routing(request: Request):
-    """
-    Test agent routing for a message without executing.
-    Returns the routing decision (intent, complexity, recommended agent/team).
-    """
-    try:
-        body = await request.json()
-        message = body.get("message", "")
-        context = body.get("context", [])
-        
-        if not message:
-            return {"error": "Message is required"}
-        
-        decision = route_message(message, context)
-        
-        return {
-            "status": "ok",
-            "decision": {
-                "intent": decision.intent.value,
-                "complexity": decision.complexity.value,
-                "confidence": decision.confidence,
-                "recommended_agent": decision.recommended_agent,
-                "recommended_team": decision.recommended_team,
-                "reasoning": decision.reasoning,
-                "metadata": decision.metadata
-            }
-        }
-    except Exception as e:
-        logger.error(f"Routing test error: {e}")
-        return {"error": str(e)}
-
+# Fake autonomous services endpoints (agent_router, self_improving_agent,
+# autonomous_planner) removed — were in-memory Python dicts, not real agents.
+# Response cache stats kept:
 
 @router.get("/autonomous/cache/stats")
 async def get_cache_stats(request: Request):
     """Get Response Cache statistics."""
     try:
-        return {
-            "status": "ok",
-            "stats": response_cache.get_stats()
-        }
+        return {"status": "ok", "stats": response_cache.get_stats()}
     except Exception as e:
-        logger.error(f"Cache stats error: {e}")
         return {"error": str(e)}
-
 
 @router.post("/autonomous/cache/clear")
 async def clear_cache(request: Request):
@@ -5404,153 +4982,6 @@ async def clear_cache(request: Request):
         response_cache.clear()
         return {"status": "ok", "message": "Cache cleared"}
     except Exception as e:
-        logger.error(f"Cache clear error: {e}")
-        return {"error": str(e)}
-
-
-@router.get("/autonomous/learning/stats")
-async def get_learning_stats(request: Request):
-    """Get Self-Improving Agent learning statistics."""
-    try:
-        return {
-            "status": "ok",
-            "stats": self_improving_agent.get_all_stats()
-        }
-    except Exception as e:
-        logger.error(f"Learning stats error: {e}")
-        return {"error": str(e)}
-
-
-@router.get("/autonomous/learning/agent/{agent_id}")
-async def get_agent_learning_stats(agent_id: str, request: Request):
-    """Get learning statistics for a specific agent."""
-    try:
-        return {
-            "status": "ok",
-            "stats": self_improving_agent.get_agent_stats(agent_id)
-        }
-    except Exception as e:
-        logger.error(f"Agent learning stats error: {e}")
-        return {"error": str(e)}
-
-
-@router.get("/autonomous/learning/agent/{agent_id}/suggestions")
-async def get_agent_improvement_suggestions(agent_id: str, request: Request):
-    """Get improvement suggestions for a specific agent."""
-    try:
-        suggestions = self_improving_agent.get_improvement_suggestions(agent_id)
-        return {
-            "status": "ok",
-            "agent_id": agent_id,
-            "suggestions": suggestions
-        }
-    except Exception as e:
-        logger.error(f"Agent suggestions error: {e}")
-        return {"error": str(e)}
-
-
-@router.post("/autonomous/feedback")
-async def record_feedback(request: Request):
-    """
-    Record user feedback for agent learning.
-    Feedback types: thumbs_up, thumbs_down, regenerate, edit, copy, apply_code
-    """
-    try:
-        body = await request.json()
-        agent_id = body.get("agent_id", "default")
-        message = body.get("message", "")
-        response = body.get("response", "")
-        feedback_type = body.get("feedback_type", "thumbs_up")
-        value = body.get("value")
-        
-        # Map string to FeedbackType enum
-        feedback_map = {
-            "thumbs_up": FeedbackType.THUMBS_UP,
-            "thumbs_down": FeedbackType.THUMBS_DOWN,
-            "regenerate": FeedbackType.REGENERATE,
-            "edit": FeedbackType.EDIT,
-            "copy": FeedbackType.COPY,
-            "apply_code": FeedbackType.APPLY_CODE,
-            "quality_score": FeedbackType.QUALITY_SCORE
-        }
-        
-        ft = feedback_map.get(feedback_type, FeedbackType.THUMBS_UP)
-        
-        await self_improving_agent.record_feedback(
-            agent_id=agent_id,
-            message=message,
-            response=response,
-            feedback_type=ft,
-            value=value
-        )
-        
-        return {"status": "ok", "message": "Feedback recorded"}
-    except Exception as e:
-        logger.error(f"Feedback recording error: {e}")
-        return {"error": str(e)}
-
-
-@router.get("/autonomous/planning/stats")
-async def get_planning_stats(request: Request):
-    """Get Autonomous Planner statistics."""
-    try:
-        return {
-            "status": "ok",
-            "stats": autonomous_planner.get_planning_stats()
-        }
-    except Exception as e:
-        logger.error(f"Planning stats error: {e}")
-        return {"error": str(e)}
-
-
-@router.post("/autonomous/planning/create")
-async def create_plan(request: Request):
-    """
-    Create an execution plan for a goal.
-    Returns the plan with decomposed steps.
-    """
-    try:
-        body = await request.json()
-        goal = body.get("goal", "")
-        
-        if not goal:
-            return {"error": "Goal is required"}
-        
-        plan = autonomous_planner.create_plan(goal)
-        
-        return {
-            "status": "ok",
-            "plan": {
-                "id": plan.id,
-                "goal": plan.goal,
-                "status": plan.status.value,
-                "steps": [
-                    {
-                        "id": s.id,
-                        "description": s.description,
-                        "action_type": s.action_type,
-                        "status": s.status.value,
-                        "dependencies": s.dependencies
-                    }
-                    for s in plan.steps
-                ]
-            }
-        }
-    except Exception as e:
-        logger.error(f"Plan creation error: {e}")
-        return {"error": str(e)}
-
-
-@router.get("/autonomous/planning/{plan_id}")
-async def get_plan_status_endpoint(plan_id: str, request: Request):
-    """Get status of a specific plan."""
-    try:
-        status = autonomous_planner.get_plan_status(plan_id)
-        if not status:
-            return {"error": "Plan not found"}
-        return {"status": "ok", "plan": status}
-    except Exception as e:
-        logger.error(f"Plan status error: {e}")
         return {"error": str(e)}
 
 
@@ -5728,49 +5159,23 @@ async def get_agent_stats(
         raise HTTPException(status_code=401, detail="User ID required")
     
     try:
-        from ..services.agent_metrics import agent_metrics as metrics_collector
-        from ..services.agent_memory import agent_memory_store
         from ..services.user_feedback import user_feedback
-        
-        # Get real metrics from the metrics collector
-        all_stats = metrics_collector.get_all_stats()
-        
-        # Format metrics for frontend
-        metrics = {}
-        for agent_type, stats in all_stats.items():
-            if stats:
-                metrics[agent_type] = {
-                    "agent_type": agent_type,
-                    "total_executions": stats.total_executions,
-                    "successful_executions": stats.successful_executions,
-                    "failed_executions": stats.failed_executions,
-                    "success_rate": stats.success_rate,
-                    "avg_execution_time_ms": stats.avg_execution_time_ms,
-                    "avg_quality_score": stats.avg_quality_score,
-                }
-        
-        # Get top agents by success rate
-        top_agents = metrics_collector.get_top_agents(metric="success_rate", limit=5)
-        
-        # ============================================
-        # FETCH MEMORIES FROM HASH SPHERE (PERSISTENT)
-        # Uses 3-level hierarchical memory architecture
-        # ============================================
+
+        # Fetch memories from Hash Sphere (real persistent storage)
         recent_memories = []
         total_memory_count = 0
         avg_relevance = 0.0
-        
+
         try:
-            # Fetch from Hash Sphere memory service (persistent storage)
             hash_sphere_result = await service_client.call_service(
                 "memory_service",
                 "POST",
                 "http://memory_service:8000/memory/hash-sphere/extract",
                 json={
-                    "query": "",  # Empty query to get all recent memories
+                    "query": "",
                     "user_id": user_id,
                     "org_id": request.headers.get("x-org-id", "default"),
-                    "agent_hash": None,  # Get user-level memories
+                    "agent_hash": None,
                     "limit": 20,
                     "use_anchors": True,
                     "use_proximity": False,
@@ -5779,11 +5184,11 @@ async def get_agent_stats(
                 },
                 timeout=httpx.Timeout(5.0, connect=2.0),
             )
-            
+
             if hash_sphere_result and hash_sphere_result.get("memories"):
                 memories_data = hash_sphere_result.get("memories", [])
                 total_memory_count = hash_sphere_result.get("total_count", len(memories_data))
-                
+
                 total_relevance = 0.0
                 for mem in memories_data:
                     relevance = mem.get("hybrid_score") or mem.get("resonance_score") or 0.5
@@ -5799,56 +5204,36 @@ async def get_agent_stats(
                         "xyz": mem.get("xyz"),
                         "type": mem.get("type", "memory"),
                     })
-                
+
                 if recent_memories:
                     avg_relevance = total_relevance / len(recent_memories)
-                
-                logger.info(f"✅ Loaded {len(recent_memories)} memories from Hash Sphere for user {user_id[:8]}...")
+
+                logger.info(f"Loaded {len(recent_memories)} memories from Hash Sphere for user {user_id[:8]}...")
         except Exception as mem_err:
-            logger.warning(f"Hash Sphere memory fetch failed, falling back to in-memory: {mem_err}")
-            
-            # Fallback to in-memory agent_memory_store
-            memory_stats = agent_memory_store.get_stats(user_id)
-            total_memory_count = memory_stats.get("total_memories", 0)
-            
-            if user_id in agent_memory_store.memories:
-                for agent_type, memories in agent_memory_store.memories[user_id].items():
-                    for mem in memories[-10:]:
-                        recent_memories.append({
-                            "id": mem.id,
-                            "task": mem.task,
-                            "response_summary": mem.response[:200] + "..." if len(mem.response) > 200 else mem.response,
-                            "timestamp": mem.created_at,
-                            "relevance_score": mem.relevance_score,
-                            "agent_type": agent_type,
-                        })
-        
-        # Sort by timestamp descending
+            logger.warning(f"Hash Sphere memory fetch failed: {mem_err}")
+
         recent_memories.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         recent_memories = recent_memories[:5]
-        
-        # Get feedback stats
+
         feedback_stats = user_feedback.get_all_stats()
-        
+
         return {
             "status": "ok",
             "data": {
-                "metrics": metrics,
-                "top_agents": top_agents,
+                "metrics": {},
+                "top_agents": [],
                 "memory": {
                     "total_count": total_memory_count,
-                    "avg_relevance": round(avg_relevance * 100, 1),  # As percentage
-                    "agents": {},  # Agent-specific breakdown
+                    "avg_relevance": round(avg_relevance * 100, 1),
+                    "agents": {},
                     "recent_memories": recent_memories,
                 },
                 "feedback": feedback_stats,
-                "projects": [],  # Project context - can be extended later
+                "projects": [],
             }
         }
     except Exception as e:
         logger.error(f"Get agent stats error: {e}")
-        import traceback
-        traceback.print_exc()
         return {"status": "error", "error": str(e), "data": {"metrics": {}, "top_agents": [], "memory": {"total_count": 0, "recent_memories": []}}}
 
 

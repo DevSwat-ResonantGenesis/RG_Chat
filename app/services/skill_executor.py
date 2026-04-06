@@ -1973,67 +1973,15 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
     async def _handle_team_action(
         self, action: str, message: str, user_id: str
     ) -> Dict[str, Any]:
-        """Handle team/workflow creation and listing."""
-        panel_url = "/agents?embed=1"
-        try:
-            from ..domain.agent.facade import team_engine, _init_engines
-            _init_engines()
-
-            if action == "list_teams":
-                teams = team_engine.list_teams()
-                summary = f"**Agent Teams** ({len(teams)} available):\n\n"
-                for t in teams:
-                    agents_str = ", ".join(t["agents"])
-                    summary += f"- **{t['name']}** (`{t['id']}`) — {t['workflow']} — agents: {agents_str}\n"
-                    if t.get("description"):
-                        summary += f"  _{t['description']}_\n"
-                return {
-                    "success": True,
-                    "action": "open_agents_panel",
-                    "panel_url": panel_url,
-                    "operation": "list_teams",
-                    "teams": teams,
-                    "summary": summary,
-                }
-
-            # create_team
-            details = self._extract_team_details(message)
-            result = team_engine.register_team(
-                team_id=details["team_id"],
-                name=details["name"],
-                agents=details["agents"],
-                workflow=details["workflow"],
-                description=details["description"],
-            )
-            agents_str = ", ".join(result["agents"])
-            summary = (
-                "✅ **Agent team created successfully!**\n\n"
-                f"- **Name:** {result['name']}\n"
-                f"- **ID:** `{result['id']}`\n"
-                f"- **Agents:** {agents_str}\n"
-                f"- **Workflow:** {result['workflow']}\n"
-                f"- **Description:** {result['description']}\n\n"
-                "The team is now registered and can be triggered in future conversations. "
-                "You can also trigger it by using its keywords or selecting it from the teams panel."
-            )
-            return {
-                "success": True,
-                "action": "open_agents_panel",
-                "panel_url": panel_url,
-                "operation": "create_team",
-                "created_team": result,
-                "summary": summary,
-            }
-        except Exception as e:
-            logger.error(f"Team action failed: {e}", exc_info=True)
-            return {
-                "success": False,
-                "action": "open_agents_panel",
-                "panel_url": panel_url,
-                "operation": action,
-                "error": str(e),
-                "summary": f"Failed to {action.replace('_', ' ')}: {e}",
-            }
+        """Handle team/workflow creation and listing. (Fake team_engine removed.)"""
+        return {
+            "success": False,
+            "action": "open_agents_panel",
+            "panel_url": "/agents?embed=1",
+            "operation": action,
+            "error": "Team engine has been removed — use real Agent Engine agents instead.",
+            "summary": "Team engine removed. Create real agents via Agent Engine instead.",
+        }
 
     async def _create_single_agent(
         self, client: httpx.AsyncClient, payload: Dict[str, Any], headers: Dict[str, str]
