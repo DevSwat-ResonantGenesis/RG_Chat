@@ -1551,37 +1551,59 @@ class SkillExecutor:
 
     # ── Shared helpers for intelligent agent configuration ──────────
 
-    @staticmethod
-    def _infer_tools(text: str) -> List[str]:
-        """Infer tools from description. All agents get the unified core set."""
-        # Core tools every agent gets (from unified registry)
-        tools = [
-            "web_search", "fetch_url", "memory_read", "memory_write",
-            "http_request", "execute_code", "platform_api",
-            "discover_services", "discover_api",
-            "check_tool_exists", "auto_build_tool",
-        ]
+    # Self-extension tools — always included so agent can find/create tools at runtime
+    _SELF_EXTENSION_TOOLS = ["discover_services", "check_tool_exists", "auto_build_tool"]
 
-        lower = text.lower()
-        # Add domain-specific tools based on keywords
-        if any(k in lower for k in ["post", "rabbit", "community", "content", "publish", "blog", "write", "article"]):
-            tools.extend(["create_rabbit_post", "list_rabbit_communities"])
-        if any(k in lower for k in ["community", "subreddit", "forum", "create community"]):
-            tools.append("create_rabbit_community")
-        if any(k in lower for k in ["github", "repo", "repository", "code", "codebase"]):
-            tools.append("github")
-        if any(k in lower for k in ["image", "photo", "picture", "visual", "dalle"]):
-            tools.append("generate_image")
-        if any(k in lower for k in ["email", "gmail", "mail"]):
-            tools.extend(["gmail_send", "gmail_read"])
-        if any(k in lower for k in ["slack", "channel", "message"]):
-            tools.extend(["slack_send", "slack_read"])
-        if any(k in lower for k in ["calendar", "schedule", "meeting"]):
-            tools.append("google_calendar")
-        if any(k in lower for k in ["drive", "files", "document"]):
-            tools.append("google_drive")
-        if any(k in lower for k in ["figma", "design", "ui", "mockup"]):
-            tools.append("figma")
+    @staticmethod
+    def _build_tool_catalog() -> str:
+        """Build a compact tool catalog from the unified registry for LLM selection."""
+        try:
+            from ..rg_tool_registry.builtin_tools import ALL_TOOLS
+        except ImportError:
+            return ""
+        # Group by category, one line per tool: "name — description"
+        cats: Dict[str, List[str]] = {}
+        for td in ALL_TOOLS:
+            cat = td.category.value if hasattr(td.category, 'value') else str(td.category)
+            if cat not in cats:
+                cats[cat] = []
+            cats[cat].append(f"{td.name} — {td.description[:80]}")
+        lines = []
+        for cat, tools in cats.items():
+            lines.append(f"[{cat.upper()}] {', '.join(t.split(' — ')[0] for t in tools)}")
+            for t in tools:
+                lines.append(f"  {t}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _get_all_tool_names() -> set:
+        """Get all valid tool names from the unified registry."""
+        try:
+            from ..rg_tool_registry.builtin_tools import ALL_TOOLS
+            return {td.name for td in ALL_TOOLS}
+        except ImportError:
+            return set()
+
+    async def _infer_tools(self, text: str, user_api_keys: Optional[Dict[str, str]] = None) -> List[str]:
+        """Intelligently select tools from the unified registry using LLM analysis.
+
+        1. Builds a compact tool catalog from ALL_TOOLS
+        2. Fast Groq LLM call picks ONLY the relevant tools for this agent
+        3. Always includes self-extension tools (discover_services, check_tool_exists, auto_build_tool)
+        4. Falls back to keyword matching if LLM is unavailable
+        """
+        # Try LLM-based selection first
+        llm_tools = await self._llm_select_tools(text, user_api_keys)
+        if llm_tools is not None:
+            tools = llm_tools
+        else:
+            # Fallback: keyword-based selection (no default dump)
+            tools = self._keyword_select_tools(text)
+
+        # Always include self-extension tools so agent can find/create tools at runtime
+        for t in self._SELF_EXTENSION_TOOLS:
+            if t not in tools:
+                tools.append(t)
 
         # Deduplicate while preserving order
         seen: set = set()
@@ -1591,6 +1613,153 @@ class SkillExecutor:
                 seen.add(t)
                 unique.append(t)
         return unique
+
+    async def _llm_select_tools(self, text: str, user_api_keys: Optional[Dict[str, str]] = None) -> Optional[List[str]]:
+        """Use fast Groq LLM to analyze agent description and pick tools from the unified registry."""
+        import json as _json
+
+        catalog = self._build_tool_catalog()
+        if not catalog:
+            return None
+
+        valid_names = self._get_all_tool_names()
+        if not valid_names:
+            return None
+
+        prompt = f"""You are a tool-selection expert for the Resonant Genesis AI platform.
+
+AGENT DESCRIPTION:
+{text}
+
+AVAILABLE TOOLS (unified registry):
+{catalog}
+
+TASK: Select ONLY the tools this agent actually needs. Be precise — don't dump everything.
+- A research agent needs: web_search, fetch_url, deep_research, memory_read, memory_write
+- A content agent needs: web_search, create_rabbit_post, list_rabbit_communities, generate_image
+- A code agent needs: code_visualizer_scan, github_list_repos, execute_code, http_request
+- A social media agent needs: scrape_platforms, web_search, memory_write
+- A data agent needs: execute_code, google_sheets, web_search, generate_chart
+
+Pick 3-15 tools. Only pick what this specific agent needs for its role.
+
+Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}"""
+
+        # Get Groq API keys (same pattern as _llm_detect_tool)
+        groq_api_keys = []
+        if user_api_keys and user_api_keys.get("groq"):
+            groq_api_keys.append(user_api_keys["groq"])
+        for env_var in ("GROQ_API_KEY", "GROQ_API_KEY_2"):
+            raw = os.getenv(env_var, "")
+            for k in raw.split(","):
+                k = k.strip()
+                if k and k not in groq_api_keys:
+                    groq_api_keys.append(k)
+
+        if not groq_api_keys:
+            return None
+
+        messages = [
+            {"role": "system", "content": "You are a tool-selection expert. Respond with JSON only."},
+            {"role": "user", "content": prompt},
+        ]
+
+        for key_idx, api_key in enumerate(groq_api_keys):
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": "llama-3.3-70b-versatile",
+                            "messages": messages,
+                            "temperature": 0.0,
+                            "max_tokens": 300,
+                            "response_format": {"type": "json_object"},
+                        },
+                    )
+                    if resp.status_code in (401, 429):
+                        continue
+                    if resp.status_code != 200:
+                        continue
+
+                    data = resp.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    parsed = _json.loads(content)
+                    raw_tools = parsed.get("tools", [])
+
+                    # Validate against registry — only keep real tool names
+                    selected = [t for t in raw_tools if t in valid_names]
+                    if selected:
+                        logger.info(f"[TOOL-INFER] LLM selected {len(selected)} tools: {selected}")
+                        return selected
+                    else:
+                        logger.warning(f"[TOOL-INFER] LLM returned no valid tools, falling back")
+                        return None
+
+            except Exception as e:
+                logger.warning(f"[TOOL-INFER] Groq key {key_idx+1} failed: {e}")
+                continue
+
+        return None
+
+    @staticmethod
+    def _keyword_select_tools(text: str) -> List[str]:
+        """Keyword-based tool selection fallback — picks only relevant tools, no default dump."""
+        lower = text.lower()
+        tools = []
+
+        # Research / web
+        if any(k in lower for k in ["search", "research", "find", "look up", "investigate", "analyze", "information"]):
+            tools.extend(["web_search", "fetch_url", "deep_research"])
+        if any(k in lower for k in ["scrape", "crawl", "extract data"]):
+            tools.extend(["scrape_page", "scrape_platforms"])
+        # Memory
+        if any(k in lower for k in ["memory", "remember", "context", "long-term", "persist", "learn"]):
+            tools.extend(["memory_read", "memory_write"])
+        # Community / content
+        if any(k in lower for k in ["post", "rabbit", "community", "content", "publish", "blog", "write", "article"]):
+            tools.extend(["create_rabbit_post", "list_rabbit_communities", "web_search"])
+        if any(k in lower for k in ["community", "subreddit", "forum"]):
+            tools.append("create_rabbit_community")
+        # Code / development
+        if any(k in lower for k in ["code", "codebase", "scan", "debug", "develop", "program"]):
+            tools.extend(["code_visualizer_scan", "execute_code", "http_request"])
+        if any(k in lower for k in ["github", "repo", "repository", "git"]):
+            tools.extend(["github_list_repos", "github_list_files", "github_download_file"])
+        # Media
+        if any(k in lower for k in ["image", "photo", "picture", "visual", "dalle", "generate image"]):
+            tools.append("generate_image")
+        if any(k in lower for k in ["audio", "speech", "tts", "voice"]):
+            tools.append("generate_audio")
+        # Integrations
+        if any(k in lower for k in ["email", "gmail", "mail"]):
+            tools.extend(["gmail_send", "gmail_read"])
+        if any(k in lower for k in ["slack", "channel"]):
+            tools.extend(["slack_send", "slack_read"])
+        if any(k in lower for k in ["calendar", "schedule", "meeting", "event"]):
+            tools.append("google_calendar")
+        if any(k in lower for k in ["drive", "document", "spreadsheet", "sheets"]):
+            tools.extend(["google_drive", "google_sheets"])
+        if any(k in lower for k in ["figma", "design", "ui", "mockup"]):
+            tools.append("figma")
+        # Data / analytics
+        if any(k in lower for k in ["data", "analytics", "chart", "graph", "report"]):
+            tools.extend(["execute_code", "generate_chart", "web_search"])
+        if any(k in lower for k in ["stock", "crypto", "market", "price", "trading"]):
+            tools.append("stock_crypto")
+        # API / platform
+        if any(k in lower for k in ["api", "http", "request", "endpoint", "webhook", "integration"]):
+            tools.extend(["http_request", "platform_api_call"])
+
+        # If nothing matched, give minimal research tools
+        if not tools:
+            tools = ["web_search", "fetch_url"]
+
+        return tools
 
     @staticmethod
     def _infer_provider_and_model(text: str) -> tuple:
@@ -1618,24 +1787,32 @@ class SkillExecutor:
 
     @staticmethod
     def _build_system_prompt(name: str, description: str, tools: List[str]) -> str:
-        """Build a rich system prompt with unified tool registry awareness."""
-        tools_csv = ", ".join(tools)
+        """Build a role-specific system prompt with the agent's selected tools."""
+        # Build tool descriptions from the registry for the assigned tools
+        tool_descs = []
+        try:
+            from ..rg_tool_registry.builtin_tools import ALL_TOOLS
+            tool_map = {td.name: td.description for td in ALL_TOOLS}
+            for t in tools:
+                desc = tool_map.get(t)
+                if desc:
+                    tool_descs.append(f"- {t}: {desc[:100]}")
+                else:
+                    tool_descs.append(f"- {t}")
+        except ImportError:
+            tool_descs = [f"- {t}" for t in tools]
+
+        tools_section = "\n".join(tool_descs) if tool_descs else "- Use available tools as needed."
+
         return (
             f"You are '{name}', an advanced AI agent on the Resonant Genesis platform.\n\n"
             f"YOUR ROLE: {description}\n\n"
-            f"UNIFIED TOOL REGISTRY:\n"
-            f"You have access to 160+ tools and 44 platform services (560+ APIs). Call any tool by name string.\n"
-            f"Your assigned tools: {tools_csv}\n"
-            f"Key tools:\n"
-            f"- web_search: Search the web for real-time information.\n"
-            f"- fetch_url: Read full content of any URL.\n"
-            f"- memory_read / memory_write: Persist important information across sessions.\n"
-            f"- http_request: Make HTTP requests to any API.\n"
-            f"- platform_api: Call any Resonant Genesis platform service API (service, endpoint, method, body).\n"
-            f"- discover_services: Find platform services by category (ai, core, agents, community, developer, integrations, blockchain, storage).\n"
-            f"- discover_api: Get all endpoints for a specific service.\n"
+            f"YOUR TOOLS (selected for your role):\n{tools_section}\n\n"
+            f"SELF-EXTENSION:\n"
+            f"The platform has 200+ tools across 44 services. If you need a capability you don't have:\n"
+            f"- discover_services: Find platform services by category.\n"
             f"- check_tool_exists: Look up if a tool exists by name or capability.\n"
-            f"- auto_build_tool: If a tool you need doesn't exist, create it at runtime.\n\n"
+            f"- auto_build_tool: Create a new tool at runtime if none exists.\n\n"
             f"BEHAVIOR RULES:\n"
             f"- For QUESTIONS: Research thoroughly, then respond with a comprehensive, well-structured answer.\n"
             f"- For ACTIONS: Execute the requested action using the appropriate tool, then confirm results.\n"
@@ -1661,7 +1838,7 @@ class SkillExecutor:
             config["require_confirmation_for"] = confirm_for
         return config
 
-    def _build_agent_create_payload(self, message: str) -> Dict[str, Any]:
+    async def _build_agent_create_payload(self, message: str, user_api_keys: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Build a comprehensive Agent Engine create payload from user intent."""
         name = self._extract_agent_name(message)
         msg = (message or "").strip()
@@ -1678,7 +1855,7 @@ class SkillExecutor:
         else:
             description = f"Agent: {name}"
 
-        tools = self._infer_tools(f"{name} {description} {msg}")
+        tools = await self._infer_tools(f"{name} {description} {msg}", user_api_keys)
         provider, model = self._infer_provider_and_model(msg)
         mode = self._infer_mode(msg)
         system_prompt = self._build_system_prompt(name, description, tools)
@@ -1699,13 +1876,13 @@ class SkillExecutor:
             "blocked_actions": ["delete_community", "delete_user", "admin_override"],
         }
 
-    def _build_payload_from_parsed(self, agent_def: Dict[str, str]) -> Dict[str, Any]:
+    async def _build_payload_from_parsed(self, agent_def: Dict[str, str], user_api_keys: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Build a rich Agent Engine create payload from a parsed agent definition."""
         name = agent_def.get("name", "Resonant Agent")
         desc = agent_def.get("description", "Created by Resonant Chat")
         combined = f"{name} {desc}"
 
-        tools = self._infer_tools(combined)
+        tools = await self._infer_tools(combined, user_api_keys)
         provider, model = self._infer_provider_and_model(combined)
         mode = self._infer_mode(combined)
         system_prompt = self._build_system_prompt(name, desc, tools)
@@ -3131,7 +3308,7 @@ Produce the JSON blueprint now:"""
 
         if not blueprint or "agents" not in blueprint:
             # Ultimate fallback: simple builder
-            payload = self._build_agent_create_payload(message)
+            payload = await self._build_agent_create_payload(message, user_api_keys)
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 result = await self._create_single_agent(client, payload, headers)
             if result:
