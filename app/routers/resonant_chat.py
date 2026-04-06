@@ -371,14 +371,31 @@ def _extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
 
     # Common internal page navigation
     page_routes: List[tuple[str, str, str]] = [
-        (r"\bagents?\b", "/agents", "agents"),
         (r"\bagent\s+teams?\b", "/agent-teams", "agent-teams"),
         (r"\bteam\s+dashboard\b", "/agent-teams", "agent-teams"),
+        (r"\bagents?\s+(?:os|page|panel)\b", "/agents", "agents"),
+        (r"\bagents?\b", "/agents", "agents"),
         (r"\bresonant\s+chat\b", "/resonant-chat-next", "resonant-chat"),
         (r"\bdashboard\b", "/dashboard", "dashboard"),
         (r"\bpricing\b", "/pricing", "pricing"),
         (r"\baccount\b", "/dashboard", "dashboard"),
         (r"\bide\b", "/ide", "ide"),
+        (r"\bmarketplace\b", "/marketplace", "marketplace"),
+        (r"\bcode\s*visual", "/code-visualizer", "code-visualizer"),
+        (r"\bstate\s*physics\b", "/state-physics", "state-physics"),
+        (r"\bresonant\s+memory\b", "/resonant-memory", "resonant-memory"),
+        (r"\bmemory\s+(?:page|library|panel)\b", "/resonant-memory", "resonant-memory"),
+        (r"\brabbit\b", "/rabbit", "rabbit"),
+        (r"\bcommunity\b", "/rabbit", "rabbit"),
+        (r"\bprofile\b", "/profile", "profile"),
+        (r"\bsettings\b", "/profile", "profile"),
+        (r"\bhelp\b", "/help", "help"),
+        (r"\bconnect.?profiles?\b", "/connect-profiles", "connect-profiles"),
+        (r"\bintegrations?\b", "/connect-profiles", "connect-profiles"),
+        (r"\bapi\s*keys?\b", "/connect-profiles", "connect-profiles"),
+        (r"\bbuild\b", "/build", "build"),
+        (r"\bproject\s*builder\b", "/build", "build"),
+        (r"\bwallet\b", "/wallet", "wallet"),
     ]
 
     for pattern, path, page in page_routes:
@@ -981,11 +998,14 @@ USER CONTEXT:
 - Plan: {user_plan}
 
 YOUR CAPABILITIES (REAL — NOT HALLUCINATED):
+- You are backed by a UNIFIED TOOL REGISTRY with 160+ tools across 16 categories and 44 platform services (560+ APIs). Tools are detected and executed automatically based on your conversation.
+- Key tool categories: Search (web_search, fetch_url), Memory (memory_read, memory_write, hash_sphere), Code Analysis (code_visualizer_scan, code_visualizer_trace), Agents (agents_list, agents_create, agents_start, run_agent), Media (generate_image, generate_audio), Integrations (gmail_send, slack_send, google_calendar, figma), Developer (http_request, execute_code, github), Platform APIs (platform_api, discover_services, discover_api).
+- If a tool you need doesn't exist, it can be CREATED at runtime using auto_build_tool. You can also check what tools exist with check_tool_exists.
 - You CAN search the web in real-time using Tavily/DuckDuckGo. Web search results are automatically injected into your context when relevant. If search results appear in your context, USE THEM as the primary source of truth.
 - You CAN scan and analyze GitHub repositories using the Code Visualizer tool. When a user asks to scan a repo, analyze code, trace pipelines, check governance, show endpoints/functions, or re-analyze — the Code Visualizer skill runs AUTOMATICALLY and its output appears in your context as "SKILL OUTPUT (Code Visualizer):". If NO such skill output is present in your context, the scan DID NOT RUN and you MUST NOT fabricate results.
 - You CAN create, list, and manage AI agents via Agents OS. When a user asks to create agents, spin up agents, or open the agents dashboard — the skill runs AUTOMATICALLY and its output appears in your context as "SKILL OUTPUT".
+- You CAN navigate users to any platform page. When a user says "open pricing" or "go to marketplace", you navigate them there automatically.
 - You CAN open a live split view panel showing analysis results, agent panels, or other tool outputs.
-- You CAN NOT generate images, photos, videos, or audio files.
 - You CAN NOT directly browse websites in real-time, but web search results are fetched FOR you.
 - When web search results are present in your context, NEVER say "I can't access the internet" — you already have the search results.
 - NEVER say "I'm a text-based AI" or "I don't have the capability to execute code" — you DO have real tool execution via skills.

@@ -1553,27 +1553,35 @@ class SkillExecutor:
 
     @staticmethod
     def _infer_tools(text: str) -> List[str]:
-        """Infer the best set of tools from description keywords."""
-        lower = text.lower()
-        tools = ["web_search", "fetch_url"]  # always included
+        """Infer tools from description. All agents get the unified core set."""
+        # Core tools every agent gets (from unified registry)
+        tools = [
+            "web_search", "fetch_url", "memory_read", "memory_write",
+            "http_request", "execute_code", "platform_api",
+            "discover_services", "discover_api",
+            "check_tool_exists", "auto_build_tool",
+        ]
 
-        # Platform action tools
+        lower = text.lower()
+        # Add domain-specific tools based on keywords
         if any(k in lower for k in ["post", "rabbit", "community", "content", "publish", "blog", "write", "article"]):
             tools.extend(["create_rabbit_post", "list_rabbit_communities"])
         if any(k in lower for k in ["community", "subreddit", "forum", "create community"]):
             tools.append("create_rabbit_community")
-        if any(k in lower for k in ["api", "http", "request", "endpoint", "webhook", "integration",
-                                     "penetration", "penitration", "scan", "investigate", "scrape", "crawl"]):
-            tools.append("http_request")
-        if any(k in lower for k in ["memory", "remember", "context", "long-term", "persist",
-                                     "research", "reserch", "analysis", "analyses", "analyze", "deep", "comprehensive"]):
-            tools.extend(["memory.read", "memory.write"])
         if any(k in lower for k in ["github", "repo", "repository", "code", "codebase"]):
             tools.append("github")
-        if any(k in lower for k in ["database", "sql", "data", "analytics", "query"]):
-            tools.append("database")
-        if any(k in lower for k in ["test", "qa", "quality", "sandbox", "execute", "run code"]):
-            tools.append("code_execution")
+        if any(k in lower for k in ["image", "photo", "picture", "visual", "dalle"]):
+            tools.append("generate_image")
+        if any(k in lower for k in ["email", "gmail", "mail"]):
+            tools.extend(["gmail_send", "gmail_read"])
+        if any(k in lower for k in ["slack", "channel", "message"]):
+            tools.extend(["slack_send", "slack_read"])
+        if any(k in lower for k in ["calendar", "schedule", "meeting"]):
+            tools.append("google_calendar")
+        if any(k in lower for k in ["drive", "files", "document"]):
+            tools.append("google_drive")
+        if any(k in lower for k in ["figma", "design", "ui", "mockup"]):
+            tools.append("figma")
 
         # Deduplicate while preserving order
         seen: set = set()
@@ -1610,30 +1618,31 @@ class SkillExecutor:
 
     @staticmethod
     def _build_system_prompt(name: str, description: str, tools: List[str]) -> str:
-        """Build a rich, role-specific system prompt."""
-        tool_instructions = []
-        if "web_search" in tools:
-            tool_instructions.append("- Use web_search to find real-time information, then fetch_url to read page content.")
-        if "create_rabbit_post" in tools:
-            tool_instructions.append("- Use create_rabbit_post to publish content on Rabbit communities.")
-        if "http_request" in tools:
-            tool_instructions.append("- Use http_request for internal platform API calls.")
-        if "memory.read" in tools or "memory.write" in tools:
-            tool_instructions.append("- Use memory.read/write to persist important information across sessions.")
-
-        tools_section = "\n".join(tool_instructions) if tool_instructions else "- Use available tools as needed."
-
+        """Build a rich system prompt with unified tool registry awareness."""
+        tools_csv = ", ".join(tools)
         return (
             f"You are '{name}', an advanced AI agent on the Resonant Genesis platform.\n\n"
             f"YOUR ROLE: {description}\n\n"
-            f"TOOL USAGE:\n{tools_section}\n\n"
-            "BEHAVIOR RULES:\n"
-            "- For QUESTIONS: Research thoroughly, then respond with a comprehensive, well-structured answer.\n"
-            "- For ACTIONS: Execute the requested action using the appropriate tool, then confirm results.\n"
-            "- NEVER invent facts. If information is unavailable, state that clearly.\n"
-            "- NEVER call action tools unless the user explicitly requests an action.\n"
-            "- Keep responses focused, factual, and actionable.\n"
-            "- Report outcomes clearly and summarize actions taken."
+            f"UNIFIED TOOL REGISTRY:\n"
+            f"You have access to 160+ tools and 44 platform services (560+ APIs). Call any tool by name string.\n"
+            f"Your assigned tools: {tools_csv}\n"
+            f"Key tools:\n"
+            f"- web_search: Search the web for real-time information.\n"
+            f"- fetch_url: Read full content of any URL.\n"
+            f"- memory_read / memory_write: Persist important information across sessions.\n"
+            f"- http_request: Make HTTP requests to any API.\n"
+            f"- platform_api: Call any Resonant Genesis platform service API (service, endpoint, method, body).\n"
+            f"- discover_services: Find platform services by category (ai, core, agents, community, developer, integrations, blockchain, storage).\n"
+            f"- discover_api: Get all endpoints for a specific service.\n"
+            f"- check_tool_exists: Look up if a tool exists by name or capability.\n"
+            f"- auto_build_tool: If a tool you need doesn't exist, create it at runtime.\n\n"
+            f"BEHAVIOR RULES:\n"
+            f"- For QUESTIONS: Research thoroughly, then respond with a comprehensive, well-structured answer.\n"
+            f"- For ACTIONS: Execute the requested action using the appropriate tool, then confirm results.\n"
+            f"- NEVER invent facts. If information is unavailable, state that clearly.\n"
+            f"- NEVER call action tools unless the user explicitly requests an action.\n"
+            f"- Keep responses focused, factual, and actionable.\n"
+            f"- Report outcomes clearly and summarize actions taken."
         )
 
     @staticmethod
