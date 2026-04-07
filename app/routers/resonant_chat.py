@@ -1511,11 +1511,19 @@ async def send_message(
                 user_api_keys=user_api_keys,
             )
             if detected_tool_id:
+                # Hard guard: code_visualizer only for GitHub URLs or explicit scan requests
+                if detected_tool_id == "code_visualizer":
+                    _msg_lower = safe_user_message.lower()
+                    _has_github = "github.com/" in _msg_lower or "gitlab.com/" in _msg_lower
+                    _has_scan_kw = any(k in _msg_lower for k in ("scan", "analyze repo", "visuali", "codebase", "trace pipeline"))
+                    if not _has_github and not _has_scan_kw:
+                        print(f"[SKILL-7.9] code_visualizer BLOCKED — no GitHub URL or scan keyword in: {safe_user_message[:80]!r}", flush=True)
+                        detected_tool_id = None
                 if detected_tool_id == "web_search":
                     web_search_needed = True
                 elif detected_tool_id == "image_generation":
                     image_gen_needed = True
-                else:
+                elif detected_tool_id:
                     detected_skill = skills_registry.get_skill(detected_tool_id)
                 code_visualizer_intent = (detected_tool_id == "code_visualizer")
                 agents_os_intent = (detected_tool_id == "agents_os")
