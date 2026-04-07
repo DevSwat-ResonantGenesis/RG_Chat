@@ -3496,11 +3496,12 @@ Produce the JSON blueprint now:"""
                         await asyncio.sleep(2)
                         try:
                             poll_r = await client.get(
-                                f"{AGENT_ENGINE_URL}/execution/history/{er['agent_id']}",
+                                f"{AGENT_ENGINE_URL}/execution/agents/{er['agent_id']}/executions",
                                 headers=headers, params={"limit": 1},
                             )
                             if poll_r.status_code == 200:
-                                runs = poll_r.json()
+                                runs_data = poll_r.json()
+                                runs = runs_data.get("executions", runs_data) if isinstance(runs_data, dict) else runs_data
                                 if isinstance(runs, list) and runs:
                                     latest = runs[0]
                                     er["status"] = latest.get("status", er["status"])
@@ -3695,11 +3696,12 @@ Produce the JSON blueprint now:"""
                     await asyncio.sleep(3)
                     try:
                         poll_r = await client.get(
-                            f"{AGENT_ENGINE_URL}/execution/history/{agent_id}",
+                            f"{AGENT_ENGINE_URL}/execution/agents/{agent_id}/executions",
                             headers=headers, params={"limit": 1},
                         )
                         if poll_r.status_code == 200:
-                            runs = poll_r.json()
+                            runs_data = poll_r.json()
+                            runs = runs_data.get("executions", runs_data) if isinstance(runs_data, dict) else runs_data
                             if isinstance(runs, list) and runs:
                                 latest = runs[0]
                                 run_status = latest.get("status", run_status)
