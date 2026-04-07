@@ -3031,6 +3031,7 @@ Produce the JSON blueprint now:"""
     # ── Plan Preview Builder (two-phase BUILD) ──
     def _architect_build_plan_preview(
         self, blueprint: Dict, risk: Dict, intent: str, workspace_agents: int,
+        user_api_keys: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """Build a plan preview response for two-phase BUILD (show plan → confirm → create)."""
         agent_blueprints = blueprint.get("agents", [])
@@ -3091,12 +3092,26 @@ Produce the JSON blueprint now:"""
                 },
             }
 
+        # Detect missing connections from blueprint tools
+        all_blueprint_tools: List[str] = []
+        for abp in agent_blueprints:
+            raw_t = abp.get("tools", []) if isinstance(abp, dict) else []
+            if isinstance(raw_t, list):
+                all_blueprint_tools.extend(raw_t)
+        conn_options = self._detect_needed_connections(all_blueprint_tools, user_api_keys or {})
+        if conn_options:
+            summary += "\n⚠️ **Connections needed:** Connect these services before building:\n"
+
         # Normal: confirm/edit/test options
         # NOTE: All values MUST contain 'architect' keyword so LLM routes to agent_architect skill
-        options = [
+        options = []
+        # Connection buttons first (highest priority)
+        if conn_options:
+            options.extend(conn_options[:3])
+        options.extend([
             {"label": "Build now", "value": "Agent Architect: yes, build the agents as planned", "description": "Create all agents with this configuration", "icon": "🚀"},
             {"label": "Edit plan", "value": "Agent Architect: I'd like to modify the plan before building", "description": "Adjust goals, tools, or models", "icon": "✏️"},
-        ]
+        ])
         if len(agent_blueprints) == 1:
             options.append({"label": "Small test first", "value": "Agent Architect: build a minimal test version first", "description": "Reduced scope to validate", "icon": "🧪"})
         if workspace_agents > 0:
@@ -3267,6 +3282,7 @@ Produce the JSON blueprint now:"""
 
         return self._architect_build_plan_preview(
             blueprint, risk, intent, workspace_agent_count,
+            user_api_keys=user_api_keys,
         )
 
     # ── Phase 2: Execute Build (create agents from plan) ──
