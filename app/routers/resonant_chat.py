@@ -1621,7 +1621,8 @@ async def send_message(
     # ============================================
     if detected_skill:
         try:
-            print(f"[SKILL-7.95] EXECUTING: {detected_skill.id} ({detected_skill.name})", flush=True)
+            _ctx_key_names = list((user_api_keys or {}).keys())
+            print(f"[SKILL-7.95] EXECUTING: {detected_skill.id} ({detected_skill.name}), user_api_keys={_ctx_key_names}", flush=True)
             skill_context = {
                 "analysis_id": (request_body.project_context or {}).get("projectId", ""),
                 "chat_id": chat_id,
