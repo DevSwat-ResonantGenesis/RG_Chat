@@ -28,6 +28,7 @@ class FigmaSkill(BaseIntegrationSkill):
     skill_id = "figma"
     skill_name = "Figma"
     api_key_names = ["figma", "figma_token", "figma-token"]
+    connection_url = "/connect-profiles?connect=figma"
     intent_keywords = [
         "figma", "my figma", "figma files", "figma project",
         "figma design", "figma component", "figma styles",

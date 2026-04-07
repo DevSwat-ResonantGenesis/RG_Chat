@@ -29,6 +29,7 @@ class GoogleDriveSkill(BaseIntegrationSkill):
     skill_id = "google_drive"
     skill_name = "Google Drive"
     api_key_names = ["google-drive", "google_drive", "gdrive", "google-drive-token"]
+    connection_url = "/connect-profiles?connect=google-drive"
     intent_keywords = [
         "google drive", "my drive", "my google drive",
         "list files", "list my files", "show my files",
