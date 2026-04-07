@@ -485,12 +485,16 @@ Respond with ONLY valid JSON:
 - If NO tool is needed: {{\"tool\": null}}
 
 RULES:
-- Most messages do NOT need tools. Default to null.
 - General conversation, questions, coding help, math, explanations -> null.
 - Do NOT call web_search for questions the AI can answer from its training data.
 - Do NOT call agents_os unless user explicitly wants to create/manage/configure agents.
 - Do NOT call code_visualizer unless user provides a GitHub URL or explicitly asks to scan a repo.
-- For follow-up confirmations (like \"yes create all\"), check the conversation context."""
+- FOLLOW-UP CONTEXT: If the conversation is about a specific service (google drive, calendar, figma, etc.) and the user sends a short follow-up like "check now", "try again", "do it", "yes", "show me", "connect it", "test it" — route to the relevant service skill from context.
+- If the user mentions google drive, drive files, my drive, or anything about Drive → google_drive.
+- If the user mentions calendar, schedule, events, meetings → google_calendar.
+- If the user mentions figma, design files → figma.
+- If the user asks to check/verify/test a connection or API status for a service mentioned in context → route to that service skill.
+- For agent creation confirmations (like \"yes create all\", \"build it\"), check context for agent_architect."""
 
     # Direct Groq call with JSON mode — iterate ALL keys like multi_ai_router does
     groq_api_keys = []
@@ -1010,6 +1014,7 @@ CRITICAL ANTI-HALLUCINATION RULE FOR TOOLS:
 - If the user asks to scan/analyze/re-analyze code and there is NO "SKILL OUTPUT" section in your context, it means the tool DID NOT RUN. In that case, say "Let me run the Code Visualizer to analyze that" or "I'll initiate the scan now" — but NEVER fabricate scan results, statistics, endpoints, vulnerabilities, or any analysis data.
 - NEVER invent repository statistics, endpoint counts, table counts, vulnerability reports, or code analysis data. Only present data that actually appears in your SKILL OUTPUT context.
 - If a tool failed or didn't trigger, honestly say so and offer to retry.
+- NEVER output function call syntax like check_tool_exists(...), web_search(...), google_drive(...) or any tool_name(...) as text. You CANNOT call tools yourself — the platform detects intent and executes tools AUTOMATICALLY. If you output function syntax, it is FAKE and misleading. Instead, respond naturally about what the user needs.
 
 BEHAVIOR RULES:
 - NEVER say "I am a large language model" or similar generic AI descriptions
