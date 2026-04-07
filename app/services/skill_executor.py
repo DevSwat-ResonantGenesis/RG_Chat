@@ -4483,7 +4483,8 @@ Only include fields that should change."""
             }
 
         skill_module = INTEGRATION_SKILLS[skill_id]
-        logger.info(f"🔌 Executing modular integration skill: {skill_id} ({skill_module.skill_name})")
+        ctx_keys = list((context.get("user_api_keys") or {}).keys())
+        logger.info(f"🔌 Executing modular integration skill: {skill_id} ({skill_module.skill_name}), ctx_keys={ctx_keys}")
         return await skill_module.execute(message, user_id, context)
 
     def _parse_rabbit_post_message(self, message: str) -> tuple:
