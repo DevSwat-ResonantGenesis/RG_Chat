@@ -1493,9 +1493,10 @@ async def send_message(
     code_visualizer_intent = False
     agents_os_intent = False
 
-    if request_body.enabled_skill_ids is not None:
+    if request_body.enabled_skill_ids:
         enabled_skill_ids = set(request_body.enabled_skill_ids)
     else:
+        # None or empty list → use server defaults (empty list breaks all skill detection)
         enabled_skill_ids = {s.id for s in skills_registry.get_enabled_skills(user_id)}
 
     # Team selection bypass: if user explicitly chose a team, skip tool detection
