@@ -2935,6 +2935,52 @@ Produce the JSON blueprint now:"""
 
         return None
 
+    # ── Tool → Connection mapping (tool prefix → integration id on /connect-profiles) ──
+    _TOOL_CONNECTION_MAP: Dict[str, Dict[str, str]] = {
+        "google_drive": {"id": "google-drive", "name": "Google Drive", "icon": "📁"},
+        "drive_": {"id": "google-drive", "name": "Google Drive", "icon": "📁"},
+        "google_calendar": {"id": "google-calendar", "name": "Google Calendar", "icon": "📅"},
+        "calendar_": {"id": "google-calendar", "name": "Google Calendar", "icon": "📅"},
+        "gmail": {"id": "gmail", "name": "Gmail", "icon": "📧"},
+        "slack": {"id": "slack", "name": "Slack", "icon": "💬"},
+        "discord": {"id": "discord", "name": "Discord", "icon": "🎮"},
+        "notion": {"id": "notion", "name": "Notion", "icon": "📝"},
+        "github": {"id": "github", "name": "GitHub", "icon": "🐙"},
+        "figma": {"id": "figma", "name": "Figma", "icon": "🎨"},
+        "stripe": {"id": "stripe", "name": "Stripe", "icon": "💳"},
+        "supabase": {"id": "supabase", "name": "Supabase", "icon": "⚡"},
+        "mongodb": {"id": "mongodb", "name": "MongoDB", "icon": "🍃"},
+        "twilio": {"id": "twilio", "name": "Twilio", "icon": "📱"},
+        "sendgrid": {"id": "sendgrid", "name": "SendGrid", "icon": "📧"},
+        "zapier": {"id": "zapier", "name": "Zapier", "icon": "⚡"},
+        "n8n": {"id": "n8n", "name": "n8n", "icon": "🔄"},
+        "sentry": {"id": "sentry", "name": "Sentry", "icon": "🛡️"},
+    }
+
+    def _detect_needed_connections(
+        self, agent_tools: List[str], user_api_keys: Dict,
+    ) -> List[Dict[str, str]]:
+        """Detect which service connections an agent needs but the user hasn't set up yet.
+        Returns list of option dicts with url field for direct navigation."""
+        needed: Dict[str, Dict[str, str]] = {}
+        connected_providers = set(user_api_keys.keys()) if user_api_keys else set()
+
+        for tool_name in agent_tools:
+            tool_lower = tool_name.lower()
+            for prefix, conn in self._TOOL_CONNECTION_MAP.items():
+                if tool_lower.startswith(prefix) and conn["id"] not in connected_providers:
+                    needed[conn["id"]] = conn
+
+        return [
+            {
+                "label": f"Connect {conn['name']}", "icon": conn["icon"],
+                "value": f"connect {conn['id']}",
+                "description": f"Required for your agent — click to connect",
+                "url": f"/connect-profiles?connect={conn['id']}",
+            }
+            for conn in needed.values()
+        ]
+
     # ── Follow-up Options Builder (state-aware) ──
     def _architect_build_options(
         self, created_agents: List[Dict], blueprint: Dict,
@@ -3557,6 +3603,16 @@ Produce the JSON blueprint now:"""
 
         # State-aware follow-up options (Twin-style progression)
         options: List[Dict[str, str]] = []
+
+        # Detect needed connections and inject direct "Connect X" buttons (highest priority)
+        all_agent_tools: List[str] = []
+        for abp in agent_blueprints:
+            all_agent_tools.extend(abp.get("tools") or [])
+        conn_options = self._detect_needed_connections(all_agent_tools, user_api_keys)
+        if conn_options:
+            summary += "\n⚠️ **Connections needed:** Your agent uses services that aren't connected yet.\n"
+            options.extend(conn_options[:2])  # max 2 connection buttons
+
         any_running = any(er.get("status") in ("running", "started") for er in execution_results)
         any_completed = any(er.get("status") == "completed" for er in execution_results)
         any_failed = any(er.get("status") in ("failed", "launch_failed") for er in execution_results)
@@ -3568,11 +3624,11 @@ Produce the JSON blueprint now:"""
             options.append({"label": "Set up schedule", "value": f"Agent Architect: set up a daily schedule for {created_agents[0].get('name', 'agent')}", "description": "Automate with recurring runs", "icon": "⏰"})
         if any_failed and created_agents:
             options.append({"label": "Diagnose issues", "value": f"Agent Architect: diagnose {created_agents[0].get('name', 'agent')}", "description": "Investigate what went wrong", "icon": "🔧"})
-        if not options:
-            options = self._architect_build_options(
+        if len(options) < 2:
+            options.extend(self._architect_build_options(
                 created_agents, blueprint, any_has_schedule,
                 total_workspace_agents=len(existing_agents_list) + n_created,
-            )
+            ))
         options.append({"label": "Build another", "value": "Agent Architect: build another agent", "description": "Create something new", "icon": "➕"})
 
         return {
