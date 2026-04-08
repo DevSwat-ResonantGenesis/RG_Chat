@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Unified client — single source of truth for all LLM calls
 _llm_client = UnifiedLLMClient(
-    fallback_order=["openai", "anthropic", "google", "groq"],
+    fallback_order=["groq", "google", "openai", "anthropic"],
 )
 
 # Internal router kept ONLY for get_router_for_internal_use() backward compat
