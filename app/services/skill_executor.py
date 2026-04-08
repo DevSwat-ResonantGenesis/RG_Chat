@@ -2627,6 +2627,7 @@ Respond with ONLY valid JSON (no markdown, no explanation):
       "system_prompt_hint": "You are [role]. Your job is [specific behavior]. Always [constraints].",
       "goal": "Specific, measurable, outcome-oriented goal in 2-3 sentences. NO recurrence language.",
       "goal_priority": 5,
+      "output_destination": "memory_write with key 'result_key' | send_email | google_sheets | console",
       "schedule": null,
       "webhook": false,
       "autonomy_mode": "governed"
@@ -2649,7 +2650,10 @@ RULES:
 - Include "assumptions" array listing every assumption you made about the user's intent
 - If the user's request is vague, make opinionated smart defaults rather than creating a generic agent
 - ALWAYS set max_loops based on the execution parameters table — NEVER use 8 or lower
-- ALWAYS set max_tokens to 128000 — this is the LLM context window, not the output size"""
+- ALWAYS set max_tokens to 128000 — this is the LLM context window, not the output size
+- ALWAYS specify output_destination — where do results go? (memory_write, send_email, google_sheets, console)
+- Include output_destination in system_prompt_hint instructions (e.g. "Store results via memory_write with key 'trending_repos'")
+- If tools need OAuth (google_drive, slack, github, etc.) note it in assumptions"""
 
     # ── Context Protocol: gather workspace state before planning ──
     async def _architect_fetch_context(
@@ -3081,7 +3085,9 @@ Produce the JSON blueprint now:"""
                 summary += f"**{i+1}.** {abp}\n\n"
                 continue
             name = abp.get("name", f"Agent {i+1}")
-            model = f"{abp.get('provider', 'groq')}/{abp.get('model', 'llama-3.3-70b-versatile')}"
+            provider = abp.get("provider", "groq")
+            model_name = abp.get("model", "llama-3.3-70b-versatile")
+            model = f"{provider}/{model_name}"
             raw_tools = abp.get("tools", [])
             if not isinstance(raw_tools, list):
                 raw_tools = [str(raw_tools)]
@@ -3089,6 +3095,10 @@ Produce the JSON blueprint now:"""
             if len(raw_tools) > 5:
                 tools += f" +{len(raw_tools) - 5} more"
             goal = str(abp.get("goal", "No goal specified"))
+            max_loops = abp.get("max_loops", 40)
+            max_tokens = abp.get("max_tokens", 128000)
+            temp = abp.get("temperature", 0.6)
+            output_dest = abp.get("output_destination", "console")
             schedule = abp.get("schedule")
             sched_str = ""
             if schedule and isinstance(schedule, dict):
@@ -3097,8 +3107,11 @@ Produce the JSON blueprint now:"""
                 sched_str = f"\n   ⏰ Schedule: {schedule}"
             summary += (
                 f"**{i+1}. {name}**\n"
-                f"   Model: `{model}` · Tools: {tools}\n"
-                f"   🎯 Goal: {goal[:120]}{sched_str}\n\n"
+                f"   Model: `{model}` · Temp: {temp}\n"
+                f"   🔧 Tools: {tools}\n"
+                f"   🎯 Goal: {goal[:120]}\n"
+                f"   ⚙️ Loops: {max_loops} · Tokens: {max_tokens:,}\n"
+                f"   📤 Output: {output_dest}{sched_str}\n\n"
             )
 
         if assumptions and isinstance(assumptions, list):
@@ -3144,11 +3157,11 @@ Produce the JSON blueprint now:"""
         options.extend([
             {"label": "Build now", "value": "Agent Architect: yes, build the agents as planned", "description": "Create all agents with this configuration", "icon": "🚀"},
             {"label": "Edit plan", "value": "Agent Architect: I'd like to modify the plan before building", "description": "Adjust goals, tools, or models", "icon": "✏️"},
+            {"label": "Change model", "value": "Agent Architect: use openai/gpt-4o instead for stronger reasoning", "description": "Switch LLM provider/model", "icon": "🧠"},
+            {"label": "More loops", "value": "Agent Architect: increase max_loops to 100 for longer execution", "description": "Allow agent more iterations", "icon": "🔄"},
         ])
         if len(agent_blueprints) == 1:
             options.append({"label": "Small test first", "value": "Agent Architect: build a minimal test version first", "description": "Reduced scope to validate", "icon": "🧪"})
-        if workspace_agents > 0:
-            options.append({"label": "Compare to existing", "value": "Agent Architect: show me my existing agents before building", "description": "Review what's already running", "icon": "📋"})
 
         summary += "**Ready to build?**\n"
 
@@ -3387,8 +3400,10 @@ Produce the JSON blueprint now:"""
 
         logger.info(f"🏗️ [ARCHITECT] Building {len(agent_blueprints)} agents")
 
-        # ── Auto-build missing tools before agent creation ──
+        # ── Tool Verification & Auto-build ──
         auto_built_tools: List[str] = []
+        verified_tools: List[str] = []
+        unavailable_tools: List[str] = []
         try:
             builder = self._get_tool_builder()
             all_blueprint_tools = set()
@@ -3398,7 +3413,10 @@ Produce the JSON blueprint now:"""
                         all_blueprint_tools.add(t)
 
             for tool_name in all_blueprint_tools:
-                if not builder.has_tool(tool_name):
+                if builder.has_tool(tool_name):
+                    verified_tools.append(tool_name)
+                    logger.info(f"✅ [ARCHITECT] Tool '{tool_name}' verified in registry")
+                else:
                     logger.info(f"🔧 [ARCHITECT] Tool '{tool_name}' not in registry — auto-building")
                     build_ctx = {
                         "user_id": user_id,
@@ -3415,9 +3433,10 @@ Produce the JSON blueprint now:"""
                         auto_built_tools.append(tool_name)
                         logger.info(f"🔧 [ARCHITECT] Auto-built '{tool_name}' successfully")
                     else:
+                        unavailable_tools.append(tool_name)
                         logger.warning(f"🔧 [ARCHITECT] Could not auto-build '{tool_name}': {msg}")
         except Exception as e:
-            logger.warning(f"[ARCHITECT] Auto-build scan failed (non-fatal): {e}")
+            logger.warning(f"[ARCHITECT] Tool verification failed (non-fatal): {e}")
 
         # ── Create agents with full configuration ──
         created_agents: List[Dict[str, Any]] = []
@@ -3464,6 +3483,10 @@ Produce the JSON blueprint now:"""
                 created_agents.append(result)
 
                 detail_lines = [f"✅ **{agent_name}** — `{agent_id}`"]
+                detail_lines.append(f"   Model: `{agent_provider}/{agent_model}` · Temp: {agent_temp} · Loops: {agent_max_loops or 'auto'} · Tokens: {agent_max_tokens:,}")
+                output_dest = agent_bp.get("output_destination", "console")
+                if output_dest and output_dest != "console":
+                    detail_lines.append(f"   📤 Output: {output_dest}")
 
                 # ── Assign goal ──
                 goal_text = agent_bp.get("goal")
@@ -3625,8 +3648,15 @@ Produce the JSON blueprint now:"""
         if reasoning:
             summary += f"*{reasoning}*\n\n"
 
+        # Tool verification report
+        if verified_tools:
+            summary += f"✅ **{len(verified_tools)} tool(s) verified:** {', '.join(f'`{t}`' for t in verified_tools[:8])}\n"
         if auto_built_tools:
-            summary += f"🔧 **Auto-built {len(auto_built_tools)} missing tool(s):** {', '.join(f'`{t}`' for t in auto_built_tools)}\n\n"
+            summary += f"🔧 **{len(auto_built_tools)} tool(s) auto-built:** {', '.join(f'`{t}`' for t in auto_built_tools)}\n"
+        if unavailable_tools:
+            summary += f"⚠️ **{len(unavailable_tools)} tool(s) unavailable:** {', '.join(f'`{t}`' for t in unavailable_tools)} — agent may have limited functionality\n"
+        if verified_tools or auto_built_tools or unavailable_tools:
+            summary += "\n"
 
         summary += "---\n\n"
         summary += "\n\n".join(creation_details)
