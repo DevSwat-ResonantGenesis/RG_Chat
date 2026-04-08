@@ -2671,11 +2671,26 @@ RULES:
                     if r.status_code == 200:
                         agents = r.json()
                         if isinstance(agents, list):
-                            ctx["agents"] = [
-                                {"name": a.get("name", "?"), "id": a.get("id"), "model": a.get("model", "?"),
-                                 "tools": a.get("tools", []), "is_active": a.get("is_active", False)}
-                                for a in agents[:20]
-                            ]
+                            ctx["agents"] = []
+                            for a in agents[:20]:
+                                raw_tools = a.get("tools", [])
+                                # Normalize tools to list of strings (API may return dicts)
+                                if isinstance(raw_tools, list):
+                                    tools_list = [
+                                        (t.get("name") or t.get("id") or str(t)) if isinstance(t, dict) else str(t)
+                                        for t in raw_tools
+                                    ]
+                                else:
+                                    tools_list = []
+                                ctx["agents"].append({
+                                    "name": a.get("name", "?"), "id": a.get("id"),
+                                    "model": a.get("model", "?"), "provider": a.get("provider", "groq"),
+                                    "tools": tools_list, "is_active": a.get("is_active", False),
+                                    "safety_config": a.get("safety_config") or {},
+                                    "description": a.get("description", ""),
+                                    "max_tokens": a.get("max_tokens", 128000),
+                                    "temperature": a.get("temperature", 0.6),
+                                })
             except Exception as e:
                 logger.debug(f"[ARCHITECT] agents fetch: {e}")
 
@@ -2723,7 +2738,7 @@ RULES:
             return "REVIEW"
         if any(kw in msg_lower for kw in ("why did", "failed", "what went wrong", "error", "diagnose", "debug")):
             return "DIAGNOSE"
-        if any(kw in msg_lower for kw in ("change my", "update my", "modify my", "add tool", "remove tool", "change schedule")):
+        if any(kw in msg_lower for kw in ("modify", "change my", "update my", "add tool", "remove tool", "change schedule", "change model", "increase loop", "increase max", "change tool")):
             return "MODIFY"
         # RUN — must check BEFORE BUILD to avoid "run X" matching "build"
         if re.search(r"\b(run|execute|start|trigger|launch)\s+(?:the\s+|my\s+|this\s+)?[A-Z]", message.strip()):
@@ -3257,6 +3272,34 @@ Produce the JSON blueprint now:"""
         headers: Dict[str, str], user_api_keys: Dict, panel_url: str,
     ) -> Dict[str, Any]:
         """Fallback: inline execution when Builder/Runner services are down."""
+        import traceback as _tb
+        try:
+            return await self._architect_inline_fallback_inner(
+                message, user_id, context, headers, user_api_keys, panel_url,
+            )
+        except Exception as e:
+            logger.error(f"[ARCHITECT] Inline fallback crashed: {e}")
+            _tb.print_exc()
+            return {
+                "success": False, "action": "open_agents_panel", "panel_url": panel_url,
+                "intent": "BUILD", "operation": "architect_error",
+                "error": str(e),
+                "summary": f"I hit an internal error while processing your request: `{e}`\n\nLet me try a simpler approach — could you rephrase what you'd like me to do?",
+                "present_options": {
+                    "_type": "present_options", "title": "Try again",
+                    "options": [
+                        {"label": "Review my agents", "value": "Agent Architect: show me all my agents", "description": "See workspace overview", "icon": "📋"},
+                        {"label": "Try again", "value": message, "description": "Retry the same request", "icon": "🔄"},
+                    ],
+                    "allow_custom": True,
+                },
+            }
+
+    async def _architect_inline_fallback_inner(
+        self, message: str, user_id: str, context: Dict[str, Any],
+        headers: Dict[str, str], user_api_keys: Dict, panel_url: str,
+    ) -> Dict[str, Any]:
+        """Inner fallback logic — wrapped by _architect_inline_fallback for error handling."""
         workspace_ctx = await self._architect_fetch_context(user_id, headers)
         existing_agents_list = workspace_ctx.get("agents", [])
         workspace_agent_count = len(existing_agents_list)
@@ -4276,22 +4319,23 @@ Respond with valid JSON only. No markdown fences."""
         headers: Optional[Dict[str, str]] = None,
         user_api_keys: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        """Handle MODIFY intent — actually modify agent config via LLM delta analysis."""
+        """Handle MODIFY intent — intelligent analysis + targeted improvements.
+
+        Flow: Match agent → Fetch health data → Analyze config → LLM diagnosis →
+        Show findings + suggested changes → User picks → Apply.
+        """
         if not agents:
             return {
                 "success": True, "intent": "MODIFY", "operation": "architect_modify",
                 "summary": "You don't have any agents to modify yet.",
                 "present_options": {
-                    "_type": "present_options",
-                    "title": "Get started",
-                    "options": [
-                        {"label": "Build an agent", "value": "Agent Architect: build me an agent", "description": "Create your first agent", "icon": "🏗️"},
-                    ],
+                    "_type": "present_options", "title": "Get started",
+                    "options": [{"label": "Build an agent", "value": "Agent Architect: build me an agent", "description": "Create your first agent", "icon": "🏗️"}],
                     "allow_custom": True,
                 },
             }
 
-        # Try to match agent name from message
+        # ── Match agent name from message ──
         msg_lower = message.lower()
         matched = [a for a in agents if a.get("name", "").lower() in msg_lower]
         if not matched:
@@ -4300,66 +4344,141 @@ Respond with valid JSON only. No markdown fences."""
                 if any(w in msg_lower for w in name_words if len(w) > 3):
                     matched = [a]
                     break
-
         if not matched:
             if len(agents) == 1:
                 matched = [agents[0]]
             else:
-                # Multiple agents — present as clickable options
-                agent_options = []
-                for a in agents[:4]:
-                    tools_count = len(a.get("tools", []))
-                    agent_options.append({
-                        "label": a["name"],
-                        "value": f"Agent Architect: modify {a['name']}",
-                        "description": f"{a.get('model', '?')} · {tools_count} tools",
-                        "icon": "✏️",
-                    })
+                agent_options = [
+                    {"label": a["name"], "value": f"Agent Architect: modify {a['name']}",
+                     "description": f"{a.get('model', '?')} · {len(a.get('tools', []))} tools", "icon": "✏️"}
+                    for a in agents[:4]
+                ]
                 return {
                     "success": True, "action": "open_agents_panel", "panel_url": panel_url,
                     "intent": "MODIFY", "operation": "architect_modify",
                     "summary": "**Which agent would you like to modify?**\n\nPick one below, or type the agent name and what to change.",
-                    "present_options": {
-                        "_type": "present_options",
-                        "title": "Select an agent to modify",
-                        "options": agent_options,
-                        "allow_custom": True,
-                    },
+                    "present_options": {"_type": "present_options", "title": "Select an agent", "options": agent_options, "allow_custom": True},
                 }
 
         target = matched[0]
         agent_id = target.get("id")
         agent_name = target.get("name", "Agent")
+        agent_tools = target.get("tools", [])
+        # Ensure tools are strings
+        agent_tools = [str(t) if not isinstance(t, str) else t for t in agent_tools]
+        safety_cfg = target.get("safety_config") or {}
+        current_loops = safety_cfg.get("max_loops", "not set")
+        current_tokens = target.get("max_tokens", "not set")
 
-        # ── Use LLM to determine what changes to make (Twin-style delta) ──
-        if headers and user_api_keys:
-            import json as _json
-            modify_prompt = f"""You are an agent configuration assistant. Analyze the user's modification request and produce a JSON patch for the agent.
+        # ── Phase 1: Fetch agent health (recent sessions) ──
+        session_summary = ""
+        recent_sessions = []
+        if headers:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.get(
+                        f"{AGENT_ENGINE_URL}/agents/{agent_id}/sessions",
+                        params={"limit": 5}, headers=headers,
+                    )
+                    if r.status_code == 200:
+                        recent_sessions = r.json() if isinstance(r.json(), list) else r.json().get("sessions", [])
+            except Exception:
+                pass
 
-CURRENT AGENT CONFIG:
+        # Analyze session health
+        total_runs = len(recent_sessions)
+        completed = sum(1 for s in recent_sessions if s.get("status") == "completed")
+        failed = sum(1 for s in recent_sessions if s.get("status") == "failed")
+        loop_limited = sum(1 for s in recent_sessions if "loop" in str(s.get("error") or s.get("status_reason") or "").lower())
+
+        # ── Phase 2: Build rich config display ──
+        tools_str = ", ".join(agent_tools[:6])
+        if len(agent_tools) > 6:
+            tools_str += f" +{len(agent_tools) - 6} more"
+
+        config_display = (
+            f"**Analyzing: {agent_name}** (`{agent_id}`)\n\n"
+            f"---\n\n"
+            f"**Current Configuration:**\n"
+            f"- Model: `{target.get('provider', 'groq')}/{target.get('model', '?')}`\n"
+            f"- Temperature: {target.get('temperature', 0.6)}\n"
+            f"- Max Tokens: {current_tokens:,}\n" if isinstance(current_tokens, int) else f"- Max Tokens: {current_tokens}\n"
+        )
+        config_display += (
+            f"- Max Loops: {current_loops}\n"
+            f"- Tools ({len(agent_tools)}): {tools_str}\n"
+            f"- Status: {'🟢 Active' if target.get('is_active') else '🔴 Inactive'}\n"
+        )
+
+        # ── Phase 3: Health report ──
+        if total_runs > 0:
+            success_rate = (completed / total_runs * 100) if total_runs else 0
+            config_display += (
+                f"\n**Health Report** (last {total_runs} runs):\n"
+                f"- Success rate: {success_rate:.0f}% ({completed}/{total_runs})\n"
+            )
+            if failed:
+                config_display += f"- ❌ {failed} failed runs\n"
+            if loop_limited:
+                config_display += f"- ⚠️ {loop_limited} runs hit loop limit — needs more iterations\n"
+        else:
+            config_display += "\n**Health Report:** No runs yet — agent hasn't been executed.\n"
+
+        # ── Phase 4: LLM-powered analysis + suggestions ──
+        issues_found: List[str] = []
+        suggested_changes: Dict[str, Any] = {}
+
+        # Auto-detect common issues
+        if isinstance(current_loops, int) and current_loops <= 10:
+            issues_found.append(f"Loop limit too low ({current_loops}) — agent can't complete complex tasks")
+            suggested_changes["safety_config"] = {**safety_cfg, "max_loops": 40}
+        if isinstance(current_tokens, int) and current_tokens < 50000:
+            issues_found.append(f"Token budget too low ({current_tokens:,}) — limits context window")
+            suggested_changes["max_tokens"] = 128000
+        if loop_limited > 0:
+            new_loops = max(int(current_loops) * 2 if isinstance(current_loops, int) else 50, 50)
+            issues_found.append(f"Agent keeps hitting loop limit — increasing to {new_loops}")
+            suggested_changes["safety_config"] = {**safety_cfg, "max_loops": new_loops}
+        if not target.get("is_active"):
+            issues_found.append("Agent is inactive — won't respond to triggers")
+
+        # Use LLM for deeper analysis if available
+        import json as _json
+        groq_keys = self._get_groq_keys(user_api_keys)
+        if groq_keys:
+            analysis_prompt = f"""You are an expert agent architect analyzing an agent's configuration to suggest improvements.
+
+AGENT CONFIG:
 - Name: {agent_name}
-- Model: {target.get('model', 'llama-3.3-70b-versatile')}
-- Provider: {target.get('provider', 'groq')}
-- Tools: {target.get('tools', [])}
-- Mode: {target.get('mode', 'governed')}
-- Is Active: {target.get('is_active', False)}
-- Safety Config: {target.get('safety_config', {{}})}
+- Model: {target.get('provider', 'groq')}/{target.get('model', '?')}
+- Temperature: {target.get('temperature', 0.6)}
+- Max Tokens: {current_tokens}
+- Max Loops: {current_loops}
+- Tools: {agent_tools}
+- Active: {target.get('is_active', False)}
+- Description: {target.get('description', 'N/A')}
+
+HEALTH: {total_runs} runs, {completed} completed, {failed} failed, {loop_limited} loop-limited
 
 USER REQUEST: {message}
 
-Respond with ONLY valid JSON (no markdown):
+Analyze the agent and respond with JSON:
 {{
+  "diagnosis": "2-3 sentence analysis of the agent's config and performance — be specific about what's good and what's wrong",
   "changes": {{field: new_value}},
-  "explanation": "What changes and why",
-  "unchanged": "What stays the same"
+  "reasoning": "Why each change helps — be conversational and specific",
+  "warnings": ["Any risks or trade-offs the user should know"]
 }}
 
-Valid fields: name, description, system_prompt, provider, model, temperature, max_tokens, tools, mode, is_active, tool_mode, safety_config, allowed_actions, blocked_actions, max_loops
-IMPORTANT: max_loops (integer 1-100) controls how many iterations the agent can run. Default is 25. If user asks about loop limit, iterations, or "Maximum loop iterations reached" errors, set max_loops to a higher value (e.g. 40-50).
-Only include fields that should change."""
+Valid fields: name, description, system_prompt, provider, model, temperature, max_tokens, tools, mode, is_active, safety_config, max_loops
+Rules:
+- If user just says "modify X" with no specifics, DIAGNOSE the agent and suggest the most impactful improvements
+- If agent has low max_loops (<20), suggest 40-50
+- If max_tokens < 50000, suggest 128000
+- If agent failed runs, explain likely cause and fix
+- Be opinionated — suggest concrete changes, not generic advice
+- Only include fields that should actually change"""
 
-            patch_data = None
-            groq_keys = self._get_groq_keys(user_api_keys)
             for api_key in groq_keys:
                 try:
                     async with httpx.AsyncClient(timeout=12.0) as client:
@@ -4368,81 +4487,75 @@ Only include fields that should change."""
                             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                             json={
                                 "model": "llama-3.3-70b-versatile",
-                                "messages": [{"role": "user", "content": modify_prompt}],
-                                "temperature": 0.1, "max_tokens": 500,
+                                "messages": [{"role": "user", "content": analysis_prompt}],
+                                "temperature": 0.3, "max_tokens": 800,
                                 "response_format": {"type": "json_object"},
                             },
                         )
                         if resp.status_code == 200:
                             content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-                            patch_data = _json.loads(content)
+                            llm_analysis = _json.loads(content)
+                            if llm_analysis.get("diagnosis"):
+                                config_display += f"\n**Diagnosis:**\n{llm_analysis['diagnosis']}\n"
+                            if llm_analysis.get("changes"):
+                                suggested_changes.update(llm_analysis["changes"])
+                            if llm_analysis.get("reasoning"):
+                                config_display += f"\n**Recommended Changes:**\n{llm_analysis['reasoning']}\n"
+                            if llm_analysis.get("warnings"):
+                                for w in llm_analysis["warnings"][:3]:
+                                    config_display += f"\n⚠️ {w}"
+                                config_display += "\n"
                             break
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"[ARCHITECT] LLM analysis failed: {e}")
                     continue
 
-            if patch_data and patch_data.get("changes"):
-                changes = patch_data["changes"]
-                try:
-                    async with httpx.AsyncClient(timeout=15.0) as client:
-                        patch_resp = await client.patch(
-                            f"{AGENT_ENGINE_URL}/agents/{agent_id}",
-                            headers={**headers, "Content-Type": "application/json"},
-                            json=changes,
-                        )
-                        if patch_resp.status_code == 200:
-                            explanation = patch_data.get("explanation", "Changes applied")
-                            unchanged = patch_data.get("unchanged", "")
-                            change_summary = ", ".join(f"**{k}** → `{v}`" if not isinstance(v, list) else f"**{k}** → {len(v)} items" for k, v in changes.items())
-                            summary = (
-                                f"✅ **{agent_name}** modified successfully\n\n"
-                                f"**Changes:** {change_summary}\n"
-                                f"*{explanation}*\n"
-                            )
-                            if unchanged:
-                                summary += f"\n*Unchanged:* {unchanged}\n"
-                            return {
-                                "success": True, "action": "open_agents_panel", "panel_url": panel_url,
-                                "intent": "MODIFY", "operation": "architect_modify",
-                                "summary": summary,
-                                "present_options": {
-                                    "_type": "present_options",
-                                    "title": "What's next?",
-                                    "options": [
-                                        {"label": f"Run {agent_name}", "value": f"Agent Architect: run {agent_name} now", "description": "Test with the new config", "icon": "▶️"},
-                                        {"label": "Make more changes", "value": f"Agent Architect: modify {agent_name}", "description": "Continue modifying", "icon": "✏️"},
-                                        {"label": "Review agents", "value": "Agent Architect: show me all my agents", "description": "See workspace overview", "icon": "📋"},
-                                    ],
-                                    "allow_custom": True,
-                                },
-                            }
-                        else:
-                            error_detail = patch_resp.text[:200]
-                            logger.warning(f"[ARCHITECT] PATCH failed for {agent_id}: {error_detail}")
-                except Exception as e:
-                    logger.warning(f"[ARCHITECT] Modify PATCH failed: {e}")
+        # Add auto-detected issues if LLM didn't catch them
+        if issues_found:
+            config_display += "\n**Issues Detected:**\n"
+            for issue in issues_found:
+                config_display += f"- ⚠️ {issue}\n"
 
-        # Fallback: show current config and ask for specifics
+        # ── Phase 5: Apply changes if we have concrete ones, or present options ──
+        if suggested_changes and headers:
+            # Show what we'll change and apply
+            change_lines = []
+            for k, v in suggested_changes.items():
+                if isinstance(v, (dict, list)):
+                    change_lines.append(f"**{k}** → updated")
+                else:
+                    change_lines.append(f"**{k}** → `{v}`")
+            config_display += f"\n**Applying {len(suggested_changes)} change(s):** {', '.join(change_lines)}\n"
+
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    patch_resp = await client.patch(
+                        f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json=suggested_changes,
+                    )
+                    if patch_resp.status_code == 200:
+                        config_display += "\n✅ **Changes applied successfully!**\n"
+                    else:
+                        config_display += f"\n⚠️ Some changes failed (HTTP {patch_resp.status_code}) — you may need to apply manually.\n"
+                        logger.warning(f"[ARCHITECT] PATCH failed for {agent_id}: {patch_resp.text[:200]}")
+            except Exception as e:
+                config_display += f"\n⚠️ Could not apply changes: {e}\n"
+                logger.warning(f"[ARCHITECT] Modify PATCH failed: {e}")
+
+        # ── Phase 6: Build follow-up options ──
+        options = [
+            {"label": f"Run {agent_name}", "value": f"Agent Architect: run {agent_name} now", "description": "Test with updated config", "icon": "▶️"},
+            {"label": "More changes", "value": f"Agent Architect: I want to change {agent_name}'s tools and model", "description": "Specify what to change", "icon": "✏️"},
+            {"label": "Increase loops", "value": f"Agent Architect: increase {agent_name} max_loops to 100", "description": "Allow longer execution", "icon": "🔄"},
+            {"label": "Diagnose failures", "value": f"Agent Architect: why did {agent_name} fail?", "description": "Deep-dive into errors", "icon": "🔍"},
+        ]
+
         return {
             "success": True, "action": "open_agents_panel", "panel_url": panel_url,
             "intent": "MODIFY", "operation": "architect_modify",
-            "summary": (
-                f"**Modifying: {agent_name}**\n\n"
-                f"Current config: {target.get('model', '?')} | Tools: {', '.join(target.get('tools', [])[:5])}\n\n"
-                "Tell me what you'd like to change — for example:\n"
-                "• \"add web_search and fetch_url tools\"\n"
-                "• \"switch to gpt-4o for better reasoning\"\n"
-                "• \"change the system prompt to focus on X\""
-            ),
-            "present_options": {
-                "_type": "present_options",
-                "title": "Common modifications",
-                "options": [
-                    {"label": "Add tools", "value": f"Agent Architect: add web_search and fetch_url tools to {agent_name}", "description": "Expand capabilities", "icon": "🔧"},
-                    {"label": "Change model", "value": f"Agent Architect: switch {agent_name} to gpt-4o for better reasoning", "description": "Upgrade intelligence", "icon": "🧠"},
-                    {"label": "Update goal", "value": f"Agent Architect: update the goal for {agent_name}", "description": "Refine what it does", "icon": "🎯"},
-                ],
-                "allow_custom": True,
-            },
+            "summary": config_display,
+            "present_options": {"_type": "present_options", "title": "What's next?", "options": options, "allow_custom": True},
         }
 
     # ============================================
