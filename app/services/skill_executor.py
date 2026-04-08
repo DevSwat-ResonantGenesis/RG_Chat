@@ -18,6 +18,7 @@ import httpx
 
 from .skills_registry import SkillDefinition, skills_registry
 from .skills import INTEGRATION_SKILLS
+from .prompts.architect_prompt import build_architect_system_prompt
 
 try:
     from platform_tools.auth import AuthContext, build_service_headers
@@ -3652,21 +3653,23 @@ Produce the JSON blueprint now:"""
                 conversation.append({"role": role, "content": content[:500]})
         conversation.append({"role": "user", "content": message})
 
-        # Build system prompt with live workspace context
+        # Build system prompt from modular prompt files with live context
         agents_summary = ""
         for a in workspace_ctx.get("agents", [])[:10]:
             sc = a.get("safety_config") or {}
+            tools_list = a.get("tools", [])
             agents_summary += (
-                f"- {a['name']} (id={a['id']}, model={a.get('provider', 'groq')}/{a.get('model', '?')}, "
-                f"tools={len(a.get('tools', []))}, loops={sc.get('max_loops', '?')}, "
-                f"active={a.get('is_active', False)})\n"
+                f"- {a['name']} (id={a['id']})\n"
+                f"  Model: {a.get('provider', 'groq')}/{a.get('model', '?')} | Temp: {a.get('temperature', 0.6)}\n"
+                f"  Tools ({len(tools_list)}): {', '.join(tools_list[:6])}\n"
+                f"  Loops: {sc.get('max_loops', 'not set')} | Tokens: {a.get('max_tokens', 'not set')}\n"
+                f"  Active: {a.get('is_active', False)} | Desc: {a.get('description', 'N/A')[:60]}\n"
             )
 
-        system = self._ARCHITECT_REACT_SYSTEM + (
-            f"\n\nCURRENT WORKSPACE:\n{agents_summary or 'No agents yet.'}\n"
+        system = build_architect_system_prompt(
+            workspace_summary=agents_summary,
+            memory_facts=workspace_ctx.get("memory_facts", "")[:500],
         )
-        if workspace_ctx.get("memory_facts"):
-            system += f"\nKNOWN USER FACTS:\n{workspace_ctx['memory_facts'][:500]}\n"
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}] + conversation
 
@@ -3683,8 +3686,8 @@ Produce the JSON blueprint now:"""
                             "messages": messages,
                             "tools": self._ARCHITECT_REACT_TOOLS,
                             "tool_choice": "auto",
-                            "temperature": 0.4,
-                            "max_tokens": 2000,
+                            "temperature": 0.5,
+                            "max_tokens": 4000,
                         },
                     )
                     if resp.status_code != 200:
