@@ -2560,6 +2560,134 @@ Run fails → Diagnose: investigate, explain, propose fix.
 - Every response should leave the user knowing exactly what to do next.
 </style>"""
 
+    # ── ReAct Agent Tools (function calling for autonomous reasoning) ──
+    _ARCHITECT_REACT_TOOLS = [
+        {"type": "function", "function": {
+            "name": "analyze_workspace",
+            "description": "Get full workspace overview: all agents, their config, health, status. Call this FIRST to understand what the user has.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        }},
+        {"type": "function", "function": {
+            "name": "analyze_agent",
+            "description": "Deep analysis of a specific agent: full config, recent sessions, success/failure rate, loop limits, errors. Use to diagnose problems.",
+            "parameters": {"type": "object", "properties": {
+                "agent_name_or_id": {"type": "string", "description": "Name or ID of agent to analyze"},
+            }, "required": ["agent_name_or_id"]},
+        }},
+        {"type": "function", "function": {
+            "name": "modify_agent",
+            "description": "Apply configuration changes to an existing agent. Use after analyzing to fix issues.",
+            "parameters": {"type": "object", "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID from analyze_workspace/analyze_agent"},
+                "changes": {"type": "object", "description": "Fields to change: model, temperature, max_tokens, tools, safety_config (with max_loops), is_active, system_prompt, description, name"},
+            }, "required": ["agent_id", "changes"]},
+        }},
+        {"type": "function", "function": {
+            "name": "create_agent",
+            "description": "Create a new production agent with full configuration, goal, tools, and schedule.",
+            "parameters": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "goal": {"type": "string", "description": "Specific outcome-oriented goal in 2-3 sentences"},
+                "tools": {"type": "array", "items": {"type": "string"}},
+                "provider": {"type": "string", "description": "groq, openai, anthropic, google"},
+                "model": {"type": "string"},
+                "temperature": {"type": "number"},
+                "max_tokens": {"type": "integer"},
+                "max_loops": {"type": "integer"},
+                "system_prompt": {"type": "string"},
+                "schedule": {"type": "object", "description": "Optional: {cron_expression: str} or {interval_seconds: int}"},
+                "autonomy_mode": {"type": "string", "description": "governed, supervised, unbounded"},
+            }, "required": ["name", "goal", "tools"]},
+        }},
+        {"type": "function", "function": {
+            "name": "run_agent",
+            "description": "Execute an agent immediately and poll for results.",
+            "parameters": {"type": "object", "properties": {
+                "agent_id": {"type": "string"},
+                "task": {"type": "string", "description": "Optional task override"},
+            }, "required": ["agent_id"]},
+        }},
+        {"type": "function", "function": {
+            "name": "search_memory",
+            "description": "Search user's memory for context: past builds, preferences, lessons learned, failures.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "What to search for"},
+            }, "required": ["query"]},
+        }},
+        {"type": "function", "function": {
+            "name": "store_insight",
+            "description": "Store a lesson learned or insight for future use. Call when you discover something important about the user or their agents.",
+            "parameters": {"type": "object", "properties": {
+                "insight": {"type": "string"},
+                "category": {"type": "string", "description": "user_preference, agent_pattern, failure_lesson, optimization_tip"},
+            }, "required": ["insight"]},
+        }},
+        {"type": "function", "function": {
+            "name": "respond_to_user",
+            "description": "Send your final response to the user. MUST be called to end the conversation turn. Include rich markdown analysis, findings, actions taken, and follow-up options.",
+            "parameters": {"type": "object", "properties": {
+                "message": {"type": "string", "description": "Rich markdown response with analysis, actions, suggestions"},
+                "options": {"type": "array", "items": {"type": "object", "properties": {
+                    "label": {"type": "string"}, "value": {"type": "string"},
+                    "description": {"type": "string"}, "icon": {"type": "string"},
+                }}, "description": "Follow-up action buttons"},
+            }, "required": ["message"]},
+        }},
+    ]
+
+    _ARCHITECT_REACT_SYSTEM = """You are Resonant Agent Architect — an autonomous AI that manages a fleet of AI agents on the Resonant Genesis platform.
+
+You DON'T just route keywords. You THINK, ANALYZE, and ACT autonomously. You are a senior engineer who investigates before acting.
+
+YOUR TOOLS:
+1. search_memory — Check past interactions, user preferences, lessons learned (call this FIRST)
+2. analyze_workspace — See all agents, their status, health
+3. analyze_agent — Deep-dive into specific agent config, sessions, errors
+4. modify_agent — Fix agent configuration issues
+5. create_agent — Build new agents with optimal config
+6. run_agent — Execute agents and monitor results
+7. store_insight — Remember important patterns for future decisions
+8. respond_to_user — Present your findings (MUST call this to finish)
+
+YOUR BEHAVIOR:
+- ALWAYS search_memory first for context about this user
+- ALWAYS analyze before acting — never blindly apply changes
+- When user says "modify X" without specifics, YOU decide what to improve based on analysis
+- When you find issues (low loops, failed runs, bad config), FIX them proactively
+- Be conversational — explain reasoning like a senior engineer
+- After actions, verify they worked
+- Store insights so you get smarter over time
+
+TYPICAL AUTONOMOUS FLOW:
+1. search_memory → understand user context and past decisions
+2. analyze_workspace or analyze_agent → understand current state
+3. REASON about what's wrong or what to build
+4. ACT: modify_agent / create_agent / run_agent
+5. store_insight → remember what you learned
+6. respond_to_user → explain everything clearly with next steps
+
+PLATFORM TOOLS FOR AGENTS:
+Search: web_search, fetch_url, news_search | Memory: memory_read, memory_write, memory_search
+Code: execute_code, code_visualizer_scan | Agents: agents_list, agents_create, agents_start
+Media: generate_image, generate_audio | Integrations: google_drive, google_calendar, send_email
+Developer: http_request, external_http_request | Git: git_clone, git_branch, git_push, git_pull
+
+MODELS (pick based on task complexity):
+- groq/llama-3.3-70b-versatile (fast, default 90% of tasks)
+- openai/gpt-4o (strongest reasoning, complex multi-step)
+- anthropic/claude-3-5-sonnet (excellent coding/analysis)
+- groq/llama-3.1-8b-instant (ultra-fast simple tasks)
+
+EXECUTION PARAMS: Simple→max_loops=20, Medium→40, Complex→50, Creative→30. Always max_tokens=128000.
+
+RULES:
+- Maximum 8 tool calls per turn. Be efficient.
+- ALWAYS end with respond_to_user — never leave the user hanging.
+- Never fabricate agent IDs — get them from analyze_workspace/analyze_agent.
+- Be opinionated — propose what YOU think is best, don't ask generic questions.
+- When something fails, investigate WHY, fix it, then explain what you did."""
+
     # ── Planning Prompt (context-aware JSON blueprint generation) ──
     _ARCHITECT_PLANNING_PROMPT = """You are Resonant Agent Architect. You produce PRECISE JSON blueprints for production-ready agents.
 
@@ -3267,6 +3395,404 @@ Produce the JSON blueprint now:"""
             logger.info(f"🏗️ [ARCHITECT] Response from service: intent={result.get('intent')}, op={result.get('operation')}")
             return result
 
+    # ── ReAct Tool Executor (executes tool calls from the autonomous loop) ──
+    async def _architect_execute_react_tool(
+        self, tool_name: str, args: Dict[str, Any],
+        user_id: str, headers: Dict[str, str], user_api_keys: Dict,
+        workspace_ctx: Dict[str, Any],
+    ) -> str:
+        """Execute a tool call from the ReAct loop and return the result as a string."""
+        import json as _json
+
+        if tool_name == "analyze_workspace":
+            agents = workspace_ctx.get("agents", [])
+            if not agents:
+                return "No agents in workspace. User hasn't created any agents yet."
+            lines = [f"Workspace: {len(agents)} agents\n"]
+            for a in agents:
+                tools = a.get("tools", [])
+                sc = a.get("safety_config") or {}
+                lines.append(
+                    f"- {a['name']} (id={a['id']})\n"
+                    f"  Model: {a.get('provider', 'groq')}/{a.get('model', '?')}\n"
+                    f"  Tools ({len(tools)}): {', '.join(tools[:6])}\n"
+                    f"  Max Loops: {sc.get('max_loops', 'not set')} | Max Tokens: {a.get('max_tokens', 'not set')}\n"
+                    f"  Active: {a.get('is_active', False)} | Temp: {a.get('temperature', 0.6)}\n"
+                    f"  Description: {a.get('description', 'N/A')[:80]}"
+                )
+            return "\n".join(lines)
+
+        if tool_name == "analyze_agent":
+            name_or_id = args.get("agent_name_or_id", "")
+            agents = workspace_ctx.get("agents", [])
+            target = None
+            for a in agents:
+                if a.get("id") == name_or_id or name_or_id.lower() in a.get("name", "").lower():
+                    target = a
+                    break
+            if not target:
+                for a in agents:
+                    name_words = a.get("name", "").lower().replace("_", " ").split()
+                    if any(w in name_or_id.lower() for w in name_words if len(w) > 3):
+                        target = a
+                        break
+            if not target:
+                return f"Agent '{name_or_id}' not found. Available: {', '.join(a['name'] for a in agents)}"
+
+            sessions = []
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.get(
+                        f"{AGENT_ENGINE_URL}/agents/{target['id']}/sessions",
+                        params={"limit": 5}, headers=headers,
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        sessions = data if isinstance(data, list) else data.get("sessions", [])
+            except Exception:
+                pass
+
+            sc = target.get("safety_config") or {}
+            total_runs = len(sessions)
+            completed = sum(1 for s in sessions if s.get("status") == "completed")
+            failed = sum(1 for s in sessions if s.get("status") == "failed")
+            loop_limited = sum(1 for s in sessions if "loop" in str(s.get("error") or s.get("status_reason") or "").lower())
+
+            result = (
+                f"Agent: {target['name']} (id={target['id']})\n"
+                f"Model: {target.get('provider', 'groq')}/{target.get('model', '?')}\n"
+                f"Temperature: {target.get('temperature', 0.6)}\n"
+                f"Max Tokens: {target.get('max_tokens', 'not set')}\n"
+                f"Max Loops: {sc.get('max_loops', 'not set')}\n"
+                f"Max Tokens/Run: {sc.get('max_tokens_per_run', 'not set')}\n"
+                f"Tools ({len(target.get('tools', []))}): {', '.join(target.get('tools', []))}\n"
+                f"Active: {target.get('is_active', False)}\n"
+                f"Description: {target.get('description', 'N/A')}\n"
+                f"\nHealth ({total_runs} recent runs): completed={completed}, failed={failed}, loop_limited={loop_limited}\n"
+            )
+            if total_runs > 0:
+                result += f"Success rate: {completed/total_runs*100:.0f}%\n"
+            for s in sessions[:3]:
+                status = s.get("status", "?")
+                error = s.get("error") or s.get("status_reason") or ""
+                steps = s.get("loop_count") or s.get("steps") or "?"
+                result += f"  Run: status={status}, steps={steps}"
+                if error:
+                    result += f", error={error[:100]}"
+                result += "\n"
+            return result
+
+        if tool_name == "modify_agent":
+            agent_id = args.get("agent_id")
+            changes = args.get("changes", {})
+            if not agent_id or not changes:
+                return "Error: agent_id and changes are required"
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.patch(
+                        f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json=changes,
+                    )
+                    if resp.status_code == 200:
+                        return f"SUCCESS: Agent {agent_id} updated. Changes: {_json.dumps(changes, default=str)}"
+                    return f"FAILED: HTTP {resp.status_code} — {resp.text[:200]}"
+            except Exception as e:
+                return f"ERROR: {e}"
+
+        if tool_name == "create_agent":
+            name = args.get("name", "New Agent")
+            goal = args.get("goal", "")
+            tools = args.get("tools", ["web_search", "fetch_url"])
+            provider = args.get("provider", "groq")
+            model = args.get("model", "llama-3.3-70b-versatile")
+            temp = args.get("temperature", 0.6)
+            max_tokens = args.get("max_tokens", 128000)
+            max_loops = args.get("max_loops", 40)
+            sys_prompt = args.get("system_prompt", f"You are {name}. {args.get('description', '')}")
+            autonomy_mode = args.get("autonomy_mode", "governed")
+            safety_config = self._build_safety_config(tools, autonomy_mode, max_loops=max_loops)
+            payload = {
+                "name": name, "description": args.get("description", goal[:100]),
+                "system_prompt": sys_prompt, "provider": provider, "model": model,
+                "temperature": temp, "max_tokens": max_tokens, "tools": tools,
+                "mode": autonomy_mode, "safety_config": safety_config,
+                "allowed_actions": tools, "blocked_actions": ["delete_community", "delete_user"],
+            }
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    result = await self._create_single_agent(client, payload, headers)
+                    if result:
+                        agent_id = result.get("id")
+                        if goal and agent_id:
+                            await client.post(
+                                f"{AGENT_ENGINE_URL}/agents/goals/{agent_id}/assign",
+                                headers=headers, json={"description": goal, "priority": 5},
+                            )
+                        schedule = args.get("schedule")
+                        if schedule and isinstance(schedule, dict) and agent_id:
+                            sched_payload = {"name": f"{name} Schedule", "goal": goal or name}
+                            sched_payload.update(schedule)
+                            await client.post(
+                                f"{AGENT_ENGINE_URL}/agents/{agent_id}/schedules",
+                                headers=headers, json=sched_payload,
+                            )
+                        return f"SUCCESS: Agent '{name}' created (id={agent_id}). Goal assigned. Ready to run."
+                    return "FAILED: Agent creation returned no data"
+            except Exception as e:
+                return f"ERROR creating agent: {e}"
+
+        if tool_name == "run_agent":
+            agent_id = args.get("agent_id")
+            task = args.get("task")
+            if not agent_id:
+                return "Error: agent_id required"
+            try:
+                import asyncio as _aio
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    await client.patch(
+                        f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json={"is_active": True},
+                    )
+                    exec_payload: Dict[str, Any] = {"context": {"source": "agent_architect"}}
+                    if task:
+                        exec_payload["task"] = task
+                    resp = await client.post(
+                        f"{AGENT_ENGINE_URL}/execution/agents/{agent_id}/execute",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json=exec_payload,
+                    )
+                    if resp.status_code in (200, 201, 202):
+                        data = resp.json()
+                        session_id = data.get("session_id") or data.get("id")
+                        for _ in range(3):
+                            await _aio.sleep(3)
+                            try:
+                                poll = await client.get(
+                                    f"{AGENT_ENGINE_URL}/execution/agents/{agent_id}/executions",
+                                    headers=headers, params={"limit": 1},
+                                )
+                                if poll.status_code == 200:
+                                    runs = poll.json()
+                                    runs = runs.get("executions", runs) if isinstance(runs, dict) else runs
+                                    if isinstance(runs, list) and runs:
+                                        latest = runs[0]
+                                        status = latest.get("status", "running")
+                                        if status in ("completed", "failed"):
+                                            output = latest.get("output") or latest.get("final_output") or ""
+                                            steps = latest.get("loop_count") or latest.get("steps") or "?"
+                                            return f"Run {status}: {steps} steps. Output: {str(output)[:500]}"
+                            except Exception:
+                                pass
+                        return f"Run started (session={session_id}). Still running — check back shortly."
+                    return f"FAILED to start: HTTP {resp.status_code}"
+            except Exception as e:
+                return f"ERROR running agent: {e}"
+
+        if tool_name == "search_memory":
+            query = args.get("query", "user preferences")
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    r = await client.get(
+                        f"{MEMORY_SERVICE_URL}/memory/search",
+                        params={"query": query, "user_id": user_id, "limit": 5},
+                        headers=headers,
+                    )
+                    if r.status_code == 200:
+                        results = r.json().get("results", [])
+                        if results:
+                            facts = [f"- {m.get('content', '')[:200]}" for m in results[:5]]
+                            return f"Found {len(results)} memories:\n" + "\n".join(facts)
+                        return "No relevant memories found for this query."
+            except Exception as e:
+                return f"Memory search failed: {e}"
+            return "Memory service unavailable."
+
+        if tool_name == "store_insight":
+            insight = args.get("insight", "")
+            category = args.get("category", "agent_pattern")
+            if insight:
+                await self._architect_store_memory(
+                    user_id, f"[{category}] {insight}",
+                    metadata={"type": category, "origin": "architect_react"},
+                )
+                return f"Stored: [{category}] {insight[:100]}"
+            return "No insight to store."
+
+        return f"Unknown tool: {tool_name}"
+
+    # ── Autonomous ReAct Loop (LLM reasons → calls tools → observes → repeats) ──
+    async def _architect_react_loop(
+        self, message: str, user_id: str, context: Dict[str, Any],
+        headers: Dict[str, str], user_api_keys: Dict, panel_url: str,
+        workspace_ctx: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Autonomous ReAct loop: LLM decides what to do using function calling.
+
+        Returns a result dict or None (to fall back to old keyword routing).
+        """
+        import json as _json
+
+        groq_keys = self._get_groq_keys(user_api_keys)
+        if not groq_keys:
+            logger.info("[ARCHITECT-REACT] No Groq keys — falling back to keyword routing")
+            return None
+
+        # Build conversation history from context
+        prev_messages = (
+            context.get("messages") or context.get("previousMessages")
+            or context.get("previous_messages") or context.get("conversation_history") or []
+        )
+        conversation: List[Dict[str, str]] = []
+        for m in prev_messages[-6:]:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role in ("user", "assistant") and content:
+                conversation.append({"role": role, "content": content[:500]})
+        conversation.append({"role": "user", "content": message})
+
+        # Build system prompt with live workspace context
+        agents_summary = ""
+        for a in workspace_ctx.get("agents", [])[:10]:
+            sc = a.get("safety_config") or {}
+            agents_summary += (
+                f"- {a['name']} (id={a['id']}, model={a.get('provider', 'groq')}/{a.get('model', '?')}, "
+                f"tools={len(a.get('tools', []))}, loops={sc.get('max_loops', '?')}, "
+                f"active={a.get('is_active', False)})\n"
+            )
+
+        system = self._ARCHITECT_REACT_SYSTEM + (
+            f"\n\nCURRENT WORKSPACE:\n{agents_summary or 'No agents yet.'}\n"
+        )
+        if workspace_ctx.get("memory_facts"):
+            system += f"\nKNOWN USER FACTS:\n{workspace_ctx['memory_facts'][:500]}\n"
+
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": system}] + conversation
+
+        max_iterations = 8
+        for iteration in range(max_iterations):
+            api_key = groq_keys[iteration % len(groq_keys)]
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "llama-3.3-70b-versatile",
+                            "messages": messages,
+                            "tools": self._ARCHITECT_REACT_TOOLS,
+                            "tool_choice": "auto",
+                            "temperature": 0.4,
+                            "max_tokens": 2000,
+                        },
+                    )
+                    if resp.status_code != 200:
+                        logger.warning(f"[ARCHITECT-REACT] LLM call failed: HTTP {resp.status_code} — {resp.text[:200]}")
+                        if iteration == 0:
+                            return None  # Fall back to old flow on first failure
+                        break
+
+                    data = resp.json()
+                    choice = data.get("choices", [{}])[0]
+                    msg = choice.get("message", {})
+                    messages.append(msg)
+
+                    tool_calls = msg.get("tool_calls", [])
+
+                    if not tool_calls:
+                        # LLM responded directly (no tool calls) — use as final response
+                        content = msg.get("content", "")
+                        if content:
+                            logger.info(f"[ARCHITECT-REACT] Direct response (no tools) at iteration {iteration}")
+                            return {
+                                "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                                "intent": "AUTONOMOUS", "operation": "architect_react",
+                                "summary": content,
+                                "present_options": {
+                                    "_type": "present_options", "title": "What's next?",
+                                    "options": [
+                                        {"label": "Review agents", "value": "Agent Architect: show me all my agents", "description": "See workspace", "icon": "📋"},
+                                        {"label": "Build something", "value": "Agent Architect: help me build an agent", "description": "Create new", "icon": "🏗️"},
+                                    ],
+                                    "allow_custom": True,
+                                },
+                            }
+                        return None
+
+                    # Execute each tool call
+                    for tc in tool_calls:
+                        fn_name = tc.get("function", {}).get("name", "")
+                        fn_args_str = tc.get("function", {}).get("arguments", "{}")
+                        try:
+                            fn_args = _json.loads(fn_args_str)
+                        except Exception:
+                            fn_args = {}
+
+                        logger.info(f"🔧 [ARCHITECT-REACT] iter={iteration} tool={fn_name}({list(fn_args.keys())})")
+
+                        # Terminal action: respond_to_user
+                        if fn_name == "respond_to_user":
+                            response_msg = fn_args.get("message", "")
+                            response_options = fn_args.get("options", [])
+                            if not response_options:
+                                response_options = [
+                                    {"label": "Run an agent", "value": "Agent Architect: run my agent now", "description": "Execute immediately", "icon": "▶️"},
+                                    {"label": "Build another", "value": "Agent Architect: build me a new agent", "description": "Create something new", "icon": "🏗️"},
+                                    {"label": "Review all", "value": "Agent Architect: show me all my agents", "description": "Workspace overview", "icon": "📋"},
+                                ]
+                            # Ensure option values contain 'Agent Architect:' for routing
+                            for opt in response_options:
+                                if isinstance(opt, dict) and "value" in opt:
+                                    if "architect" not in opt["value"].lower():
+                                        opt["value"] = f"Agent Architect: {opt['value']}"
+
+                            logger.info(f"[ARCHITECT-REACT] Final response after {iteration+1} iterations, {len(messages)-2} messages")
+                            return {
+                                "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                                "intent": "AUTONOMOUS", "operation": "architect_react",
+                                "summary": response_msg,
+                                "present_options": {
+                                    "_type": "present_options", "title": "What's next?",
+                                    "options": response_options[:4],
+                                    "allow_custom": True,
+                                },
+                            }
+
+                        # Execute the tool and feed result back to LLM
+                        tool_result = await self._architect_execute_react_tool(
+                            fn_name, fn_args, user_id, headers, user_api_keys, workspace_ctx,
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", f"call_{iteration}_{fn_name}"),
+                            "content": str(tool_result)[:2000],
+                        })
+
+            except Exception as e:
+                logger.warning(f"[ARCHITECT-REACT] Iteration {iteration} failed: {e}")
+                import traceback; traceback.print_exc()
+                if iteration == 0:
+                    return None  # Fall back to old flow
+                break
+
+        # Exhausted iterations — use last assistant content if any
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                return {
+                    "success": True, "action": "open_agents_panel", "panel_url": panel_url,
+                    "intent": "AUTONOMOUS", "operation": "architect_react",
+                    "summary": msg["content"],
+                    "present_options": {
+                        "_type": "present_options", "title": "What's next?",
+                        "options": [{"label": "Continue", "value": message, "description": "Continue", "icon": "💬"}],
+                        "allow_custom": True,
+                    },
+                }
+
+        return None  # Fall back to old keyword routing
+
+    # ── Inline Fallback (error-safe wrapper) ──
     async def _architect_inline_fallback(
         self, message: str, user_id: str, context: Dict[str, Any],
         headers: Dict[str, str], user_api_keys: Dict, panel_url: str,
@@ -3299,11 +3825,12 @@ Produce the JSON blueprint now:"""
         self, message: str, user_id: str, context: Dict[str, Any],
         headers: Dict[str, str], user_api_keys: Dict, panel_url: str,
     ) -> Dict[str, Any]:
-        """Inner fallback logic — wrapped by _architect_inline_fallback for error handling."""
+        """Inner fallback: ReAct agent loop FIRST, then keyword routing as fallback."""
         workspace_ctx = await self._architect_fetch_context(user_id, headers)
         existing_agents_list = workspace_ctx.get("agents", [])
         workspace_agent_count = len(existing_agents_list)
 
+        # Check for build confirmation (stateless two-phase)
         is_confirmation = self._architect_is_confirmation(message, context)
         if is_confirmation:
             original_request = self._architect_extract_original_request(context)
@@ -3312,6 +3839,23 @@ Produce the JSON blueprint now:"""
                 workspace_ctx, existing_agents_list, panel_url,
             )
 
+        # ══════════════════════════════════════════════════════════
+        # PRIMARY: Autonomous ReAct agent loop
+        # The LLM decides what to do — analyze, modify, create, run
+        # No keyword routing. Pure autonomous reasoning.
+        # ══════════════════════════════════════════════════════════
+        react_result = await self._architect_react_loop(
+            message, user_id, context, headers, user_api_keys, panel_url,
+            workspace_ctx,
+        )
+        if react_result:
+            logger.info("[ARCHITECT] ✅ ReAct loop returned autonomous result")
+            return react_result
+
+        # ══════════════════════════════════════════════════════════
+        # FALLBACK: Old keyword routing (when ReAct fails or no API keys)
+        # ══════════════════════════════════════════════════════════
+        logger.info("[ARCHITECT] ReAct returned None — falling back to keyword routing")
         intent = await self._architect_classify_intent(message, user_api_keys)
 
         if intent == "REVIEW":
