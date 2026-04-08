@@ -3728,8 +3728,10 @@ Produce the JSON blueprint now:"""
                         fn_name = tc.get("function", {}).get("name", "")
                         fn_args_str = tc.get("function", {}).get("arguments", "{}")
                         try:
-                            fn_args = _json.loads(fn_args_str)
+                            fn_args = _json.loads(fn_args_str) or {}
                         except Exception:
+                            fn_args = {}
+                        if not isinstance(fn_args, dict):
                             fn_args = {}
 
                         logger.info(f"🔧 [ARCHITECT-REACT] iter={iteration} tool={fn_name}({list(fn_args.keys())})")
