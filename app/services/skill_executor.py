@@ -3377,23 +3377,68 @@ Produce the JSON blueprint now:"""
     async def _architect_delegate_to_services(
         self, svc_payload: Dict, headers: Dict[str, str], panel_url: str,
     ) -> Dict[str, Any]:
-        """Primary path: delegate to unified Agent Architect service.
+        """Primary path: delegate to standalone Agent Architect service.
 
-        Single call to /architect/orchestrate — the service handles intent
-        classification, routing, building, running, scheduling internally.
+        Calls POST /api/message — the architect orchestrator handles intent
+        classification, tool calling, building, running, scheduling internally.
         """
+        # Map to the architect service's expected payload format
+        architect_payload = {
+            "workspace_id": svc_payload.get("user_id", "default"),
+            "message": svc_payload.get("message", ""),
+            "user_id": svc_payload.get("user_id", ""),
+        }
         async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
             resp = await client.post(
-                f"{AGENT_ARCHITECT_URL}/architect/orchestrate",
-                headers=headers, json=svc_payload,
+                f"{AGENT_ARCHITECT_URL}/api/message",
+                headers=headers, json=architect_payload,
             )
             if resp.status_code != 200:
                 raise RuntimeError(f"Agent Architect service returned HTTP {resp.status_code}: {resp.text[:200]}")
 
-            result = resp.json()
-            result.setdefault("action", "open_agents_panel")
-            result.setdefault("panel_url", panel_url)
-            logger.info(f"🏗️ [ARCHITECT] Response from service: intent={result.get('intent')}, op={result.get('operation')}")
+            data = resp.json()
+            # Map architect response to the format resonant_chat.py expects
+            summary = data.get("text", "")
+            mode = data.get("mode", "control")
+            options_data = data.get("options", {})
+
+            result: Dict[str, Any] = {
+                "success": True,
+                "action": "open_agents_panel",
+                "panel_url": panel_url,
+                "intent": mode.upper(),
+                "operation": "architect_service",
+                "summary": summary,
+            }
+
+            # Map architect options to present_options format
+            if options_data:
+                raw_options = options_data.get("options", [])
+                if isinstance(raw_options, list) and raw_options:
+                    mapped = []
+                    for opt in raw_options[:4]:
+                        if isinstance(opt, str):
+                            mapped.append({
+                                "label": opt,
+                                "value": f"Agent Architect: {opt}",
+                                "description": opt,
+                                "icon": "🔧",
+                            })
+                        elif isinstance(opt, dict):
+                            mapped.append({
+                                "label": opt.get("label", opt.get("text", str(opt))),
+                                "value": f"Agent Architect: {opt.get('value', opt.get('label', ''))}",
+                                "description": opt.get("description", ""),
+                                "icon": opt.get("icon", "🔧"),
+                            })
+                    result["present_options"] = {
+                        "_type": "present_options",
+                        "title": options_data.get("question", "What's next?"),
+                        "options": mapped,
+                        "allow_custom": True,
+                    }
+
+            logger.info(f"🏗️ [ARCHITECT] Response from service: mode={mode}, summary_len={len(summary)}")
             return result
 
     # ── ReAct Tool Executor (executes tool calls from the autonomous loop) ──
