@@ -1823,11 +1823,33 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
         )
 
     @staticmethod
-    def _build_safety_config(tools: List[str], mode: str) -> Dict[str, Any]:
-        """Build safety config based on tools and mode."""
+    def _build_safety_config(tools: List[str], mode: str, max_loops: int = 0, max_tokens_per_run: int = 0) -> Dict[str, Any]:
+        """Build safety config based on tools, mode, and task complexity.
+        
+        Execution parameters (from Twin spec Section 25):
+          Simple (search+summarize): 15-20 loops, 30k tokens
+          Medium (multi-step research): 30-40 loops, 50k tokens
+          Complex (scraping, code gen): 40-50 loops, 80k tokens
+          Creative (content, design): 20-30 loops, 50k tokens
+        """
+        # Auto-detect complexity from tools if no explicit override
+        if not max_loops:
+            complex_tools = {"execute_code", "code_visualizer_scan", "http_request", "external_http_request", "git_clone", "git_push"}
+            medium_tools = {"fetch_url", "news_search", "platform_api_call", "google_drive", "google_calendar", "memory_search"}
+            scraper_tools = {"scrape_page", "deep_research", "scrape_platforms"}
+            tool_set = set(tools or [])
+            if tool_set & scraper_tools or tool_set & complex_tools:
+                max_loops = 50
+            elif len(tool_set) >= 4 or tool_set & medium_tools:
+                max_loops = 40
+            else:
+                max_loops = 25
+        if not max_tokens_per_run:
+            max_tokens_per_run = 500000
+
         config: Dict[str, Any] = {
-            "max_loops": 8,
-            "max_tokens_per_run": 50000,
+            "max_loops": max_loops,
+            "max_tokens_per_run": max_tokens_per_run,
             "rate_limit_per_minute": 30,
         }
         # Require confirmation for destructive actions
@@ -1868,7 +1890,7 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             "provider": provider,
             "model": model,
             "temperature": 0.6,
-            "max_tokens": 4096,
+            "max_tokens": 128000,
             "tools": tools,
             "mode": mode,
             "safety_config": safety_config,
@@ -1895,7 +1917,7 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             "provider": provider,
             "model": model,
             "temperature": 0.6,
-            "max_tokens": 4096,
+            "max_tokens": 128000,
             "tools": tools,
             "mode": mode,
             "safety_config": safety_config,
@@ -2581,6 +2603,14 @@ AUTONOMY MODES:
   - "supervised" (mostly autonomous, logs everything, can be paused)
   - "unbounded" (full autonomy — only if user explicitly requests)
 
+EXECUTION PARAMETERS — choose based on task complexity:
+| Task Type               | max_loops | temperature | model                    | max_tokens |
+|-------------------------|-----------|-------------|--------------------------|------------|
+| Simple (search+summarize)| 20       | 0.3-0.5     | groq/llama-3.3-70b       | 128000     |
+| Medium (multi-step)      | 40       | 0.5-0.6     | groq/llama-3.3-70b       | 128000     |
+| Complex (scraping/code)  | 50       | 0.6-0.7     | openai/gpt-4o            | 128000     |
+| Creative (content)       | 30       | 0.7-0.8     | groq/llama-3.3-70b       | 128000     |
+
 Respond with ONLY valid JSON (no markdown, no explanation):
 {{
   "agents": [
@@ -2590,7 +2620,8 @@ Respond with ONLY valid JSON (no markdown, no explanation):
       "provider": "groq",
       "model": "llama-3.3-70b-versatile",
       "temperature": 0.6,
-      "max_tokens": 4096,
+      "max_tokens": 128000,
+      "max_loops": 40,
       "tools": ["web_search", "fetch_url"],
       "mode": "governed",
       "system_prompt_hint": "You are [role]. Your job is [specific behavior]. Always [constraints].",
@@ -2616,7 +2647,9 @@ RULES:
 - If task benefits from specialization — create MULTIPLE agents with team_workflow
 - Keep system_prompt_hint focused, specific, and actionable (not generic)
 - Include "assumptions" array listing every assumption you made about the user's intent
-- If the user's request is vague, make opinionated smart defaults rather than creating a generic agent"""
+- If the user's request is vague, make opinionated smart defaults rather than creating a generic agent
+- ALWAYS set max_loops based on the execution parameters table — NEVER use 8 or lower
+- ALWAYS set max_tokens to 128000 — this is the LLM context window, not the output size"""
 
     # ── Context Protocol: gather workspace state before planning ──
     async def _architect_fetch_context(
@@ -3399,12 +3432,13 @@ Produce the JSON blueprint now:"""
                 agent_provider = agent_bp.get("provider", "groq")
                 agent_model = agent_bp.get("model", "llama-3.3-70b-versatile")
                 agent_temp = agent_bp.get("temperature", 0.6)
-                agent_max_tokens = agent_bp.get("max_tokens", 4096)
+                agent_max_tokens = agent_bp.get("max_tokens", 128000)
                 agent_mode = agent_bp.get("mode", "governed")
+                agent_max_loops = agent_bp.get("max_loops", 0)
                 prompt_hint = agent_bp.get("system_prompt_hint", agent_desc)
 
                 system_prompt = self._build_system_prompt(agent_name, prompt_hint, agent_tools)
-                safety_config = self._build_safety_config(agent_tools, agent_mode)
+                safety_config = self._build_safety_config(agent_tools, agent_mode, max_loops=agent_max_loops)
 
                 create_payload = {
                     "name": agent_name,
