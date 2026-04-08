@@ -4279,6 +4279,7 @@ CURRENT AGENT CONFIG:
 - Tools: {target.get('tools', [])}
 - Mode: {target.get('mode', 'governed')}
 - Is Active: {target.get('is_active', False)}
+- Safety Config: {target.get('safety_config', {{}})}
 
 USER REQUEST: {message}
 
@@ -4289,7 +4290,8 @@ Respond with ONLY valid JSON (no markdown):
   "unchanged": "What stays the same"
 }}
 
-Valid fields: name, description, system_prompt, provider, model, temperature, max_tokens, tools, mode, is_active, tool_mode, safety_config, allowed_actions, blocked_actions
+Valid fields: name, description, system_prompt, provider, model, temperature, max_tokens, tools, mode, is_active, tool_mode, safety_config, allowed_actions, blocked_actions, max_loops
+IMPORTANT: max_loops (integer 1-100) controls how many iterations the agent can run. Default is 25. If user asks about loop limit, iterations, or "Maximum loop iterations reached" errors, set max_loops to a higher value (e.g. 40-50).
 Only include fields that should change."""
 
             patch_data = None
