@@ -62,7 +62,6 @@ class GoogleCalendarSkill(BaseIntegrationSkill):
         "google-calendar", "google_calendar", "gcalendar",
         "google-calendar-token",
     ]
-    connection_url = "/connect-profiles?connect=google-calendar"
     intent_keywords = [
         "google calendar", "my calendar", "my schedule",
         "upcoming events", "upcoming meetings", "next meeting",

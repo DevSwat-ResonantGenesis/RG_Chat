@@ -9,6 +9,8 @@ from .multi_timeline_engine import MultiTimelineEngine, multi_timeline_engine
 from .knowledge_graph import SelfEvolvingKnowledgeGraph, knowledge_graph
 from .thought_branching import ProbabilisticThoughtBranching, thought_branching
 from .evidence_graph import EvidenceGraph, evidence_graph
+from .debate_engine import DebateEngine, debate_engine
+from .agent_engine import AgentEngine, agent_engine
 from .narrative_continuity_engine import NarrativeContinuityEngine, narrative_continuity_engine
 from .temporal_thread_engine import TemporalThreadEngine, temporal_thread_engine
 from .token_optimizer import ResonanceTokenOptimizer, token_optimizer
@@ -23,7 +25,11 @@ from .causal_reasoning import CausalReasoner, causal_reasoner
 from .neural_gravity_engine import NeuralGravityEngine, neural_gravity_engine
 from .hybrid_memory_ranker import compute_score, rank_memories
 from .user_api_keys import UserApiKeyService, user_api_key_service
+# Autonomous Services (L3-L5)
+from .agent_router import AgentRouter, agent_router, route_message, RoutingDecision
 from .response_cache import ResponseCache, response_cache, get_cached_response, cache_response
+from .self_improving_agent import SelfImprovingAgent, self_improving_agent, FeedbackType
+from .autonomous_planner import AutonomousPlanner, autonomous_planner, create_task_plan
 
 __all__ = [
     # Core services
@@ -48,6 +54,11 @@ __all__ = [
     "thought_branching",
     "EvidenceGraph",
     "evidence_graph",
+    # Agent system
+    "DebateEngine",
+    "debate_engine",
+    "AgentEngine",
+    "agent_engine",
     # Narrative & Temporal
     "NarrativeContinuityEngine",
     "narrative_continuity_engine",
@@ -89,9 +100,19 @@ __all__ = [
     # User API Keys
     "UserApiKeyService",
     "user_api_key_service",
-    # Response Cache
+    # Autonomous Services (L3-L5)
+    "AgentRouter",
+    "agent_router",
+    "route_message",
+    "RoutingDecision",
     "ResponseCache",
     "response_cache",
     "get_cached_response",
     "cache_response",
+    "SelfImprovingAgent",
+    "self_improving_agent",
+    "FeedbackType",
+    "AutonomousPlanner",
+    "autonomous_planner",
+    "create_task_plan",
 ]

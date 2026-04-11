@@ -28,7 +28,6 @@ class BaseIntegrationSkill(ABC):
     skill_name: str = ""
     api_key_names: List[str] = []  # Keys to look for in user_api_keys
     intent_keywords: List[str] = []  # Keywords that signal this skill
-    connection_url: str = "/connect-profiles"  # Deep-link for connecting this service
 
     def detect_intent(self, message: str) -> bool:
         """Check if the user message targets this skill."""
@@ -61,26 +60,13 @@ class BaseIntegrationSkill(ABC):
         ...
 
     def _no_credentials_error(self) -> Dict[str, Any]:
-        """Standard error when credentials are missing — includes clickable Connect button."""
+        """Standard error when credentials are missing."""
         return {
             "success": False,
             "action": self.skill_id,
             "error": (
                 f"**{self.skill_name}** is not connected. "
-                f"Click below to connect it now."
+                f"Go to **Settings → Connect Profiles** and add your "
+                f"{self.skill_name} API key/token to use this skill."
             ),
-            "present_options": {
-                "_type": "present_options",
-                "title": f"Connect {self.skill_name}",
-                "options": [
-                    {
-                        "label": f"Connect {self.skill_name}",
-                        "icon": "🔗",
-                        "value": f"connect {self.skill_id}",
-                        "description": f"Open connection page for {self.skill_name}",
-                        "url": self.connection_url,
-                    },
-                ],
-                "allow_custom": False,
-            },
         }

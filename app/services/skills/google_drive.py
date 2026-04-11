@@ -12,7 +12,6 @@ API Docs: https://developers.google.com/drive/api/v3/reference
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any, Dict
 
@@ -29,7 +28,6 @@ class GoogleDriveSkill(BaseIntegrationSkill):
     skill_id = "google_drive"
     skill_name = "Google Drive"
     api_key_names = ["google-drive", "google_drive", "gdrive", "google-drive-token"]
-    connection_url = "/connect-profiles?connect=google-drive"
     intent_keywords = [
         "google drive", "my drive", "my google drive",
         "list files", "list my files", "show my files",
@@ -50,50 +48,15 @@ class GoogleDriveSkill(BaseIntegrationSkill):
             return "create"
         return "list"
 
-    async def _refresh_access_token(self, refresh_token: str) -> str:
-        """Exchange a Google OAuth refresh token for a fresh access token."""
-        client_id = os.getenv("GOOGLE_CLIENT_ID")
-        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
-        if not client_id or not client_secret:
-            raise ValueError("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not configured")
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                    "grant_type": "refresh_token",
-                },
-            )
-            resp.raise_for_status()
-            return resp.json()["access_token"]
-
     async def execute(
         self, message: str, user_id: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        token = self.get_credentials(context)
-        if not token:
+        api_key = self.get_credentials(context)
+        if not api_key:
             return self._no_credentials_error()
 
-        # If token looks like a refresh token (starts with 1//), exchange it
-        if token.startswith("1//"):
-            try:
-                token = await self._refresh_access_token(token)
-            except Exception as e:
-                logger.error(f"Google Drive OAuth refresh failed: {e}")
-                return {
-                    "success": False,
-                    "action": "google_drive",
-                    "error": (
-                        f"Failed to refresh Google Drive token: {e}. "
-                        "Please reconnect in **Settings → Connect Profiles**."
-                    ),
-                }
-
         action = self._detect_action(message)
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

@@ -33,11 +33,81 @@ async def get_internal_catalog(request: Request):
     """
     _require_owner(request)
 
-    # Fake agent_engine, agent_capability_registry, team_engine removed.
-    # Chat no longer has "internal agents" — those were system prompt wrappers.
-    # Real agents live in Agent Engine service (executor.py).
+    # ── Individual agent types from agent_engine ──
+    from ..services.agent_engine import AgentEngine
+    engine = AgentEngine.__new__(AgentEngine)
+    raw_prompts: dict = {}
+    try:
+        # _get_agent_prompts returns a dict keyed by agent_type
+        raw_prompts = engine._get_agent_prompts("__list__")  # returns default
+        # Actually need ALL keys – the dict is defined inline, so instantiate properly
+    except Exception:
+        pass
+
+    # Build the prompts dict directly from source
+    try:
+        import inspect, re, textwrap
+        source = inspect.getsource(engine._get_agent_prompts)
+        # Extract keys from `prompts = { "key": ...`
+        agent_keys = re.findall(r'"(\w+)":\s*\[', source)
+    except Exception:
+        agent_keys = []
+
+    if not agent_keys:
+        # Fallback hardcoded from codebase analysis
+        agent_keys = [
+            "reasoning", "code", "debug", "review", "test", "research",
+            "explain", "summary", "planning", "security", "architecture",
+            "optimization", "documentation", "math", "api", "database",
+            "devops", "migration", "refactor", "accessibility", "i18n",
+            "regex", "git", "css",
+        ]
+
+    # ── Agent capability registry ──
+    agent_capabilities: Dict[str, Any] = {}
+    try:
+        from ..services.agent_capability_registry import AGENT_CAPABILITIES
+        for key, cap in AGENT_CAPABILITIES.items():
+            agent_capabilities[key] = {
+                "strengths": getattr(cap, "strengths", []),
+                "weaknesses": getattr(cap, "weaknesses", []),
+                "success_rate": getattr(cap, "success_rate", None),
+                "avg_response_time": getattr(cap, "avg_response_time", None),
+                "specializations": getattr(cap, "specializations", {}),
+            }
+    except Exception as e:
+        logger.warning(f"Could not load AGENT_CAPABILITIES: {e}")
+
     agents_list = []
+    for key in agent_keys:
+        cap = agent_capabilities.get(key, {})
+        agents_list.append({
+            "id": key,
+            "name": key.replace("_", " ").title() + " Agent",
+            "category": _categorize_agent(key),
+            "autonomous": True,
+            "specializations": cap.get("specializations", {}),
+            "success_rate": cap.get("success_rate"),
+            "avg_response_time": cap.get("avg_response_time"),
+            "strengths": cap.get("strengths", []),
+            "weaknesses": cap.get("weaknesses", []),
+        })
+
+    # ── Internal teams from team_engine ──
     teams_list = []
+    try:
+        from ..services.team_engine import INTERNAL_TEAMS
+        for tid, tdef in INTERNAL_TEAMS.items():
+            teams_list.append({
+                "id": tid,
+                "name": tdef.name,
+                "agents": tdef.agents,
+                "workflow": tdef.workflow,
+                "description": tdef.description,
+                "trigger_keywords": tdef.trigger_keywords,
+            })
+    except Exception as e:
+        logger.warning(f"Could not load INTERNAL_TEAMS: {e}")
 
     # ── Chat skills from skills_registry ──
     skills_list = []
@@ -65,9 +135,13 @@ async def get_internal_catalog(request: Request):
             {"id": "observer_auditor", "name": "Observer / Auditor", "description": "Monitors agent actions, enforces safety rules, audits compliance"},
         ]
 
-    # Fake autonomous infrastructure entries removed (all deleted modules).
-    # Real infrastructure: Agent Engine executor.py, scheduler_daemon.py, autonomous_daemon.py
-    infra = []
+    # ── Autonomous infrastructure ──
+    infra = [
+        {"name": "AutonomousAgentExecutor", "description": "Wraps any agent type for autonomous decision-making with KB lookup and LLM fallback.", "source": "chat_service/app/services/autonomous_agent_executor.py"},
+        {"name": "AutonomousDaemon", "description": "Background daemon managing autonomous agent lifecycle, self-triggering, and health monitoring.", "source": "agent_engine_service/app/routers_autonomous.py"},
+        {"name": "ParallelAgentRuntime", "description": "Enables parallel agent communication, capability registration, and multi-agent coordination.", "source": "agent_engine_service/app/parallel_runtime.py"},
+        {"name": "AgentCapabilityRegistry", "description": "Tracks agent strengths, weaknesses, success rates, specialization scores for routing.", "source": "chat_service/app/services/agent_capability_registry.py"},
+    ]
 
     return {
         "agents": agents_list,

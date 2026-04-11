@@ -46,7 +46,7 @@ except ImportError:
 from ..db import get_session
 from ..models import ResonantChat, ResonantChatMessage
 from ..domain.provider import route_query
-# fake agent facade deleted — all responses now go through direct LLM call
+from ..domain.agent import maybe_run_debate, maybe_spawn_agent
 from ..services.resonance_hashing import ResonanceHasher
 from ..services.rag_engine import rag_engine
 from ..services.memory_merge import merge_and_rank_memories
@@ -68,7 +68,11 @@ from ..services.autonomous_error_correction import error_correction
 from ..services.causal_reasoning import causal_reasoner
 from ..services.neural_gravity_engine import neural_gravity_engine
 from ..services.user_api_keys import user_api_key_service
+# New Autonomous Services (L3-L5)
+from ..services.agent_router import agent_router, route_message, RoutingDecision
 from ..services.response_cache import response_cache, get_cached_response, cache_response
+from ..services.self_improving_agent import self_improving_agent, FeedbackType
+from ..services.autonomous_planner import autonomous_planner, create_task_plan
 # DSID-P Integration (HSU-Spec Layer 1-2)
 from ..services.dsid_integration import dsid_integration, create_message_dsid, MessageDSID
 # Web Search & Image Generation (optional - requires rebuild)
@@ -367,10 +371,10 @@ def _extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
 
     # Common internal page navigation
     page_routes: List[tuple[str, str, str]] = [
-        (r"\bagent\s+teams?\b", "/agent-teams", "agent-teams"),
-        (r"\bteam\s+dashboard\b", "/agent-teams", "agent-teams"),
         (r"\bagents?\s+(?:os|page|panel)\b", "/agents", "agents"),
         (r"\bagents?\b", "/agents", "agents"),
+        (r"\bagent\s+teams?\b", "/agent-teams", "agent-teams"),
+        (r"\bteam\s+dashboard\b", "/agent-teams", "agent-teams"),
         (r"\bresonant\s+chat\b", "/resonant-chat-next", "resonant-chat"),
         (r"\bdashboard\b", "/dashboard", "dashboard"),
         (r"\bpricing\b", "/pricing", "pricing"),
@@ -385,7 +389,6 @@ def _extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
         (r"\bcommunity\b", "/rabbit", "rabbit"),
         (r"\bprofile\b", "/profile", "profile"),
         (r"\bsettings\b", "/profile", "profile"),
-        (r"\bhelp\b", "/help", "help"),
         (r"\bconnect.?profiles?\b", "/connect-profiles", "connect-profiles"),
         (r"\bintegrations?\b", "/connect-profiles", "connect-profiles"),
         (r"\bapi\s*keys?\b", "/connect-profiles", "connect-profiles"),
@@ -413,36 +416,28 @@ def _extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
 # LLM-DRIVEN TOOL DETECTION
 # ============================================
 
-# Load skill descriptions from the unified tool registry (single source of truth)
-try:
-    from ..rg_tool_registry.builtin_tools import get_chat_skill_descriptions
-    _SKILL_TOOL_DESCRIPTIONS = get_chat_skill_descriptions()
-    logger.info(f"✅ Loaded {len(_SKILL_TOOL_DESCRIPTIONS)} skill descriptions from unified rg_tool_registry")
-except Exception as _import_err:
-    logger.warning(f"⚠️ Failed to import from rg_tool_registry, using fallback: {_import_err}")
-    _SKILL_TOOL_DESCRIPTIONS = {
-        "code_visualizer": "Scan and analyze a GitHub repository or codebase.",
-        "web_search": "Search the web for real-time information.",
-        "image_generation": "Generate an image with DALL-E.",
-        "memory_search": "Search user's long-term memory.",
-        "memory_library": "Open the memory library panel.",
-        "agents_os": "Create, manage, rename, delete, or configure AI agents.",
-        "agent_architect": "Design and build advanced autonomous agents from a high-level description.",
-        "state_physics": "Open State Physics visualization panel.",
-        "ide_workspace": "Open the IDE workspace split panel.",
-        "rabbit_post": "Create a post on Rabbit community forum.",
-        "google_drive": "Access Google Drive files.",
-        "google_calendar": "Access Google Calendar.",
-        "figma": "Access Figma designs.",
-        "sigma": "Access Sigma Computing dashboards.",
-    }
+_SKILL_TOOL_DESCRIPTIONS = {
+    "code_visualizer": "Scan and analyze a GitHub repository or codebase. ONLY when user provides a GitHub URL or explicitly asks to scan/analyze a repo/codebase.",
+    "web_search": "Search the web for real-time information. ONLY for current events, live prices, weather, recent news, or facts that require up-to-date data the AI cannot know.",
+    "image_generation": "Generate an image with DALL-E. ONLY when user explicitly asks to generate/create/draw/make an image, picture, or illustration.",
+    "memory_search": "Search user\'s long-term memory for previously stored information. When user asks \'what did I say about X\' or \'do you remember X\'.",
+    "memory_library": "Open the memory library panel. ONLY when user explicitly says \"open memory library\", \"show my memories\", or \"browse memories\".",
+    "agents_os": "Create, manage, rename, delete, or configure AI agents. ONLY when user explicitly asks to create/build/manage/rename/delete agents or open Agents OS.",
+    "agent_architect": "Design and build advanced autonomous agents from a high-level description. When user wants to architect, plan, or design a complex agent workflow, or says 'build me an agent that...'. The architect uses a ReAct loop with real tools to create, configure, and test agents.",
+    "state_physics": "Open State Physics visualization panel. ONLY when user explicitly says \"open state physics\", \"show state physics\", or \"state-space visualization\".",
+    "ide_workspace": "Open the IDE workspace split panel. ONLY when user explicitly says \"open IDE\", \"open editor\", \"open terminal\", or \"open workspace\". Do NOT trigger for coding questions or requests to write code.",
+    "rabbit_post": "Create a post on Rabbit community forum. When user wants to post something to a Rabbit community.",
+    "google_drive": "Access Google Drive files. When user asks about their Drive files, documents, or wants to search/read/create files.",
+    "google_calendar": "Access Google Calendar. When user asks about their schedule, events, meetings, or wants to create/view calendar events.",
+    "figma": "Access Figma designs. When user asks about their Figma projects, design files, or components.",
+    "sigma": "Access Sigma Computing dashboards. When user asks about their Sigma reports or analytics.",
+}
 
 
 async def _llm_detect_tool(
     message: str,
     enabled_skill_ids: set,
     recent_messages: list = None,
-    user_api_keys: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """Use LLM to decide which tool (if any) to call for this message.
 
@@ -485,88 +480,61 @@ Respond with ONLY valid JSON:
 - If NO tool is needed: {{\"tool\": null}}
 
 RULES:
+- Most messages do NOT need tools. Default to null.
 - General conversation, questions, coding help, math, explanations -> null.
 - Do NOT call web_search for questions the AI can answer from its training data.
 - Do NOT call agents_os unless user explicitly wants to create/manage/configure agents.
 - Do NOT call code_visualizer unless user provides a GitHub URL or explicitly asks to scan a repo.
-- FOLLOW-UP CONTEXT: If the conversation is about a specific service (google drive, calendar, figma, etc.) and the user sends a short follow-up like "check now", "try again", "do it", "yes", "show me", "connect it", "test it" — route to the relevant service skill from context.
-- If the user mentions google drive, drive files, my drive, or anything about Drive → google_drive.
-- If the user mentions calendar, schedule, events, meetings → google_calendar.
-- If the user mentions figma, design files → figma.
-- If the user asks to check/verify/test a connection or API status for a service mentioned in context → route to that service skill.
-- For agent creation confirmations (like \"yes create all\", \"build it\"), check context for agent_architect."""
+- For follow-up confirmations (like \"yes create all\"), check the conversation context."""
 
-    # Direct Groq call with JSON mode — iterate ALL keys like multi_ai_router does
-    groq_api_keys = []
-    # User BYOK Groq first
-    if user_api_keys and user_api_keys.get("groq"):
-        groq_api_keys.append(user_api_keys["groq"])
-    # System keys: GROQ_API_KEY (comma-separated) + GROQ_API_KEY_2
-    for env_var in ("GROQ_API_KEY", "GROQ_API_KEY_2"):
-        raw = os.getenv(env_var, "")
-        for k in raw.split(","):
-            k = k.strip()
-            if k and k not in groq_api_keys:
-                groq_api_keys.append(k)
+    try:
+        groq_keys = os.getenv("GROQ_API_KEY", "")
+        groq_key = groq_keys.split(",")[0].strip() if groq_keys else ""
+        if not groq_key:
+            logger.warning("[LLM-TOOL] No GROQ_API_KEY, skipping tool detection")
+            return None
 
-    if not groq_api_keys:
-        logger.warning("[LLM-TOOL] No Groq API keys available, skipping tool detection")
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {groq_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [
+                        {"role": "system", "content": "You are a tool-selection assistant. Respond with JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.0,
+                    "max_tokens": 60,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+
+            if resp.status_code != 200:
+                logger.warning(f"[LLM-TOOL] Groq returned {resp.status_code}: {resp.text[:200]}")
+                return None
+
+            data = resp.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            parsed = json.loads(content)
+            tool_id = parsed.get("tool")
+
+            if tool_id and tool_id in enabled_skill_ids:
+                logger.info(f"[LLM-TOOL] LLM selected tool: {tool_id}")
+                return tool_id
+            elif tool_id:
+                logger.info(f"[LLM-TOOL] LLM selected {tool_id} but not in enabled skills, ignoring")
+                return None
+            else:
+                logger.info("[LLM-TOOL] LLM decided no tool needed")
+                return None
+
+    except Exception as e:
+        logger.warning(f"[LLM-TOOL] Tool detection failed: {e}")
         return None
-
-    messages = [
-        {"role": "system", "content": "You are a tool-selection assistant. Respond with JSON only."},
-        {"role": "user", "content": prompt},
-    ]
-
-    for key_idx, api_key in enumerate(groq_api_keys):
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "llama-3.3-70b-versatile",
-                        "messages": messages,
-                        "temperature": 0.0,
-                        "max_tokens": 60,
-                        "response_format": {"type": "json_object"},
-                    },
-                )
-
-                if resp.status_code == 401:
-                    logger.warning(f"[LLM-TOOL] Groq key {key_idx+1}/{len(groq_api_keys)} returned 401, trying next")
-                    continue
-                if resp.status_code == 429:
-                    logger.warning(f"[LLM-TOOL] Groq key {key_idx+1}/{len(groq_api_keys)} rate limited, trying next")
-                    continue
-                if resp.status_code != 200:
-                    logger.warning(f"[LLM-TOOL] Groq returned {resp.status_code}: {resp.text[:200]}")
-                    continue
-
-                data = resp.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                parsed = json.loads(content)
-                tool_id = parsed.get("tool")
-
-                if tool_id and tool_id in enabled_skill_ids:
-                    logger.info(f"[LLM-TOOL] Selected tool: {tool_id}")
-                    return tool_id
-                elif tool_id:
-                    logger.info(f"[LLM-TOOL] Selected {tool_id} but not in enabled skills, ignoring")
-                    return None
-                else:
-                    logger.info("[LLM-TOOL] No tool needed")
-                    return None
-
-        except Exception as e:
-            logger.warning(f"[LLM-TOOL] Groq key {key_idx+1} failed: {e}")
-            continue
-
-    logger.warning("[LLM-TOOL] All Groq keys failed for tool detection")
-    return None
 
 
 def _extract_current_time_tool_results(user_message: str) -> List[ToolResultData]:
@@ -697,7 +665,7 @@ def _calculate_resonance_score(
     if memories and len(memories) > 0:
         # Check if response references memory content
         memory_keywords = set()
-        for mem in memories[:5]:  # Top 5 by relevance score
+        for mem in memories[:5]:  # Increased from 5 to 20 for better context
             content = mem.get("content", "")
             if content:
                 words = content.lower().split()[:10]
@@ -821,7 +789,7 @@ async def _extract_memories(
                 "user_id": valid_user_id,
                 "org_id": org_id,
                 "agent_hash": effective_agent_hash,
-                "limit": 10,
+                "limit": 25,
                 # Extraction methods in priority order
                 "use_anchors": True,       # Layer 4: Anchor-based lookup (PRIORITY 1)
                 "use_proximity": True,     # Layer 5: XYZ proximity search (PRIORITY 2)
@@ -875,11 +843,11 @@ async def _extract_memories(
         sphere_memories = magnetic_pull_system.apply_to_memories(sphere_memories)
     
     # Merge and rank memories using hybrid scoring
-    # Top 5 by combined score (resonance + proximity + anchor + recency + RAG)
+    # Merge and rank memories (increased limit from 10 to 25 for better context)
     merged_memories = merge_and_rank_memories(
         rag_memories=rag_memories,
         sphere_memories=sphere_memories,
-        limit=5
+        limit=25
     )
     
     # Add xyz coordinates to memories for Layer 7/9 evidence aggregation
@@ -998,14 +966,11 @@ USER CONTEXT:
 - Plan: {user_plan}
 
 YOUR CAPABILITIES (REAL — NOT HALLUCINATED):
-- You are backed by a UNIFIED TOOL REGISTRY with 160+ tools across 16 categories and 44 platform services (560+ APIs). Tools are detected and executed automatically based on your conversation.
-- Key tool categories: Search (web_search, fetch_url), Memory (memory_read, memory_write, hash_sphere), Code Analysis (code_visualizer_scan, code_visualizer_trace), Agents (agents_list, agents_create, agents_start, run_agent), Media (generate_image, generate_audio), Integrations (gmail_send, slack_send, google_calendar, figma), Developer (http_request, execute_code, github), Platform APIs (platform_api, discover_services, discover_api).
-- If a tool you need doesn't exist, it can be CREATED at runtime using auto_build_tool. You can also check what tools exist with check_tool_exists.
 - You CAN search the web in real-time using Tavily/DuckDuckGo. Web search results are automatically injected into your context when relevant. If search results appear in your context, USE THEM as the primary source of truth.
 - You CAN scan and analyze GitHub repositories using the Code Visualizer tool. When a user asks to scan a repo, analyze code, trace pipelines, check governance, show endpoints/functions, or re-analyze — the Code Visualizer skill runs AUTOMATICALLY and its output appears in your context as "SKILL OUTPUT (Code Visualizer):". If NO such skill output is present in your context, the scan DID NOT RUN and you MUST NOT fabricate results.
 - You CAN create, list, and manage AI agents via Agents OS. When a user asks to create agents, spin up agents, or open the agents dashboard — the skill runs AUTOMATICALLY and its output appears in your context as "SKILL OUTPUT".
-- You CAN navigate users to any platform page. When a user says "open pricing" or "go to marketplace", you navigate them there automatically.
 - You CAN open a live split view panel showing analysis results, agent panels, or other tool outputs.
+- You CAN NOT generate images, photos, videos, or audio files.
 - You CAN NOT directly browse websites in real-time, but web search results are fetched FOR you.
 - When web search results are present in your context, NEVER say "I can't access the internet" — you already have the search results.
 - NEVER say "I'm a text-based AI" or "I don't have the capability to execute code" — you DO have real tool execution via skills.
@@ -1014,7 +979,6 @@ CRITICAL ANTI-HALLUCINATION RULE FOR TOOLS:
 - If the user asks to scan/analyze/re-analyze code and there is NO "SKILL OUTPUT" section in your context, it means the tool DID NOT RUN. In that case, say "Let me run the Code Visualizer to analyze that" or "I'll initiate the scan now" — but NEVER fabricate scan results, statistics, endpoints, vulnerabilities, or any analysis data.
 - NEVER invent repository statistics, endpoint counts, table counts, vulnerability reports, or code analysis data. Only present data that actually appears in your SKILL OUTPUT context.
 - If a tool failed or didn't trigger, honestly say so and offer to retry.
-- ABSOLUTELY NEVER output function call syntax like check_tool_exists(...), web_search(...), google_drive(...), tool_name(param="value") or ANY text that looks like a function/method call as part of your response. You CANNOT call tools — the platform runs them AUTOMATICALLY based on intent. Any function syntax you output is FAKE, BROKEN, and CONFUSING to the user. Instead of writing code-like tool calls, respond in plain natural language. For example, instead of writing "check_tool_exists(tool_name='google_drive')", say "Let me check your Google Drive connection." THIS IS A HARD RULE — violating it is a critical error.
 
 BEHAVIOR RULES:
 - NEVER say "I am a large language model" or similar generic AI descriptions
@@ -1079,7 +1043,7 @@ PLATFORM PAGES: /dashboard, /agents (AgentOS), /agent-teams, /connect-profiles (
         })
     logger.info(f"📝 Total context_messages: {len(context_messages)}")
     
-    # Add memory context if available (top 5 by semantic relevance)
+    # Add memory context if available (increased from 5 to 20 for better memory retention)
     if memories:
         memory_context = "RELEVANT MEMORIES FROM USER'S HASH SPHERE:\n"
         mem_count = 0
@@ -1164,7 +1128,7 @@ async def send_message(
     # ============================================
     # STEP 0: CHECK PLAN LIMITS (GTM Critical)
     # ============================================
-    privileged_roles = {"platform_owner", "admin", "superuser"}
+    privileged_roles = {"owner", "platform_owner", "admin", "superuser"}
     is_privileged_user = is_superuser or unlimited_credits or user_role.lower() in privileged_roles
 
     # Get user's plan and check message limit
@@ -1417,7 +1381,7 @@ async def send_message(
         enhanced_metrics_calculator.record_memory_usage(
             message_id="pending",  # Will be updated after assistant_message is created
             memories_retrieved=len(memories),
-            memories_used=min(len(memories), 5),  # We inject top 5 into context
+            memories_used=min(len(memories), 5),  # We inject up to 5 into context
             anchor_matches=sum(1 for m in memories if m.get("anchor_energy", 0) > 0),
             rag_queries=1,  # We made one Hash Sphere extraction call
             embedding_lookups=1 if any(m.get("proximity_score", 0) > 0 for m in memories) else 0,
@@ -1468,7 +1432,37 @@ async def send_message(
     user_api_keys = await _get_user_api_keys(session, user_id)
     logger.info(f"🔑 User API keys retrieved: {list(user_api_keys.keys()) if user_api_keys else 'None'}")
     
-    # Fake agent routing removed — was in-memory fake "autonomous" routing
+    # ============================================
+    # STEP 7.5: AUTONOMOUS AGENT ROUTING (L3 Autonomy)
+    # ============================================
+    # Use Agent Router to automatically select best agent/team
+    routing_decision = None
+    try:
+        context_for_routing = [{"content": m.content, "role": m.role} for m in recent_messages[:-1]]
+        routing_decision = route_message(
+            message=safe_user_message,
+            context=context_for_routing,
+            preferred_agent=request_body.agent_hash
+        )
+        logger.info(f"🎯 Agent Router: decision={routing_decision.decision.value}, "
+                   f"agent={routing_decision.primary_agent}, "
+                   f"confidence={routing_decision.confidence:.2f}")
+        
+        # Add routing-based prompt adjustments from Self-Improving Agent (L4)
+        if routing_decision.primary_agent:
+            prompt_adjustments = self_improving_agent.get_prompt_adjustments(
+                routing_decision.primary_agent, 
+                safe_user_message
+            )
+            if prompt_adjustments:
+                adjustment_prompt = {
+                    "role": "system",
+                    "content": "LEARNING-BASED ADJUSTMENTS:\n" + "\n".join(prompt_adjustments)
+                }
+                context_messages.append(adjustment_prompt)
+                logger.info(f"🧠 Added {len(prompt_adjustments)} learning-based prompt adjustments")
+    except Exception as e:
+        logger.warning(f"Agent routing failed: {e}")
     
     # ============================================
     # STEP 7.6: CHECK RESPONSE CACHE
@@ -1498,10 +1492,9 @@ async def send_message(
     code_visualizer_intent = False
     agents_os_intent = False
 
-    if request_body.enabled_skill_ids:
+    if request_body.enabled_skill_ids is not None:
         enabled_skill_ids = set(request_body.enabled_skill_ids)
     else:
-        # None or empty list → use server defaults (empty list breaks all skill detection)
         enabled_skill_ids = {s.id for s in skills_registry.get_enabled_skills(user_id)}
 
     # Team selection bypass: if user explicitly chose a team, skip tool detection
@@ -1513,22 +1506,13 @@ async def send_message(
                 message=safe_user_message,
                 enabled_skill_ids=enabled_skill_ids,
                 recent_messages=recent_messages[-4:] if recent_messages else None,
-                user_api_keys=user_api_keys,
             )
             if detected_tool_id:
-                # Hard guard: code_visualizer only for GitHub URLs or explicit scan requests
-                if detected_tool_id == "code_visualizer":
-                    _msg_lower = safe_user_message.lower()
-                    _has_github = "github.com/" in _msg_lower or "gitlab.com/" in _msg_lower
-                    _has_scan_kw = any(k in _msg_lower for k in ("scan", "analyze repo", "visuali", "codebase", "trace pipeline"))
-                    if not _has_github and not _has_scan_kw:
-                        print(f"[SKILL-7.9] code_visualizer BLOCKED — no GitHub URL or scan keyword in: {safe_user_message[:80]!r}", flush=True)
-                        detected_tool_id = None
                 if detected_tool_id == "web_search":
                     web_search_needed = True
                 elif detected_tool_id == "image_generation":
                     image_gen_needed = True
-                elif detected_tool_id:
+                else:
                     detected_skill = skills_registry.get_skill(detected_tool_id)
                 code_visualizer_intent = (detected_tool_id == "code_visualizer")
                 agents_os_intent = (detected_tool_id == "agents_os")
@@ -1621,8 +1605,7 @@ async def send_message(
     # ============================================
     if detected_skill:
         try:
-            _ctx_key_names = list((user_api_keys or {}).keys())
-            print(f"[SKILL-7.95] EXECUTING: {detected_skill.id} ({detected_skill.name}), user_api_keys={_ctx_key_names}", flush=True)
+            print(f"[SKILL-7.95] EXECUTING: {detected_skill.id} ({detected_skill.name})", flush=True)
             skill_context = {
                 "analysis_id": (request_body.project_context or {}).get("projectId", ""),
                 "chat_id": chat_id,
@@ -1632,12 +1615,6 @@ async def send_message(
                 "is_superuser": is_superuser,
                 "user_api_keys": user_api_keys or {},
             }
-            # Pass conversation history so skills can detect follow-ups (e.g., architect Phase 2 confirmation)
-            if recent_messages:
-                skill_context["previousMessages"] = [
-                    {"role": m.role, "content": m.content}
-                    for m in recent_messages[-10:]
-                ]
             if _prev_assistant_agent_content:
                 skill_context["prev_assistant_content"] = _prev_assistant_agent_content
             github_token = _extract_github_token_from_user_keys(user_api_keys)
@@ -1725,16 +1702,9 @@ async def send_message(
 
     # Force tool-grounded reply for ALL Agents OS operations (including create).
     # Delegating create ops to the LLM caused hallucinated fake URLs/configs.
-    # When agents_os delegates creation to agent_architect, the result contains
-    # architect-specific keys ('intent', operation starting with 'architect_').
-    # Detect this and treat as architect response for proper present_options handling.
     if not execute_mode and detected_skill and detected_skill.id == "agents_os" and skill_result:
-        _is_architect_delegation = skill_result.get("intent") or (skill_result.get("operation") or "").startswith("architect_")
-        if _is_architect_delegation:
-            # Treat exactly like agent_architect — fall through to next block
-            print(f"[AGENTS_OS] Detected architect delegation, treating as agent_architect", flush=True)
-            pass  # handled by the agent_architect block below
-        elif skill_result.get("success"):
+        operation = skill_result.get("operation", "")
+        if skill_result.get("success"):
             skill_summary = (skill_result.get("summary") or "").strip()
             response_text = skill_summary or "Agents OS operation completed successfully."
             provider = "tool_agents_os"
@@ -1745,25 +1715,6 @@ async def send_message(
             provider = "tool_agents_os_error"
             agent_type = "agents"
 
-
-    # Force tool-grounded reply for Agent Architect (structured responses with present_options).
-    # Delegating to LLM would destroy the plan preview format and clickable options.
-    # Also matches when agents_os delegates creation to architect (detected_skill.id may be "agents_os").
-    _is_architect_result = (
-        skill_result and skill_result.get("intent")
-        or (skill_result and (skill_result.get("operation") or "").startswith("architect_"))
-    )
-    if not execute_mode and detected_skill and (detected_skill.id == "agent_architect" or _is_architect_result) and skill_result:
-        if skill_result.get("success"):
-            skill_summary = (skill_result.get("summary") or "").strip()
-            response_text = skill_summary or "Agent Architect completed successfully."
-            provider = "tool_agent_architect"
-            agent_type = "agents"
-        else:
-            error_detail = (skill_result.get("error") or "Agent Architect request failed.").strip()
-            response_text = f"Agent Architect error: {error_detail}"
-            provider = "tool_agent_architect_error"
-            agent_type = "agents"
 
     # Force tool-grounded reply for integration skill failures (google_calendar, figma, google_drive, sigma).
     # Without this, failed integration skills silently fall back to LLM which hallucinates.
@@ -1911,14 +1862,145 @@ async def send_message(
         })
         logger.info("🛡️ HALLUCINATION GUARD: Agent creation question detected but no agents_os tool ran; injected accuracy prompt.")
 
-    # ============================================
-    # STEP 9: LLM Response (Direct — fake agent layers removed)
-    # ============================================
-    actual_llm_provider = None
-    router_metadata = None
-    if not response_text:
-        logger.info(f"🔍 Calling LLM with preferred_provider={request_body.preferred_provider}, {len(context_messages)} context msgs")
+    # Try team workflow first (Phase 1: Internal Teams)
+    team_used = False
+    team_name = None
+    forced_agent_type = None
+    allowed_forced_agents = {
+        "reasoning",
+        "code",
+        "debug",
+        "research",
+        "summary",
+        "planning",
+        "math",
+        "security",
+        "architecture",
+        "test",
+        "review",
+        "explain",
+        "optimization",
+        "documentation",
+        "migration",
+        "api",
+        "database",
+        "devops",
+        "refactor",
+        "accessibility",
+        "i18n",
+        "regex",
+        "git",
+        "css",
+    }
+    if request_body.agent_hash and request_body.agent_hash in allowed_forced_agents:
+        forced_agent_type = request_body.agent_hash
+
+    if not execute_mode and not response_text and not forced_agent_type:
         try:
+            from ..domain.agent import maybe_run_team
+            team_response, team_name, team_used = await maybe_run_team(
+                message=message_with_images,
+                context_messages=context_messages,
+                preferred_provider=request_body.preferred_provider,
+                user_id=user_id,
+                user_api_keys=user_api_keys,
+                images=request_body.images,
+            )
+            if team_used and team_response:
+                response_text = team_response
+                provider = f"team_{team_name.lower().replace(' ', '_')}" if team_name else "team"
+                logger.info(f"👥 Used team: {team_name}")
+        except Exception as e:
+            logger.warning(f"Team engine failed: {e}")
+    
+    # Try multi-agent debate if no team (Patch #41) - skip in execute mode for speed
+    if not response_text and not execute_mode and not forced_agent_type:
+        try:
+            debate_response, debate_used = await maybe_run_debate(
+                message=message_with_images,
+                context_messages=context_messages,
+                preferred_provider=request_body.preferred_provider,
+                images=request_body.images,
+            )
+            if debate_used and debate_response:
+                response_text = debate_response
+                provider = "debate_engine"
+                logger.info("🧠 Used multi-agent debate")
+        except Exception as e:
+            logger.warning(f"Debate engine failed: {e}")
+    
+    # Try agent spawn if no debate/team (Patch #40)
+    actual_llm_provider = None
+    agent_type = None
+    router_metadata = None  # model, fallback_chain, was_fallback, usage
+    if not response_text:
+        logger.info(f"🔍 Attempting agent spawn with preferred_provider={request_body.preferred_provider}...")
+        logger.info(f"🔍 Context has {len(context_messages)} messages before agent spawn")
+        try:
+            agent_response, agent_type, actual_llm_provider, router_metadata = await maybe_spawn_agent(
+                message=message_with_images,
+                context_messages=context_messages,
+                user_id=user_id,
+                user_api_keys=user_api_keys,
+                preferred_provider=request_body.preferred_provider,
+                forced_agent_type=forced_agent_type,
+                images=request_body.images,
+            )
+            logger.info(f"🔍 Agent spawn returned: agent_type={agent_type}, provider={actual_llm_provider}, model={router_metadata.get('model') if router_metadata else None}, has_response={bool(agent_response)}")
+            if router_metadata and router_metadata.get("was_fallback"):
+                logger.info(f"⚠️ FALLBACK occurred: chain={router_metadata.get('fallback_chain')}")
+            if agent_type and agent_response:
+                response_text = agent_response
+                provider = f"agent_{agent_type}"
+                logger.info(f"🤖 Used agent: {agent_type} via {actual_llm_provider}")
+            else:
+                logger.info(f"🔍 Agent spawn returned None/empty, will try fallback")
+        except Exception as e:
+            logger.warning(f"Agent spawn failed: {e}")
+    
+    # ============================================
+    # STEP 9: FORCE Agent Response (Direct LLM blocked for quality)
+    # ============================================
+    # NOTE: Direct LLM calls are blocked. All responses must go through agents.
+    # The agent_engine.should_spawn_agent() now ALWAYS returns an agent type.
+    # This fallback only triggers if agent spawn completely failed.
+    if not response_text:
+        logger.info(f"⚠️ Agent/Debate failed, forcing reasoning agent as fallback")
+        
+        # Force reasoning agent instead of direct LLM
+        try:
+            from ..services.agent_engine import agent_engine
+            from ..domain.provider import get_router_for_internal_use
+            
+            router = get_router_for_internal_use()
+            if user_api_keys:
+                router.set_user_api_keys(user_api_keys)
+            agent_engine.set_router(router)
+            
+            result = await agent_engine.spawn(
+                task=message_with_images,
+                context=context_messages,
+                agent_type="reasoning",  # Always use reasoning as final fallback
+                model=request_body.preferred_provider,
+                images=request_body.images,
+            )
+            response_text = result.get("content", "")
+            actual_llm_provider = result.get("provider", None)
+            provider = "agent_reasoning"
+            agent_type = "reasoning"
+            # Capture router_metadata from forced spawn too
+            router_metadata = {
+                "model": result.get("model"),
+                "fallback_chain": result.get("fallback_chain"),
+                "was_fallback": result.get("was_fallback", False),
+                "preferred_provider": result.get("preferred_provider"),
+                "usage": result.get("usage"),
+            }
+            logger.info(f"🤖 Forced reasoning agent response via {actual_llm_provider}, model={router_metadata.get('model')}")
+            logger.info(f"🔍 Fallback result: provider={actual_llm_provider}, content_length={len(response_text) if response_text else 0}")
+        except Exception as e:
+            logger.error(f"Forced agent also failed: {e}")
+            # Only as absolute last resort, use direct LLM
             ai_response = await route_query(
                 message=message_with_images,
                 context=context_messages,
@@ -1928,7 +2010,7 @@ async def send_message(
             )
             response_text = ai_response.get("response", "")
             provider = ai_response.get("provider", "unknown")
-            actual_llm_provider = provider
+            # Capture router_metadata from direct route_query fallback
             direct_meta = ai_response.get("metadata", {})
             router_metadata = {
                 "model": direct_meta.get("model"),
@@ -1937,9 +2019,6 @@ async def send_message(
                 "preferred_provider": direct_meta.get("preferred_provider"),
                 "usage": direct_meta.get("usage"),
             }
-            logger.info(f"✅ LLM response: provider={provider}, model={router_metadata.get('model')}, {len(response_text)} chars")
-        except Exception as e:
-            logger.error(f"LLM call failed: {e}")
     
     is_error = response_text.startswith("Error calling") if response_text else True
     
@@ -2153,7 +2232,21 @@ async def send_message(
         except Exception as e:
             logger.warning(f"Response caching failed: {e}")
     
-    # Fake self-improving agent learning removed — was in-memory only
+    # Record interaction for Self-Improving Agent learning
+    if routing_decision and routing_decision.primary_agent:
+        try:
+            await self_improving_agent.record_feedback(
+                agent_id=routing_decision.primary_agent,
+                message=safe_user_message,
+                response=response_text,
+                feedback_type=FeedbackType.AUTO_SUCCESS,
+                metadata={
+                    "resonance_score": resonance_score
+                }
+            )
+            logger.info(f"📝 Recorded interaction for agent learning")
+        except Exception as e:
+            logger.warning(f"Learning record failed: {e}")
     
     # ============================================
     # STEP 11: Queue Background Tasks (Fire-and-forget) - PRODUCTION READY
@@ -2264,7 +2357,7 @@ async def send_message(
     if memories:
         anchors = [
             (mem.get("anchor_text", "") or mem.get("content", ""))[:50]
-            for mem in memories[:5]
+            for mem in memories[:5]  # Increased from 5 to 20
             if mem.get("anchor_text") or mem.get("content")
         ]
     
@@ -2389,18 +2482,6 @@ async def send_message(
                 error=None if skill_success else str(skill_result.get("error") or "Skill execution failed"),
             )
         )
-        # Extract present_options from skill result for frontend clickable buttons
-        has_po = skill_result.get("present_options")
-        print(f"[PRESENT_OPTIONS] skill has present_options={bool(has_po)}, type={type(has_po).__name__}, keys={list(has_po.keys()) if isinstance(has_po, dict) else 'N/A'}", flush=True)
-        if has_po and isinstance(has_po, dict):
-            tool_results.append(
-                ToolResultData(
-                    tool_name="present_options",
-                    success=True,
-                    result=has_po,
-                )
-            )
-            print(f"[PRESENT_OPTIONS] Appended to tool_results, total={len(tool_results)}", flush=True)
 
     current_meta = assistant_message.meta_data or {}
     if generated_images_data:
@@ -2953,13 +3034,13 @@ async def get_providers(
     # Get user info from request
     user_id = request.headers.get("x-user-id")
     user_role = request.headers.get("x-user-role", "user")
-    user_plan = request.headers.get("x-user-plan", "developer")
+    user_plan = request.headers.get("x-user-plan", "free")
     
-    # Developer tier credit limit
-    FREE_TIER_CREDITS = 15000
+    # Free tier credit limit
+    FREE_TIER_CREDITS = 1000
     
-    # Check if user is on a paid plan (all tiers are now paid)
-    is_paid_user = user_plan in ["developer", "plus", "enterprise"] or \
+    # Check if user is on a paid plan (unlimited platform keys)
+    is_paid_user = user_plan in ["plus", "enterprise"] or \
                    user_role in ["platform_dev", "system", "admin", "owner", "org_admin"]
     
     # Get user's credit balance for free users
@@ -4493,13 +4574,8 @@ async def get_memory_anchors(
         all_anchors = []
         for msg in messages:
             if msg.meta_data and isinstance(msg.meta_data, dict):
-                raw_anchors = msg.meta_data.get("anchors", [])
-                # Normalize anchors: may be dicts from _extract_keyphrases_nlp or plain strings
-                for a in raw_anchors:
-                    if isinstance(a, dict):
-                        all_anchors.append(a.get("text", a.get("content", str(a))))
-                    elif isinstance(a, str):
-                        all_anchors.append(a)
+                anchors = msg.meta_data.get("anchors", [])
+                all_anchors.extend(anchors)
         
         # Deduplicate and limit
         unique_anchors = list(dict.fromkeys(all_anchors))[:100]
@@ -4572,8 +4648,21 @@ async def get_resonance_clusters(
 
 @router.get("/teams")
 async def list_available_teams():
-    """List all available internal teams. (Fake team engine removed.)"""
-    return {"status": "ok", "teams": []}
+    """List all available internal teams."""
+    try:
+        from ..domain.agent import get_team_list
+        teams = get_team_list()
+        return {
+            "status": "ok",
+            "teams": teams,
+        }
+    except Exception as e:
+        logger.error(f"Failed to list teams: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "teams": [],
+        }
 
 
 @router.get("/agents/list")
@@ -4732,12 +4821,94 @@ async def get_feedback_statistics(
         }
     except Exception as e:
         logger.error(f"Failed to get feedback stats: {e}")
-        return {"status": "error", "error": str(e), "data": {"all_stats": {}, "best_agents": [], "needs_improvement": []}}
+        # Fall back to in-memory stats
+        from ..domain.agent import get_feedback_stats
+        stats = get_feedback_stats()
+        return {"status": "ok", "data": stats}
 
 
-    # Fake Phase 5 endpoints removed: /chains, /chains/execute, /sandbox/execute,
-    # /analyze/confidence, /analyze/citations, /validate, /voting
-    # — all depended on deleted in-memory fake agent services.
+@router.get("/chains")
+async def list_agent_chains(user_id: Optional[str] = None):
+    """List available agent chains/pipelines."""
+    try:
+        from ..domain.agent import get_chain_list
+        chains = get_chain_list(user_id)
+        return {"status": "ok", "chains": chains}
+    except Exception as e:
+        logger.error(f"Failed to list chains: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+class CreateChainRequest(BaseModel):
+    name: str
+    description: str
+    steps: List[Dict[str, Any]]
+
+
+@router.post("/chains")
+async def create_agent_chain(
+    request: Request,
+    body: CreateChainRequest,
+):
+    """Create a custom agent chain."""
+    try:
+        from ..domain.agent import create_chain
+        user_id = request.state.user_id if hasattr(request.state, 'user_id') else "anonymous"
+        
+        result = create_chain(
+            user_id=user_id,
+            name=body.name,
+            description=body.description,
+            steps=body.steps,
+        )
+        return {"status": "ok", "chain": result}
+    except Exception as e:
+        logger.error(f"Failed to create chain: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+class ExecuteChainRequest(BaseModel):
+    chain_id: str
+    task: str
+    context: List[Dict[str, Any]] = []
+
+
+@router.post("/chains/execute")
+async def execute_agent_chain(body: ExecuteChainRequest):
+    """Execute an agent chain."""
+    try:
+        from ..domain.agent import run_chain
+        result = await run_chain(
+            chain_id=body.chain_id,
+            task=body.task,
+            context_messages=body.context,
+        )
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        logger.error(f"Chain execution failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+class ExecuteCodeRequest(BaseModel):
+    code: str
+    language: Optional[str] = None
+    test_input: str = ""
+
+
+@router.post("/sandbox/execute")
+async def execute_code_sandbox(body: ExecuteCodeRequest):
+    """Execute code in sandbox environment."""
+    try:
+        from ..domain.agent import execute_code
+        result = await execute_code(
+            code=body.code,
+            language=body.language,
+            test_input=body.test_input,
+        )
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        logger.error(f"Code execution failed: {e}")
+        return {"status": "error", "error": str(e)}
 
 
 class AnalyzeRequest(BaseModel):
@@ -4746,15 +4917,87 @@ class AnalyzeRequest(BaseModel):
     agent_type: str = ""
 
 
+@router.post("/analyze/confidence")
+async def analyze_response_confidence(body: AnalyzeRequest):
+    """Analyze confidence level of a response."""
+    try:
+        from ..domain.agent import analyze_confidence
+        result = analyze_confidence(body.response, body.task)
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        logger.error(f"Confidence analysis failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 @router.post("/analyze/hallucinations")
 async def analyze_hallucinations(body: AnalyzeRequest):
     """Detect potential hallucinations in a response."""
     try:
-        from ..services.hallucination_detector import hallucination_detector
-        result = hallucination_detector.detect(body.response, body.task)
+        from ..domain.agent import detect_hallucinations
+        result = detect_hallucinations(body.response, body.task)
         return {"status": "ok", "data": result}
     except Exception as e:
         logger.error(f"Hallucination detection failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/analyze/citations")
+async def add_response_citations(body: AnalyzeRequest):
+    """Add citations to a response."""
+    try:
+        from ..domain.agent import add_citations
+        result = add_citations(body.response, body.task, body.agent_type)
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        logger.error(f"Citation addition failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+class ValidateRequest(BaseModel):
+    response: str
+    task: str
+    agent_type: str
+    context: List[Dict[str, Any]] = []
+
+
+@router.post("/validate")
+async def cross_validate_response(body: ValidateRequest):
+    """Cross-validate an agent response with another agent."""
+    try:
+        from ..domain.agent import validate_response
+        result = await validate_response(
+            response=body.response,
+            task=body.task,
+            agent_type=body.agent_type,
+            context_messages=body.context,
+        )
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        logger.error(f"Cross-validation failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+class VotingRequest(BaseModel):
+    task: str
+    context: List[Dict[str, Any]] = []
+    candidate_agents: Optional[List[str]] = None
+    voter_agents: Optional[List[str]] = None
+
+
+@router.post("/voting")
+async def run_agent_voting(body: VotingRequest):
+    """Run agent voting on a task."""
+    try:
+        from ..domain.agent import run_voting
+        result = await run_voting(
+            task=body.task,
+            context_messages=body.context,
+            candidate_agents=body.candidate_agents,
+            voter_agents=body.voter_agents,
+        )
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        logger.error(f"Voting failed: {e}")
         return {"status": "error", "error": str(e)}
 
 
@@ -4847,8 +5090,16 @@ async def get_or_create_project_context(
     request: Request,
     body: ProjectContextRequest,
 ):
-    """Get or create project context for persistent memory. (Fake context_persistence removed.)"""
-    return {"status": "ok", "data": {"project_name": body.project_name, "context": {}}}
+    """Get or create project context for persistent memory."""
+    try:
+        from ..domain.agent import get_project_context
+        user_id = request.state.user_id if hasattr(request.state, 'user_id') else "anonymous"
+        
+        result = get_project_context(user_id, body.project_name)
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        logger.error(f"Project context failed: {e}")
+        return {"status": "error", "error": str(e)}
 
 
 @router.get("/agents/list")
@@ -4978,17 +5229,87 @@ async def execute_code(request: Request):
         return {"error": str(e)}
 
 
-# Fake autonomous services endpoints (agent_router, self_improving_agent,
-# autonomous_planner) removed — were in-memory Python dicts, not real agents.
-# Response cache stats kept:
+# ============================================
+# AUTONOMOUS SERVICES ENDPOINTS (L3-L5)
+# ============================================
+
+@router.get("/autonomous/stats")
+async def get_autonomous_stats(request: Request):
+    """
+    Get statistics for all autonomous services.
+    Returns routing stats, cache stats, learning stats, and planning stats.
+    """
+    try:
+        return {
+            "status": "ok",
+            "routing": agent_router.get_routing_stats(),
+            "cache": response_cache.get_stats(),
+            "learning": self_improving_agent.get_all_stats(),
+            "planning": autonomous_planner.get_planning_stats()
+        }
+    except Exception as e:
+        logger.error(f"Autonomous stats error: {e}")
+        return {"error": str(e)}
+
+
+@router.get("/autonomous/routing/stats")
+async def get_routing_stats(request: Request):
+    """Get Agent Router statistics."""
+    try:
+        return {
+            "status": "ok",
+            "stats": agent_router.get_routing_stats()
+        }
+    except Exception as e:
+        logger.error(f"Routing stats error: {e}")
+        return {"error": str(e)}
+
+
+@router.post("/autonomous/routing/test")
+async def test_routing(request: Request):
+    """
+    Test agent routing for a message without executing.
+    Returns the routing decision (intent, complexity, recommended agent/team).
+    """
+    try:
+        body = await request.json()
+        message = body.get("message", "")
+        context = body.get("context", [])
+        
+        if not message:
+            return {"error": "Message is required"}
+        
+        decision = route_message(message, context)
+        
+        return {
+            "status": "ok",
+            "decision": {
+                "intent": decision.intent.value,
+                "complexity": decision.complexity.value,
+                "confidence": decision.confidence,
+                "recommended_agent": decision.recommended_agent,
+                "recommended_team": decision.recommended_team,
+                "reasoning": decision.reasoning,
+                "metadata": decision.metadata
+            }
+        }
+    except Exception as e:
+        logger.error(f"Routing test error: {e}")
+        return {"error": str(e)}
+
 
 @router.get("/autonomous/cache/stats")
 async def get_cache_stats(request: Request):
     """Get Response Cache statistics."""
     try:
-        return {"status": "ok", "stats": response_cache.get_stats()}
+        return {
+            "status": "ok",
+            "stats": response_cache.get_stats()
+        }
     except Exception as e:
+        logger.error(f"Cache stats error: {e}")
         return {"error": str(e)}
+
 
 @router.post("/autonomous/cache/clear")
 async def clear_cache(request: Request):
@@ -4997,6 +5318,153 @@ async def clear_cache(request: Request):
         response_cache.clear()
         return {"status": "ok", "message": "Cache cleared"}
     except Exception as e:
+        logger.error(f"Cache clear error: {e}")
+        return {"error": str(e)}
+
+
+@router.get("/autonomous/learning/stats")
+async def get_learning_stats(request: Request):
+    """Get Self-Improving Agent learning statistics."""
+    try:
+        return {
+            "status": "ok",
+            "stats": self_improving_agent.get_all_stats()
+        }
+    except Exception as e:
+        logger.error(f"Learning stats error: {e}")
+        return {"error": str(e)}
+
+
+@router.get("/autonomous/learning/agent/{agent_id}")
+async def get_agent_learning_stats(agent_id: str, request: Request):
+    """Get learning statistics for a specific agent."""
+    try:
+        return {
+            "status": "ok",
+            "stats": self_improving_agent.get_agent_stats(agent_id)
+        }
+    except Exception as e:
+        logger.error(f"Agent learning stats error: {e}")
+        return {"error": str(e)}
+
+
+@router.get("/autonomous/learning/agent/{agent_id}/suggestions")
+async def get_agent_improvement_suggestions(agent_id: str, request: Request):
+    """Get improvement suggestions for a specific agent."""
+    try:
+        suggestions = self_improving_agent.get_improvement_suggestions(agent_id)
+        return {
+            "status": "ok",
+            "agent_id": agent_id,
+            "suggestions": suggestions
+        }
+    except Exception as e:
+        logger.error(f"Agent suggestions error: {e}")
+        return {"error": str(e)}
+
+
+@router.post("/autonomous/feedback")
+async def record_feedback(request: Request):
+    """
+    Record user feedback for agent learning.
+    Feedback types: thumbs_up, thumbs_down, regenerate, edit, copy, apply_code
+    """
+    try:
+        body = await request.json()
+        agent_id = body.get("agent_id", "default")
+        message = body.get("message", "")
+        response = body.get("response", "")
+        feedback_type = body.get("feedback_type", "thumbs_up")
+        value = body.get("value")
+        
+        # Map string to FeedbackType enum
+        feedback_map = {
+            "thumbs_up": FeedbackType.THUMBS_UP,
+            "thumbs_down": FeedbackType.THUMBS_DOWN,
+            "regenerate": FeedbackType.REGENERATE,
+            "edit": FeedbackType.EDIT,
+            "copy": FeedbackType.COPY,
+            "apply_code": FeedbackType.APPLY_CODE,
+            "quality_score": FeedbackType.QUALITY_SCORE
+        }
+        
+        ft = feedback_map.get(feedback_type, FeedbackType.THUMBS_UP)
+        
+        await self_improving_agent.record_feedback(
+            agent_id=agent_id,
+            message=message,
+            response=response,
+            feedback_type=ft,
+            value=value
+        )
+        
+        return {"status": "ok", "message": "Feedback recorded"}
+    except Exception as e:
+        logger.error(f"Feedback recording error: {e}")
+        return {"error": str(e)}
+
+
+@router.get("/autonomous/planning/stats")
+async def get_planning_stats(request: Request):
+    """Get Autonomous Planner statistics."""
+    try:
+        return {
+            "status": "ok",
+            "stats": autonomous_planner.get_planning_stats()
+        }
+    except Exception as e:
+        logger.error(f"Planning stats error: {e}")
+        return {"error": str(e)}
+
+
+@router.post("/autonomous/planning/create")
+async def create_plan(request: Request):
+    """
+    Create an execution plan for a goal.
+    Returns the plan with decomposed steps.
+    """
+    try:
+        body = await request.json()
+        goal = body.get("goal", "")
+        
+        if not goal:
+            return {"error": "Goal is required"}
+        
+        plan = autonomous_planner.create_plan(goal)
+        
+        return {
+            "status": "ok",
+            "plan": {
+                "id": plan.id,
+                "goal": plan.goal,
+                "status": plan.status.value,
+                "steps": [
+                    {
+                        "id": s.id,
+                        "description": s.description,
+                        "action_type": s.action_type,
+                        "status": s.status.value,
+                        "dependencies": s.dependencies
+                    }
+                    for s in plan.steps
+                ]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Plan creation error: {e}")
+        return {"error": str(e)}
+
+
+@router.get("/autonomous/planning/{plan_id}")
+async def get_plan_status_endpoint(plan_id: str, request: Request):
+    """Get status of a specific plan."""
+    try:
+        status = autonomous_planner.get_plan_status(plan_id)
+        if not status:
+            return {"error": "Plan not found"}
+        return {"status": "ok", "plan": status}
+    except Exception as e:
+        logger.error(f"Plan status error: {e}")
         return {"error": str(e)}
 
 
@@ -5174,23 +5642,49 @@ async def get_agent_stats(
         raise HTTPException(status_code=401, detail="User ID required")
     
     try:
+        from ..services.agent_metrics import agent_metrics as metrics_collector
+        from ..services.agent_memory import agent_memory_store
         from ..services.user_feedback import user_feedback
-
-        # Fetch memories from Hash Sphere (real persistent storage)
+        
+        # Get real metrics from the metrics collector
+        all_stats = metrics_collector.get_all_stats()
+        
+        # Format metrics for frontend
+        metrics = {}
+        for agent_type, stats in all_stats.items():
+            if stats:
+                metrics[agent_type] = {
+                    "agent_type": agent_type,
+                    "total_executions": stats.total_executions,
+                    "successful_executions": stats.successful_executions,
+                    "failed_executions": stats.failed_executions,
+                    "success_rate": stats.success_rate,
+                    "avg_execution_time_ms": stats.avg_execution_time_ms,
+                    "avg_quality_score": stats.avg_quality_score,
+                }
+        
+        # Get top agents by success rate
+        top_agents = metrics_collector.get_top_agents(metric="success_rate", limit=5)
+        
+        # ============================================
+        # FETCH MEMORIES FROM HASH SPHERE (PERSISTENT)
+        # Uses 3-level hierarchical memory architecture
+        # ============================================
         recent_memories = []
         total_memory_count = 0
         avg_relevance = 0.0
-
+        
         try:
+            # Fetch from Hash Sphere memory service (persistent storage)
             hash_sphere_result = await service_client.call_service(
                 "memory_service",
                 "POST",
                 "http://memory_service:8000/memory/hash-sphere/extract",
                 json={
-                    "query": "",
+                    "query": "",  # Empty query to get all recent memories
                     "user_id": user_id,
                     "org_id": request.headers.get("x-org-id", "default"),
-                    "agent_hash": None,
+                    "agent_hash": None,  # Get user-level memories
                     "limit": 20,
                     "use_anchors": True,
                     "use_proximity": False,
@@ -5199,11 +5693,11 @@ async def get_agent_stats(
                 },
                 timeout=httpx.Timeout(5.0, connect=2.0),
             )
-
+            
             if hash_sphere_result and hash_sphere_result.get("memories"):
                 memories_data = hash_sphere_result.get("memories", [])
                 total_memory_count = hash_sphere_result.get("total_count", len(memories_data))
-
+                
                 total_relevance = 0.0
                 for mem in memories_data:
                     relevance = mem.get("hybrid_score") or mem.get("resonance_score") or 0.5
@@ -5219,36 +5713,56 @@ async def get_agent_stats(
                         "xyz": mem.get("xyz"),
                         "type": mem.get("type", "memory"),
                     })
-
+                
                 if recent_memories:
                     avg_relevance = total_relevance / len(recent_memories)
-
-                logger.info(f"Loaded {len(recent_memories)} memories from Hash Sphere for user {user_id[:8]}...")
+                
+                logger.info(f"✅ Loaded {len(recent_memories)} memories from Hash Sphere for user {user_id[:8]}...")
         except Exception as mem_err:
-            logger.warning(f"Hash Sphere memory fetch failed: {mem_err}")
-
+            logger.warning(f"Hash Sphere memory fetch failed, falling back to in-memory: {mem_err}")
+            
+            # Fallback to in-memory agent_memory_store
+            memory_stats = agent_memory_store.get_stats(user_id)
+            total_memory_count = memory_stats.get("total_memories", 0)
+            
+            if user_id in agent_memory_store.memories:
+                for agent_type, memories in agent_memory_store.memories[user_id].items():
+                    for mem in memories[-10:]:
+                        recent_memories.append({
+                            "id": mem.id,
+                            "task": mem.task,
+                            "response_summary": mem.response[:200] + "..." if len(mem.response) > 200 else mem.response,
+                            "timestamp": mem.created_at,
+                            "relevance_score": mem.relevance_score,
+                            "agent_type": agent_type,
+                        })
+        
+        # Sort by timestamp descending
         recent_memories.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         recent_memories = recent_memories[:5]
-
+        
+        # Get feedback stats
         feedback_stats = user_feedback.get_all_stats()
-
+        
         return {
             "status": "ok",
             "data": {
-                "metrics": {},
-                "top_agents": [],
+                "metrics": metrics,
+                "top_agents": top_agents,
                 "memory": {
                     "total_count": total_memory_count,
-                    "avg_relevance": round(avg_relevance * 100, 1),
-                    "agents": {},
+                    "avg_relevance": round(avg_relevance * 100, 1),  # As percentage
+                    "agents": {},  # Agent-specific breakdown
                     "recent_memories": recent_memories,
                 },
                 "feedback": feedback_stats,
-                "projects": [],
+                "projects": [],  # Project context - can be extended later
             }
         }
     except Exception as e:
         logger.error(f"Get agent stats error: {e}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "error": str(e), "data": {"metrics": {}, "top_agents": [], "memory": {"total_count": 0, "recent_memories": []}}}
 
 

@@ -2,28 +2,25 @@
 
 Passes tool definitions to the LLM and streams back responses + tool_calls.
 Does NOT execute any tools — the client handles all tool execution locally.
-Uses rg_llm UnifiedLLMClient for all provider routing + streaming.
+Routes through the unified LLM service via HTTP (no rg_llm dependency).
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-
-from rg_llm import UnifiedLLMClient, LLMRequest, LLMStreamEvent
-from rg_llm.models import StreamEventType
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ide", tags=["ide"])
 
-_llm_client = UnifiedLLMClient(
-    fallback_order=["groq", "openai", "anthropic", "google", "deepseek", "mistral"],
-)
+LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm_service:8000").rstrip("/")
 
 
 class IDECompletionRequest(BaseModel):
@@ -74,36 +71,71 @@ async def ide_completions(
 
     async def generate():
         try:
-            llm_request = LLMRequest(
-                messages=request_body.messages,
-                provider=request_body.preferred_provider,
-                model=request_body.model,
-                temperature=request_body.temperature,
-                max_tokens=request_body.max_tokens,
-                tools=request_body.tools,
-                response_format=request_body.response_format,
-                stream=True,
-                user_id=user_id,
-            )
+            payload = {
+                "messages": request_body.messages,
+                "model": request_body.model,
+                "temperature": request_body.temperature,
+                "max_tokens": request_body.max_tokens,
+                "stream": True,
+                "user_id": user_id,
+            }
+            if request_body.tools:
+                payload["tools"] = request_body.tools
+            if request_body.preferred_provider:
+                payload["provider"] = request_body.preferred_provider
+            if request_body.response_format:
+                payload["response_format"] = request_body.response_format
+            if user_keys:
+                payload["user_api_keys"] = user_keys
 
-            async for event in _llm_client.stream(llm_request, user_keys=user_keys):
-                if event.event == StreamEventType.CHUNK:
-                    yield f"event: chunk\ndata: {json.dumps({'content': event.content})}\n\n"
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{LLM_SERVICE_URL}/v1/chat/completions",
+                    json=payload,
+                ) as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        yield f"event: error\ndata: {json.dumps({'error': f'LLM service returned {resp.status_code}: {body.decode()[:200]}'})}\n\n"
+                        return
 
-                elif event.event == StreamEventType.TOOL_CALLS:
-                    # Convert ToolCall objects to OpenAI wire format for IDE
-                    tc_list = [{
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.name, "arguments": tc.arguments},
-                    } for tc in event.tool_calls]
-                    yield f"event: tool_calls\ndata: {json.dumps({'tool_calls': tc_list})}\n\n"
+                    buffer = ""
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                                delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                                content = delta.get("content")
+                                tool_calls = delta.get("tool_calls")
 
-                elif event.event == StreamEventType.DONE:
-                    yield f"event: done\ndata: {json.dumps({'provider': event.provider, 'model': event.model, 'usage': event.usage})}\n\n"
+                                if content:
+                                    yield f"event: chunk\ndata: {json.dumps({'content': content})}\n\n"
 
-                elif event.event == StreamEventType.ERROR:
-                    yield f"event: error\ndata: {json.dumps({'error': event.error})}\n\n"
+                                if tool_calls:
+                                    tc_list = []
+                                    for tc in tool_calls:
+                                        fn = tc.get("function", {})
+                                        tc_list.append({
+                                            "id": tc.get("id", ""),
+                                            "type": "function",
+                                            "function": {
+                                                "name": fn.get("name", ""),
+                                                "arguments": fn.get("arguments", ""),
+                                            },
+                                        })
+                                    if tc_list:
+                                        yield f"event: tool_calls\ndata: {json.dumps({'tool_calls': tc_list})}\n\n"
+                            except json.JSONDecodeError:
+                                continue
+
+            # If streaming didn't work, try non-streaming fallback
+            yield f"event: done\ndata: {json.dumps({'provider': request_body.preferred_provider or 'auto', 'model': request_body.model or ''})}\n\n"
 
         except Exception as e:
             logger.error(f"IDE completions error: {e}", exc_info=True)

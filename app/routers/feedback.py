@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..models import ResonantChatMessage
+from ..services.self_improving_agent import self_improving_agent, FeedbackType
 from ..services.adaptive_weights import adaptive_tuner
 from ..services.ab_testing import ab_tester
 
@@ -140,9 +141,47 @@ async def submit_feedback(
         _feedback_store[message_id] = {}
     _feedback_store[message_id][feedback_id] = feedback_data
     
-    # Apply feedback for adaptive weight tuning
+    # Apply learning to self-improving agent
     learning_applied = False
     try:
+        # Get agent ID from provider
+        agent_id = message.ai_provider or "default"
+        
+        # Record quality score
+        score = _rating_to_score(feedback.rating)
+        await self_improving_agent.record_feedback(
+            agent_id=agent_id,
+            message=message.content[:500],  # Truncate for storage
+            response=message.content,
+            feedback_type=FeedbackType.QUALITY_SCORE,
+            value=score,
+        )
+        
+        # Record helpfulness if provided
+        if feedback.is_helpful is not None:
+            await self_improving_agent.record_feedback(
+                agent_id=agent_id,
+                message=message.content[:500],
+                response=message.content,
+                feedback_type=FeedbackType.HELPFUL if feedback.is_helpful else FeedbackType.NOT_HELPFUL,
+                value=1.0 if feedback.is_helpful else 0.0,
+            )
+        
+        # Record correction if suggested response provided
+        if feedback.suggested_response:
+            await self_improving_agent.record_feedback(
+                agent_id=agent_id,
+                message=message.content[:500],
+                response=message.content,
+                feedback_type=FeedbackType.CORRECTION,
+                value=0.0,
+                correction=feedback.suggested_response,
+            )
+        
+        learning_applied = True
+        logger.info(f"Applied learning from feedback for agent {agent_id}")
+        
+        # Record feedback for adaptive weight tuning
         # Get memory scores from message metadata if available
         memory_scores = {}
         if message.meta_data and isinstance(message.meta_data, dict):

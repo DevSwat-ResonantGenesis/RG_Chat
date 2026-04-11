@@ -1,36 +1,33 @@
 """Provider facade for chat and agents.
 
-Routes LLM queries via rg_llm UnifiedLLMClient.
-Keeps MultiAIRouter only for get_router_for_internal_use() backward compat.
+Routes LLM queries through MultiAIRouter (direct provider calls) and
+falls back to the unified LLM service HTTP endpoint when available.
 """
 
 import logging
 import os
 from typing import Dict, List, Optional
 
-from rg_llm import UnifiedLLMClient, LLMRequest
-from rg_llm.models import StreamEventType
+import httpx
 
 from .multi_ai_router import MultiAIRouter
 
 logger = logging.getLogger(__name__)
 
-# Unified client — single source of truth for all LLM calls
-_llm_client = UnifiedLLMClient(
-    fallback_order=["groq", "google", "openai", "anthropic"],
-)
-
-# Internal router kept ONLY for get_router_for_internal_use() backward compat
+# Primary router — handles all LLM calls via direct provider SDKs
 _internal_router = MultiAIRouter()
+
+# Unified LLM service (used as secondary path when available)
+LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm_service:8000").rstrip("/")
 
 
 def set_user_api_keys(keys: Dict[str, str]) -> None:
-    """Configure BYOK keys on the internal router for legacy paths."""
+    """Configure BYOK keys on the router."""
     _internal_router.set_user_api_keys(keys)
 
 
 def clear_user_api_keys() -> None:
-    """Clear user-specific API keys on the internal router."""
+    """Clear user-specific API keys on the router."""
     _internal_router.set_user_api_keys({})
 
 
@@ -41,26 +38,57 @@ async def route_query(
     user_api_keys: Optional[Dict[str, str]] = None,
     images: Optional[List[Dict]] = None,
 ) -> Dict:
-    """Route a chat/agent query to an LLM provider (non-streaming)."""
+    """Route a chat/agent query to an LLM provider (non-streaming).
+
+    Tries the unified LLM service first, falls back to MultiAIRouter.
+    """
+    # Build messages
     messages = []
     if context:
         for msg in context:
             messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
     messages.append({"role": "user", "content": message})
 
-    # Strip __user_id__ from BYOK keys dict if present
     user_keys = {k: v for k, v in (user_api_keys or {}).items() if not k.startswith("__")}
 
-    response = await _llm_client.complete(
-        LLMRequest(messages=messages, provider=preferred_provider),
-        user_keys=user_keys or None,
-    )
-    return {
-        "response": response.content,
-        "provider": response.provider,
-        "model": response.model,
-        "usage": response.usage,
-    }
+    # Try unified LLM service first
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{LLM_SERVICE_URL}/v1/chat/completions",
+                json={
+                    "messages": messages,
+                    "provider": preferred_provider,
+                    "user_api_keys": user_keys or None,
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                choice = (data.get("choices") or [{}])[0]
+                msg = choice.get("message", {})
+                return {
+                    "response": msg.get("content", ""),
+                    "provider": data.get("provider", preferred_provider or "unknown"),
+                    "model": data.get("model", ""),
+                    "usage": data.get("usage", {}),
+                }
+    except Exception as e:
+        logger.debug(f"Unified LLM service unavailable, falling back to MultiAIRouter: {e}")
+
+    # Fallback: use MultiAIRouter directly
+    if user_keys:
+        _internal_router.set_user_api_keys(user_keys)
+    try:
+        result = await _internal_router.route_query(
+            message=message,
+            context=context,
+            preferred_provider=preferred_provider,
+            images=images,
+        )
+        return result
+    finally:
+        if user_keys:
+            _internal_router.set_user_api_keys({})
 
 
 def get_router_for_internal_use() -> MultiAIRouter:
@@ -113,27 +141,27 @@ async def route_query_stream(
 
     user_keys = {k: v for k, v in (user_api_keys or {}).items() if not k.startswith("__")}
 
+    # Stream via MultiAIRouter
     try:
-        llm_request = LLMRequest(
-            messages=messages,
-            provider=preferred_provider,
-            stream=True,
+        if user_keys:
+            _internal_router.set_user_api_keys(user_keys)
+        provider_name = preferred_provider or "auto"
+        yield {"type": "provider", "provider": provider_name}
+
+        result = await _internal_router.route_query(
+            message=message,
+            context=context,
+            preferred_provider=preferred_provider,
         )
-
-        async for event in _llm_client.stream(llm_request, user_keys=user_keys or None):
-            if event.event == StreamEventType.PROVIDER:
-                yield {"type": "provider", "provider": event.provider}
-            elif event.event == StreamEventType.CHUNK:
-                yield {"type": "chunk", "content": event.content}
-            elif event.event == StreamEventType.DONE:
-                pass  # done emitted below
-            elif event.event == StreamEventType.ERROR:
-                yield {"type": "error", "error": event.error}
-                return
-
+        content = result.get("response", "")
+        if content:
+            yield {"type": "chunk", "content": content}
         yield {"type": "done"}
     except Exception as e:
         yield {"type": "error", "error": str(e)}
+    finally:
+        if user_keys:
+            _internal_router.set_user_api_keys({})
 
 
 async def _stream_local(messages: list, model: str, user_id: str):

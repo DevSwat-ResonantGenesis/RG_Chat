@@ -71,12 +71,21 @@ class UserFeedbackEngine:
         self._agent_router = None  # Will be set lazily to avoid circular imports
     
     def _get_agent_router(self):
-        """agent_router was removed (fake in-memory module)."""
-        return None
-
+        """Lazily get agent_router to avoid circular imports."""
+        if self._agent_router is None:
+            try:
+                from .agent_router import agent_router
+                self._agent_router = agent_router
+            except ImportError:
+                logger.warning("Could not import agent_router - feedback won't affect routing")
+        return self._agent_router
+    
     def _sync_to_agent_router(self, agent_type: str, score: float):
-        """agent_router removed — no-op."""
-        pass
+        """Sync agent score to agent_router for biased selection."""
+        router = self._get_agent_router()
+        if router:
+            router.update_performance(agent_type, score)
+            logger.info(f"📊 Synced {agent_type} score {score:.2f} to agent_router")
     
     def submit_feedback(
         self,

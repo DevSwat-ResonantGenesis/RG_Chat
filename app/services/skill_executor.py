@@ -30,11 +30,9 @@ logger = logging.getLogger(__name__)
 CODE_VISUALIZER_URL = os.getenv("AST_ANALYSIS_SERVICE_URL") or os.getenv("CODE_VISUALIZER_URL", "http://rg_ast_analysis:8000")
 MEMORY_SERVICE_URL = os.getenv("MEMORY_SERVICE_URL", "http://memory_service:8000")
 AGENT_ENGINE_URL = os.getenv("AGENT_ENGINE_URL", "http://agent_engine_service:8000")
-BUILDER_AGENT_URL = os.getenv("BUILDER_AGENT_URL", "http://builder_agent:8000")
-RUNNER_AGENT_URL = os.getenv("RUNNER_AGENT_URL", "http://runner_agent:8000")
-AGENT_ARCHITECT_URL = os.getenv("AGENT_ARCHITECT_URL", "http://agent_architect:8000")
 STATE_PHYSICS_URL = os.getenv("STATE_PHYSICS_URL", "http://rg_users_invarients_sim:8091")
 IDE_SERVICE_URL = os.getenv("IDE_SERVICE_URL", "http://ide_platform_service:8080")
+AGENT_ARCHITECT_URL = os.getenv("AGENT_ARCHITECT_URL", "http://agent_architect:8000")
 
 
 class SkillExecutor:
@@ -1250,7 +1248,6 @@ class SkillExecutor:
         positives from casual mentions.
         """
         msg = (message or "").lower()
-        print(f"[AGENTS_OS_ACTION] Detecting action for: {msg[:120]!r}", flush=True)
 
         # Multi-agent detection: message describes multiple named agents
         # e.g. "Context Agent: ..., Code Analysis Agent: ..., Content Creation Agent: ..."
@@ -1274,14 +1271,8 @@ class SkillExecutor:
             return "rename_agent"
 
         # ── Delete agent ──
-        # Match: "delete agent X", "delete the agent X", "delete X" (without 'agent'), "remove X agent"
-        _del_match = (
-            re.search(r"\b(delete|remove|destroy|kill)\s+(?:the\s+|my\s+|this\s+)?(?:agent|agents)\b", msg) or
-            re.search(r"\bagents?\b.*\b(delete|remove|destroy)\b", msg) or
-            re.search(r"\b(delete|remove|destroy|kill)\s+(?:the\s+|my\s+)?.{2,60}$", msg)
-        )
-        if _del_match:
-            print(f"[AGENTS_OS_ACTION] ✅ DELETE detected: {_del_match.group()!r}", flush=True)
+        if re.search(r"\b(delete|remove|destroy|kill)\s+(?:the\s+|my\s+|this\s+)?(?:agent|agents)\b", msg) or \
+           re.search(r"\bagents?\b.*\b(delete|remove|destroy)\b", msg):
             return "delete_agent"
 
         # ── Update/edit agent ──
@@ -1323,7 +1314,6 @@ class SkillExecutor:
             "agents list",
         ]) or re.search(r"\b(list|show|open|view)\s+(my\s+|all\s+|the\s+)?agents?\b", msg):
             return "list_agents"
-        print(f"[AGENTS_OS_ACTION] ⚠️ No specific action detected, falling back to open_panel", flush=True)
         return "open_panel"
 
     def _extract_agent_name(self, message: str) -> str:
@@ -1551,59 +1541,29 @@ class SkillExecutor:
 
     # ── Shared helpers for intelligent agent configuration ──────────
 
-    # Self-extension tools — always included so agent can find/create tools at runtime
-    _SELF_EXTENSION_TOOLS = ["discover_services", "check_tool_exists", "auto_build_tool"]
-
     @staticmethod
-    def _build_tool_catalog() -> str:
-        """Build a compact tool catalog from the unified registry for LLM selection."""
-        try:
-            from ..rg_tool_registry.builtin_tools import ALL_TOOLS
-        except ImportError:
-            return ""
-        # Group by category, one line per tool: "name — description"
-        cats: Dict[str, List[str]] = {}
-        for td in ALL_TOOLS:
-            cat = td.category.value if hasattr(td.category, 'value') else str(td.category)
-            if cat not in cats:
-                cats[cat] = []
-            cats[cat].append(f"{td.name} — {td.description[:80]}")
-        lines = []
-        for cat, tools in cats.items():
-            lines.append(f"[{cat.upper()}] {', '.join(t.split(' — ')[0] for t in tools)}")
-            for t in tools:
-                lines.append(f"  {t}")
-        return "\n".join(lines)
+    def _infer_tools(text: str) -> List[str]:
+        """Infer the best set of tools from description keywords."""
+        lower = text.lower()
+        tools = ["web_search", "fetch_url"]  # always included
 
-    @staticmethod
-    def _get_all_tool_names() -> set:
-        """Get all valid tool names from the unified registry."""
-        try:
-            from ..rg_tool_registry.builtin_tools import ALL_TOOLS
-            return {td.name for td in ALL_TOOLS}
-        except ImportError:
-            return set()
-
-    async def _infer_tools(self, text: str, user_api_keys: Optional[Dict[str, str]] = None) -> List[str]:
-        """Intelligently select tools from the unified registry using LLM analysis.
-
-        1. Builds a compact tool catalog from ALL_TOOLS
-        2. Fast Groq LLM call picks ONLY the relevant tools for this agent
-        3. Always includes self-extension tools (discover_services, check_tool_exists, auto_build_tool)
-        4. Falls back to keyword matching if LLM is unavailable
-        """
-        # Try LLM-based selection first
-        llm_tools = await self._llm_select_tools(text, user_api_keys)
-        if llm_tools is not None:
-            tools = llm_tools
-        else:
-            # Fallback: keyword-based selection (no default dump)
-            tools = self._keyword_select_tools(text)
-
-        # Always include self-extension tools so agent can find/create tools at runtime
-        for t in self._SELF_EXTENSION_TOOLS:
-            if t not in tools:
-                tools.append(t)
+        # Platform action tools
+        if any(k in lower for k in ["post", "rabbit", "community", "content", "publish", "blog", "write", "article"]):
+            tools.extend(["create_rabbit_post", "list_rabbit_communities"])
+        if any(k in lower for k in ["community", "subreddit", "forum", "create community"]):
+            tools.append("create_rabbit_community")
+        if any(k in lower for k in ["api", "http", "request", "endpoint", "webhook", "integration",
+                                     "penetration", "penitration", "scan", "investigate", "scrape", "crawl"]):
+            tools.append("http_request")
+        if any(k in lower for k in ["memory", "remember", "context", "long-term", "persist",
+                                     "research", "reserch", "analysis", "analyses", "analyze", "deep", "comprehensive"]):
+            tools.extend(["memory.read", "memory.write"])
+        if any(k in lower for k in ["github", "repo", "repository", "code", "codebase"]):
+            tools.append("github")
+        if any(k in lower for k in ["database", "sql", "data", "analytics", "query"]):
+            tools.append("database")
+        if any(k in lower for k in ["test", "qa", "quality", "sandbox", "execute", "run code"]):
+            tools.append("code_execution")
 
         # Deduplicate while preserving order
         seen: set = set()
@@ -1613,153 +1573,6 @@ class SkillExecutor:
                 seen.add(t)
                 unique.append(t)
         return unique
-
-    async def _llm_select_tools(self, text: str, user_api_keys: Optional[Dict[str, str]] = None) -> Optional[List[str]]:
-        """Use fast Groq LLM to analyze agent description and pick tools from the unified registry."""
-        import json as _json
-
-        catalog = self._build_tool_catalog()
-        if not catalog:
-            return None
-
-        valid_names = self._get_all_tool_names()
-        if not valid_names:
-            return None
-
-        prompt = f"""You are a tool-selection expert for the Resonant Genesis AI platform.
-
-AGENT DESCRIPTION:
-{text}
-
-AVAILABLE TOOLS (unified registry):
-{catalog}
-
-TASK: Select ONLY the tools this agent actually needs. Be precise — don't dump everything.
-- A research agent needs: web_search, fetch_url, deep_research, memory_read, memory_write
-- A content agent needs: web_search, create_rabbit_post, list_rabbit_communities, generate_image
-- A code agent needs: code_visualizer_scan, github_list_repos, execute_code, http_request
-- A social media agent needs: scrape_platforms, web_search, memory_write
-- A data agent needs: execute_code, google_sheets, web_search, generate_chart
-
-Pick 3-15 tools. Only pick what this specific agent needs for its role.
-
-Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}"""
-
-        # Get Groq API keys (same pattern as _llm_detect_tool)
-        groq_api_keys = []
-        if user_api_keys and user_api_keys.get("groq"):
-            groq_api_keys.append(user_api_keys["groq"])
-        for env_var in ("GROQ_API_KEY", "GROQ_API_KEY_2"):
-            raw = os.getenv(env_var, "")
-            for k in raw.split(","):
-                k = k.strip()
-                if k and k not in groq_api_keys:
-                    groq_api_keys.append(k)
-
-        if not groq_api_keys:
-            return None
-
-        messages = [
-            {"role": "system", "content": "You are a tool-selection expert. Respond with JSON only."},
-            {"role": "user", "content": prompt},
-        ]
-
-        for key_idx, api_key in enumerate(groq_api_keys):
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "model": "llama-3.3-70b-versatile",
-                            "messages": messages,
-                            "temperature": 0.0,
-                            "max_tokens": 300,
-                            "response_format": {"type": "json_object"},
-                        },
-                    )
-                    if resp.status_code in (401, 429):
-                        continue
-                    if resp.status_code != 200:
-                        continue
-
-                    data = resp.json()
-                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    parsed = _json.loads(content)
-                    raw_tools = parsed.get("tools", [])
-
-                    # Validate against registry — only keep real tool names
-                    selected = [t for t in raw_tools if t in valid_names]
-                    if selected:
-                        logger.info(f"[TOOL-INFER] LLM selected {len(selected)} tools: {selected}")
-                        return selected
-                    else:
-                        logger.warning(f"[TOOL-INFER] LLM returned no valid tools, falling back")
-                        return None
-
-            except Exception as e:
-                logger.warning(f"[TOOL-INFER] Groq key {key_idx+1} failed: {e}")
-                continue
-
-        return None
-
-    @staticmethod
-    def _keyword_select_tools(text: str) -> List[str]:
-        """Keyword-based tool selection fallback — picks only relevant tools, no default dump."""
-        lower = text.lower()
-        tools = []
-
-        # Research / web
-        if any(k in lower for k in ["search", "research", "find", "look up", "investigate", "analyze", "information"]):
-            tools.extend(["web_search", "fetch_url", "deep_research"])
-        if any(k in lower for k in ["scrape", "crawl", "extract data"]):
-            tools.extend(["scrape_page", "scrape_platforms"])
-        # Memory
-        if any(k in lower for k in ["memory", "remember", "context", "long-term", "persist", "learn"]):
-            tools.extend(["memory_read", "memory_write"])
-        # Community / content
-        if any(k in lower for k in ["post", "rabbit", "community", "content", "publish", "blog", "write", "article"]):
-            tools.extend(["create_rabbit_post", "list_rabbit_communities", "web_search"])
-        if any(k in lower for k in ["community", "subreddit", "forum"]):
-            tools.append("create_rabbit_community")
-        # Code / development
-        if any(k in lower for k in ["code", "codebase", "scan", "debug", "develop", "program"]):
-            tools.extend(["code_visualizer_scan", "execute_code", "http_request"])
-        if any(k in lower for k in ["github", "repo", "repository", "git"]):
-            tools.extend(["github_list_repos", "github_list_files", "github_download_file"])
-        # Media
-        if any(k in lower for k in ["image", "photo", "picture", "visual", "dalle", "generate image"]):
-            tools.append("generate_image")
-        if any(k in lower for k in ["audio", "speech", "tts", "voice"]):
-            tools.append("generate_audio")
-        # Integrations
-        if any(k in lower for k in ["email", "gmail", "mail"]):
-            tools.extend(["gmail_send", "gmail_read"])
-        if any(k in lower for k in ["slack", "channel"]):
-            tools.extend(["slack_send", "slack_read"])
-        if any(k in lower for k in ["calendar", "schedule", "meeting", "event"]):
-            tools.append("google_calendar")
-        if any(k in lower for k in ["drive", "document", "spreadsheet", "sheets"]):
-            tools.extend(["google_drive", "google_sheets"])
-        if any(k in lower for k in ["figma", "design", "ui", "mockup"]):
-            tools.append("figma")
-        # Data / analytics
-        if any(k in lower for k in ["data", "analytics", "chart", "graph", "report"]):
-            tools.extend(["execute_code", "generate_chart", "web_search"])
-        if any(k in lower for k in ["stock", "crypto", "market", "price", "trading"]):
-            tools.append("stock_crypto")
-        # API / platform
-        if any(k in lower for k in ["api", "http", "request", "endpoint", "webhook", "integration"]):
-            tools.extend(["http_request", "platform_api_call"])
-
-        # If nothing matched, give minimal research tools
-        if not tools:
-            tools = ["web_search", "fetch_url"]
-
-        return tools
 
     @staticmethod
     def _infer_provider_and_model(text: str) -> tuple:
@@ -1787,69 +1600,38 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
 
     @staticmethod
     def _build_system_prompt(name: str, description: str, tools: List[str]) -> str:
-        """Build a role-specific system prompt with the agent's selected tools."""
-        # Build tool descriptions from the registry for the assigned tools
-        tool_descs = []
-        try:
-            from ..rg_tool_registry.builtin_tools import ALL_TOOLS
-            tool_map = {td.name: td.description for td in ALL_TOOLS}
-            for t in tools:
-                desc = tool_map.get(t)
-                if desc:
-                    tool_descs.append(f"- {t}: {desc[:100]}")
-                else:
-                    tool_descs.append(f"- {t}")
-        except ImportError:
-            tool_descs = [f"- {t}" for t in tools]
+        """Build a rich, role-specific system prompt."""
+        tool_instructions = []
+        if "web_search" in tools:
+            tool_instructions.append("- Use web_search to find real-time information, then fetch_url to read page content.")
+        if "create_rabbit_post" in tools:
+            tool_instructions.append("- Use create_rabbit_post to publish content on Rabbit communities.")
+        if "http_request" in tools:
+            tool_instructions.append("- Use http_request for internal platform API calls.")
+        if "memory.read" in tools or "memory.write" in tools:
+            tool_instructions.append("- Use memory.read/write to persist important information across sessions.")
 
-        tools_section = "\n".join(tool_descs) if tool_descs else "- Use available tools as needed."
+        tools_section = "\n".join(tool_instructions) if tool_instructions else "- Use available tools as needed."
 
         return (
             f"You are '{name}', an advanced AI agent on the Resonant Genesis platform.\n\n"
             f"YOUR ROLE: {description}\n\n"
-            f"YOUR TOOLS (selected for your role):\n{tools_section}\n\n"
-            f"SELF-EXTENSION:\n"
-            f"The platform has 200+ tools across 44 services. If you need a capability you don't have:\n"
-            f"- discover_services: Find platform services by category.\n"
-            f"- check_tool_exists: Look up if a tool exists by name or capability.\n"
-            f"- auto_build_tool: Create a new tool at runtime if none exists.\n\n"
-            f"BEHAVIOR RULES:\n"
-            f"- For QUESTIONS: Research thoroughly, then respond with a comprehensive, well-structured answer.\n"
-            f"- For ACTIONS: Execute the requested action using the appropriate tool, then confirm results.\n"
-            f"- NEVER invent facts. If information is unavailable, state that clearly.\n"
-            f"- NEVER call action tools unless the user explicitly requests an action.\n"
-            f"- Keep responses focused, factual, and actionable.\n"
-            f"- Report outcomes clearly and summarize actions taken."
+            f"TOOL USAGE:\n{tools_section}\n\n"
+            "BEHAVIOR RULES:\n"
+            "- For QUESTIONS: Research thoroughly, then respond with a comprehensive, well-structured answer.\n"
+            "- For ACTIONS: Execute the requested action using the appropriate tool, then confirm results.\n"
+            "- NEVER invent facts. If information is unavailable, state that clearly.\n"
+            "- NEVER call action tools unless the user explicitly requests an action.\n"
+            "- Keep responses focused, factual, and actionable.\n"
+            "- Report outcomes clearly and summarize actions taken."
         )
 
     @staticmethod
-    def _build_safety_config(tools: List[str], mode: str, max_loops: int = 0, max_tokens_per_run: int = 0) -> Dict[str, Any]:
-        """Build safety config based on tools, mode, and task complexity.
-        
-        Execution parameters (from Twin spec Section 25):
-          Simple (search+summarize): 15-20 loops, 30k tokens
-          Medium (multi-step research): 30-40 loops, 50k tokens
-          Complex (scraping, code gen): 40-50 loops, 80k tokens
-          Creative (content, design): 20-30 loops, 50k tokens
-        """
-        # Auto-detect complexity from tools if no explicit override
-        if not max_loops:
-            complex_tools = {"execute_code", "code_visualizer_scan", "http_request", "external_http_request", "git_clone", "git_push"}
-            medium_tools = {"fetch_url", "news_search", "platform_api_call", "google_drive", "google_calendar", "memory_search"}
-            scraper_tools = {"scrape_page", "deep_research", "scrape_platforms"}
-            tool_set = set(tools or [])
-            if tool_set & scraper_tools or tool_set & complex_tools:
-                max_loops = 50
-            elif len(tool_set) >= 4 or tool_set & medium_tools:
-                max_loops = 40
-            else:
-                max_loops = 25
-        if not max_tokens_per_run:
-            max_tokens_per_run = 500000
-
+    def _build_safety_config(tools: List[str], mode: str) -> Dict[str, Any]:
+        """Build safety config based on tools and mode."""
         config: Dict[str, Any] = {
-            "max_loops": max_loops,
-            "max_tokens_per_run": max_tokens_per_run,
+            "max_loops": 8,
+            "max_tokens_per_run": 50000,
             "rate_limit_per_minute": 30,
         }
         # Require confirmation for destructive actions
@@ -1860,7 +1642,7 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             config["require_confirmation_for"] = confirm_for
         return config
 
-    async def _build_agent_create_payload(self, message: str, user_api_keys: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def _build_agent_create_payload(self, message: str) -> Dict[str, Any]:
         """Build a comprehensive Agent Engine create payload from user intent."""
         name = self._extract_agent_name(message)
         msg = (message or "").strip()
@@ -1877,7 +1659,7 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
         else:
             description = f"Agent: {name}"
 
-        tools = await self._infer_tools(f"{name} {description} {msg}", user_api_keys)
+        tools = self._infer_tools(f"{name} {description} {msg}")
         provider, model = self._infer_provider_and_model(msg)
         mode = self._infer_mode(msg)
         system_prompt = self._build_system_prompt(name, description, tools)
@@ -1890,7 +1672,7 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             "provider": provider,
             "model": model,
             "temperature": 0.6,
-            "max_tokens": 128000,
+            "max_tokens": 4096,
             "tools": tools,
             "mode": mode,
             "safety_config": safety_config,
@@ -1898,13 +1680,13 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             "blocked_actions": ["delete_community", "delete_user", "admin_override"],
         }
 
-    async def _build_payload_from_parsed(self, agent_def: Dict[str, str], user_api_keys: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def _build_payload_from_parsed(self, agent_def: Dict[str, str]) -> Dict[str, Any]:
         """Build a rich Agent Engine create payload from a parsed agent definition."""
         name = agent_def.get("name", "Resonant Agent")
         desc = agent_def.get("description", "Created by Resonant Chat")
         combined = f"{name} {desc}"
 
-        tools = await self._infer_tools(combined, user_api_keys)
+        tools = self._infer_tools(combined)
         provider, model = self._infer_provider_and_model(combined)
         mode = self._infer_mode(combined)
         system_prompt = self._build_system_prompt(name, desc, tools)
@@ -1917,7 +1699,7 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             "provider": provider,
             "model": model,
             "temperature": 0.6,
-            "max_tokens": 128000,
+            "max_tokens": 4096,
             "tools": tools,
             "mode": mode,
             "safety_config": safety_config,
@@ -1995,15 +1777,67 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
     async def _handle_team_action(
         self, action: str, message: str, user_id: str
     ) -> Dict[str, Any]:
-        """Handle team/workflow creation and listing. (Fake team_engine removed.)"""
-        return {
-            "success": False,
-            "action": "open_agents_panel",
-            "panel_url": "/agents?embed=1",
-            "operation": action,
-            "error": "Team engine has been removed — use real Agent Engine agents instead.",
-            "summary": "Team engine removed. Create real agents via Agent Engine instead.",
-        }
+        """Handle team/workflow creation and listing."""
+        panel_url = "/agents?embed=1"
+        try:
+            from ..domain.agent.facade import team_engine, _init_engines
+            _init_engines()
+
+            if action == "list_teams":
+                teams = team_engine.list_teams()
+                summary = f"**Agent Teams** ({len(teams)} available):\n\n"
+                for t in teams:
+                    agents_str = ", ".join(t["agents"])
+                    summary += f"- **{t['name']}** (`{t['id']}`) — {t['workflow']} — agents: {agents_str}\n"
+                    if t.get("description"):
+                        summary += f"  _{t['description']}_\n"
+                return {
+                    "success": True,
+                    "action": "open_agents_panel",
+                    "panel_url": panel_url,
+                    "operation": "list_teams",
+                    "teams": teams,
+                    "summary": summary,
+                }
+
+            # create_team
+            details = self._extract_team_details(message)
+            result = team_engine.register_team(
+                team_id=details["team_id"],
+                name=details["name"],
+                agents=details["agents"],
+                workflow=details["workflow"],
+                description=details["description"],
+            )
+            agents_str = ", ".join(result["agents"])
+            summary = (
+                "✅ **Agent team created successfully!**\n\n"
+                f"- **Name:** {result['name']}\n"
+                f"- **ID:** `{result['id']}`\n"
+                f"- **Agents:** {agents_str}\n"
+                f"- **Workflow:** {result['workflow']}\n"
+                f"- **Description:** {result['description']}\n\n"
+                "The team is now registered and can be triggered in future conversations. "
+                "You can also trigger it by using its keywords or selecting it from the teams panel."
+            )
+            return {
+                "success": True,
+                "action": "open_agents_panel",
+                "panel_url": panel_url,
+                "operation": "create_team",
+                "created_team": result,
+                "summary": summary,
+            }
+        except Exception as e:
+            logger.error(f"Team action failed: {e}", exc_info=True)
+            return {
+                "success": False,
+                "action": "open_agents_panel",
+                "panel_url": panel_url,
+                "operation": action,
+                "error": str(e),
+                "summary": f"Failed to {action.replace('_', ' ')}: {e}",
+            }
 
     async def _create_single_agent(
         self, client: httpx.AsyncClient, payload: Dict[str, Any], headers: Dict[str, str]
@@ -2052,40 +1886,9 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
     async def _execute_agents_os(
         self, message: str, user_id: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Open Agents OS — delegates ALL operations to Agent Architect ReAct loop.
-
-        The architect uses LLM function-calling to decide what to do:
-        list, delete, create, run, modify, schedule, diagnose — all handled
-        by the LLM picking the right tool. No more fragile regex routing.
-        """
+        """Open Agents OS and perform real agent operations when requested."""
         panel_url = "/agents?embed=1"
         action = self._detect_agents_os_action(message)
-
-        logger.info(f"🤖 Agents OS action detected: {action} for message: {message[:80]!r}")
-        print(f"[AGENTS_OS] action={action!r} msg={message[:100]!r}", flush=True)
-
-        # Handle team/workflow creation locally (no external API needed)
-        if action in ("create_team", "list_teams"):
-            return await self._handle_team_action(action, message, user_id)
-
-        # ── Delegate ALL agent operations to Agent Architect ReAct loop ──
-        # The architect's LLM decides: delete_agent, create_agent, run_agent, etc.
-        # No more local regex-based handlers for individual operations.
-        if action in ("create_agent", "create_agents", "delete_agent", "rename_agent",
-                       "update_agent", "start_agent", "stop_agent", "list_agents"):
-            logger.info(f"🤖 Agents OS delegating to Agent Architect ReAct loop: action={action}")
-            print(f"[AGENTS_OS] Delegating {action} to architect ReAct loop", flush=True)
-            return await self._execute_agent_architect(message, user_id, context)
-
-        # open_panel fallback: also try architect for intelligence
-        if action == "open_panel":
-            logger.info(f"🤖 Agents OS open_panel — trying architect for: {message[:80]!r}")
-            print(f"[AGENTS_OS] open_panel — trying architect", flush=True)
-            architect_result = await self._execute_agent_architect(message, user_id, context)
-            if architect_result and architect_result.get("success"):
-                return architect_result
-
-        # Legacy fallback: fetch agent list and show panel
         headers = {
             "x-user-id": user_id,
             "x-user-role": str(context.get("user_role", "user")),
@@ -2093,10 +1896,61 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             "x-unlimited-credits": "true" if bool(context.get("unlimited_credits", False)) else "false",
         }
 
+        logger.info(f"🤖 Agents OS action detected: {action} for message: {message[:80]!r}")
+        print(f"[AGENTS_OS] action={action} msg={message[:80]!r}", flush=True)
+
+        # Handle team/workflow creation locally (no external API needed)
+        if action in ("create_team", "list_teams"):
+            return await self._handle_team_action(action, message, user_id)
+
+        # Follow-up confirmation handling:
+        # When user sends a short confirmation like "yes create all" and the previous
+        # assistant message described agents, parse the agent descriptions from context
+        # and upgrade to multi-agent creation.
+        prev_content = context.get("prev_assistant_content", "")
+        if action == "create_agent" and prev_content:
+            parsed_from_context = self._parse_multiple_agents(prev_content)
+            if len(parsed_from_context) >= 1:
+                logger.info(f"🤖 Follow-up confirmation: parsed {len(parsed_from_context)} agents from previous assistant message")
+                action = "create_agents"
+                # Use the context-parsed agents instead of the short confirmation message
+                context["_parsed_agents_from_context"] = parsed_from_context
+
         try:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 created_agents: List[Dict[str, Any]] = []
                 action_summary = ""
+
+                if action == "create_agents":
+                    parsed = context.get("_parsed_agents_from_context") or self._parse_multiple_agents(message)
+                    logger.info(f"🤖 Multi-agent creation: {len(parsed)} agents to create")
+                    for agent_def in parsed:
+                        payload = self._build_payload_from_parsed(agent_def)
+                        result = await self._create_single_agent(client, payload, headers)
+                        if result:
+                            created_agents.append(result)
+                            logger.info(f"✅ Created agent: {result.get('name')} (ID: {result.get('id')})")
+
+                elif action == "create_agent":
+                    create_payload = self._build_agent_create_payload(message)
+                    result = await self._create_single_agent(client, create_payload, headers)
+                    if result:
+                        created_agents.append(result)
+
+                elif action == "rename_agent":
+                    action_summary = await self._handle_rename_agent(client, message, headers, user_id)
+
+                elif action == "delete_agent":
+                    action_summary = await self._handle_delete_agent(client, message, headers, user_id)
+
+                elif action == "update_agent":
+                    action_summary = await self._handle_update_agent(client, message, headers, user_id)
+
+                elif action == "start_agent":
+                    action_summary = await self._handle_start_stop_agent(client, message, headers, user_id, start=True)
+
+                elif action == "stop_agent":
+                    action_summary = await self._handle_start_stop_agent(client, message, headers, user_id, start=False)
 
                 # Always fetch current agent list
                 resp = await client.get(
@@ -2121,11 +1975,75 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
                 if isinstance(agent, dict):
                     top_agents.append(agent.get("name") or agent.get("id") or "agent")
 
-            # Build summary (creation is handled by agent_architect, so no created_agents here)
+            # Build summary
             summary = ""
 
             if action_summary:
                 summary = action_summary + "\n\n"
+            elif created_agents:
+                summary = f"✅ **Created {len(created_agents)} agent(s) via Agent Engine API:**\n\n"
+                for ca in created_agents:
+                    ca_name = ca.get("name", "Agent")
+                    ca_id = ca.get("id", "?")
+                    ca_hash = ca.get("agent_public_hash", "")
+                    ca_tools = ca.get("tools", [])
+                    summary += f"- **{ca_name}** — ID: `{ca_id}`"
+                    if ca_hash:
+                        summary += f" — Hash: `{ca_hash}`"
+                    summary += "\n"
+                summary += "\n"
+
+                # Show real webhook URLs if auto-created
+                agents_with_webhooks = [
+                    ca for ca in created_agents if ca.get("webhook_url")
+                ]
+                if agents_with_webhooks:
+                    summary += "**Webhook Endpoint(s):**\n"
+                    for ca in agents_with_webhooks:
+                        summary += (
+                            f"- **{ca.get('name', 'Agent')}**: `{ca['webhook_url']}`\n"
+                            f"  - Method: `POST`\n"
+                            f"  - Content-Type: `application/json`\n"
+                        )
+                    summary += "\n"
+
+                # Add accurate post-creation guidance
+                any_has_webhook = bool(agents_with_webhooks) or any(
+                    "http_request" in (ca.get("tools") or []) or
+                    "webhook" in (ca.get("name") or "").lower()
+                    for ca in created_agents
+                )
+                any_has_discord = any(
+                    "discord" in (ca.get("name") or "").lower() or
+                    "discord" in (ca.get("description") or "").lower()
+                    for ca in created_agents
+                )
+
+                summary += "**Next steps:**\n"
+                summary += "1. Open the agent dashboard at **/agents** to view and configure your agent(s).\n"
+                if agents_with_webhooks:
+                    summary += (
+                        "2. Use the webhook URL above as the Endpoint URL in your external service "
+                        "(Discord, GitHub, Slack, etc.).\n"
+                    )
+                    summary += (
+                        "3. To manage API keys and other integrations, go to **/connect-profiles**.\n"
+                    )
+                elif any_has_webhook or any_has_discord:
+                    summary += (
+                        "2. To connect external services (Discord webhooks, GitHub, Slack, etc.), "
+                        "go to **/connect-profiles** — this is where you add webhook URLs, API keys, "
+                        "and connect integrations.\n"
+                    )
+                    if any_has_discord:
+                        summary += (
+                            "3. For Discord: Go to your Discord server → Server Settings → Integrations → "
+                            "Webhooks → New Webhook → Copy the webhook URL → Paste it at **/connect-profiles** "
+                            "under the Discord card.\n"
+                        )
+                else:
+                    summary += "2. To connect external services, go to **/connect-profiles**.\n"
+                summary += "\n"
 
             if not summary:
                 summary = "**Agents OS is ready.**\n\n"
@@ -2137,6 +2055,10 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             if top_agents:
                 summary += "\n**Your agents:**\n" + "\n".join([f"- {name}" for name in top_agents])
 
+            created_agent_id = created_agents[0].get("id") if created_agents else None
+            created_agent_name = created_agents[0].get("name") if created_agents else None
+            created_agent_hash = created_agents[0].get("agent_public_hash") if created_agents else None
+
             return {
                 "success": True,
                 "action": "open_agents_panel",
@@ -2144,6 +2066,13 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
                 "operation": action,
                 "agent_count": len(agents),
                 "agents": agents[:10],
+                "created_agent_id": created_agent_id,
+                "created_agent_name": created_agent_name,
+                "created_agent_public_hash": created_agent_hash,
+                "created_agents": [
+                    {"id": ca.get("id"), "name": ca.get("name"), "hash": ca.get("agent_public_hash")}
+                    for ca in created_agents
+                ],
                 "summary": summary,
             }
         except Exception as e:
@@ -2164,61 +2093,43 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
     ) -> Optional[Dict[str, Any]]:
         """Find an agent by name (fuzzy match) from the user's agent list."""
         try:
-            print(f"[FIND_AGENT] Looking for {name_query!r} at {AGENT_ENGINE_URL}/agents/", flush=True)
             resp = await client.get(
                 f"{AGENT_ENGINE_URL}/agents/",
                 headers=headers,
                 params={"limit": 50},
             )
-            print(f"[FIND_AGENT] API status={resp.status_code}", flush=True)
             resp.raise_for_status()
             payload = resp.json()
             agents_list = payload if isinstance(payload, list) else (
                 payload.get("agents") or payload.get("items") or payload.get("data") or []
             )
-            agent_names = [a.get("name", "?") for a in agents_list if isinstance(a, dict)]
-            print(f"[FIND_AGENT] Found {len(agents_list)} agents: {agent_names[:10]}", flush=True)
             query_lower = name_query.lower().strip()
             # Exact match first
             for ag in agents_list:
                 if isinstance(ag, dict) and (ag.get("name") or "").lower() == query_lower:
-                    print(f"[FIND_AGENT] ✅ Exact match: {ag.get('name')!r}", flush=True)
                     return ag
             # Partial match
             for ag in agents_list:
                 if isinstance(ag, dict) and query_lower in (ag.get("name") or "").lower():
-                    print(f"[FIND_AGENT] ✅ Partial match: {ag.get('name')!r} contains {query_lower!r}", flush=True)
                     return ag
-            print(f"[FIND_AGENT] ❌ No match for {query_lower!r} in {agent_names}", flush=True)
             return None
         except Exception as e:
-            print(f"[FIND_AGENT] ❌ Exception: {e}", flush=True)
             logger.warning(f"Failed to find agent by name '{name_query}': {e}")
             return None
 
     def _extract_agent_name_from_action(self, message: str, action_verb: str) -> str:
         """Extract the target agent name from an action message like 'rename agent X to Y'."""
         msg = (message or "").strip()
-        print(f"[EXTRACT_NAME] msg={msg[:120]!r} verb={action_verb!r}", flush=True)
         # Try patterns like: rename agent "X" / rename "X" agent / delete agent named X
-        # Also handle: "delete X" / "remove X" / "delete the X agent"
         patterns = [
             rf'{action_verb}\s+(?:the\s+|my\s+)?(?:agent\s+)?["\']([^"\']+)["\']',
             rf'{action_verb}\s+(?:the\s+|my\s+)?(?:agent\s+)?(?:named?\s+|called?\s+)?([A-Za-z0-9][A-Za-z0-9 _\-]{{2,50}}?)(?:\s+(?:to|agent|$))',
-            rf'(?:agent\s+)?["\']?([^"\']+?)["\']?\s*(?:$|to\s|from\s)',
-            # Direct: "delete Tech News Compiler" without "agent" keyword
-            rf'{action_verb}\s+([A-Za-z0-9][A-Za-z0-9 _\-]{{2,60}})(?:\s+agent)?(?:\s*$|,)',
+            rf'(?:agent\s+)["\']?([^"\']+?)["\']?\s*(?:$|to\s|from\s)',
         ]
-        for i, p in enumerate(patterns):
+        for p in patterns:
             m = re.search(p, msg, re.IGNORECASE)
             if m:
-                name = m.group(1).strip()
-                name = re.sub(r'\s+(?:agent|now|please|for me)$', '', name, flags=re.IGNORECASE).strip()
-                if name:
-                    print(f"[EXTRACT_NAME] ✅ Pattern {i} matched: {name!r}", flush=True)
-                    return name
-                print(f"[EXTRACT_NAME] Pattern {i} matched but name empty after cleanup", flush=True)
-        print(f"[EXTRACT_NAME] ❌ No pattern matched for msg={msg[:80]!r}", flush=True)
+                return m.group(1).strip()
         return ""
 
     async def _handle_rename_agent(
@@ -2269,32 +2180,24 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
         self, client: httpx.AsyncClient, message: str, headers: Dict[str, str], user_id: str
     ) -> str:
         """Handle deleting an agent via Agent Engine API."""
-        print(f"[DELETE] Starting delete for message: {message[:120]!r}", flush=True)
         agent_name = self._extract_agent_name_from_action(message, "delete|remove|destroy")
-        print(f"[DELETE] Extracted agent name: {agent_name!r}", flush=True)
         if not agent_name:
-            print(f"[DELETE] ❌ FAILED: Could not extract agent name from message", flush=True)
             return "❌ Could not determine which agent to delete. Use: **delete agent [name]**"
 
         agent = await self._find_agent_by_name(client, agent_name, headers, user_id)
-        print(f"[DELETE] Agent lookup result: {agent.get('name') if agent else 'NOT FOUND'} (id={agent.get('id') if agent else 'N/A'})", flush=True)
         if not agent:
-            print(f"[DELETE] ❌ FAILED: No agent found matching {agent_name!r}", flush=True)
             return f"❌ Could not find an agent named **{agent_name}**."
 
         agent_id = agent.get("id")
         try:
-            print(f"[DELETE] Calling DELETE {AGENT_ENGINE_URL}/agents/{agent_id}", flush=True)
             resp = await client.delete(
                 f"{AGENT_ENGINE_URL}/agents/{agent_id}",
                 headers=headers,
             )
-            print(f"[DELETE] API response: status={resp.status_code} body={resp.text[:200]!r}", flush=True)
             resp.raise_for_status()
             logger.info(f"🗑️ Deleted agent: {agent_name} ({agent_id})")
             return f"🗑️ **Agent deleted:** {agent_name} (ID: `{agent_id}`)"
         except Exception as e:
-            print(f"[DELETE] ❌ API EXCEPTION: {e}", flush=True)
             logger.error(f"Failed to delete agent {agent_id}: {e}")
             return f"❌ Failed to delete agent: {e}"
 
@@ -2362,28 +2265,26 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             return f"❌ Could not find an agent named **{agent_name}**."
 
         agent_id = agent.get("id")
+        endpoint = "start" if start else "stop"
         try:
-            if start:
-                # Activate the agent
-                await client.patch(
-                    f"{AGENT_ENGINE_URL}/agents/{agent_id}",
-                    headers={**headers, "Content-Type": "application/json"},
-                    json={"is_active": True},
-                )
-                # Execute via the execution endpoint
-                task_text = agent.get("description") or f"Run {agent_name}"
-                resp = await client.post(
-                    f"{AGENT_ENGINE_URL}/execution/agents/{agent_id}/execute",
-                    headers={**headers, "Content-Type": "application/json"},
-                    json={"task": task_text, "context": {"source": "chat_skill"}},
-                )
-            else:
-                # Deactivate the agent
+            resp = await client.post(
+                f"{AGENT_ENGINE_URL}/agents/{agent_id}/{endpoint}",
+                headers=headers,
+            )
+            if resp.status_code == 404:
+                # Fallback: update enabled status
+                status_val = True if start else False
                 resp = await client.patch(
                     f"{AGENT_ENGINE_URL}/agents/{agent_id}",
                     headers={**headers, "Content-Type": "application/json"},
-                    json={"is_active": False},
+                    json={"enabled": status_val, "status": "active" if start else "paused"},
                 )
+                if resp.status_code == 405:
+                    resp = await client.put(
+                        f"{AGENT_ENGINE_URL}/agents/{agent_id}",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json={**agent, "enabled": status_val, "status": "active" if start else "paused"},
+                    )
             resp.raise_for_status()
             emoji = "▶️" if start else "⏸️"
             action_word = "started" if start else "stopped"
@@ -2394,124 +2295,6 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             logger.error(f"Failed to {action_word} agent {agent_id}: {e}")
             return f"❌ Failed to {action_word} agent: {e}"
 
-    async def _execute_agent_architect(
-        self, message: str, user_id: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Agent Architect: Delegates to standalone RG_agent_architect service.
-
-        All intelligence lives in the standalone service (ReAct loop, tools,
-        prompts, memory, builder, runner). This is a thin proxy.
-        """
-        panel_url = "/agents?embed=1"
-        headers = {
-            "x-user-id": user_id,
-            "x-user-role": str(context.get("user_role", "user")),
-            "x-is-superuser": "true" if bool(context.get("is_superuser", False)) else "false",
-            "x-unlimited-credits": "true" if bool(context.get("unlimited_credits", False)) else "false",
-        }
-        user_api_keys = context.get("user_api_keys") or {}
-
-        logger.info(f"🏗️ [ARCHITECT] Starting for: {message[:120]!r}")
-
-        # ── Build service request payload ──
-        svc_payload = {
-            "message": message,
-            "user_id": user_id,
-            "context": {
-                "messages": context.get("messages") or context.get("previousMessages") or context.get("conversation_history") or [],
-                "user_role": context.get("user_role", "user"),
-                "is_superuser": context.get("is_superuser", False),
-                "unlimited_credits": context.get("unlimited_credits", False),
-            },
-            "user_api_keys": user_api_keys,
-        }
-
-        # ── Try Builder + Runner services (primary path) ──
-        try:
-            return await self._architect_delegate_to_services(
-                svc_payload, headers, panel_url,
-            )
-        except Exception as e:
-            logger.warning(f"[ARCHITECT] Service delegation failed ({e}), using inline fallback")
-
-        # ── Fallback: return error when architect service is unreachable ──
-        return {
-            "success": False,
-            "action": "open_agents_panel",
-            "panel_url": panel_url,
-            "summary": (
-                "The Agent Architect service is temporarily unavailable. "
-                "Please try again in a moment. If this persists, check that "
-                "the agent_architect container is running."
-            ),
-        }
-
-    async def _architect_delegate_to_services(
-        self, svc_payload: Dict, headers: Dict[str, str], panel_url: str,
-    ) -> Dict[str, Any]:
-        """Primary path: delegate to standalone Agent Architect service.
-
-        Calls POST /api/message — the architect orchestrator handles intent
-        classification, tool calling, building, running, scheduling internally.
-        """
-        # Map to the architect service's expected payload format
-        architect_payload = {
-            "workspace_id": svc_payload.get("user_id", "default"),
-            "message": svc_payload.get("message", ""),
-            "user_id": svc_payload.get("user_id", ""),
-        }
-        async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
-            resp = await client.post(
-                f"{AGENT_ARCHITECT_URL}/api/message",
-                headers=headers, json=architect_payload,
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(f"Agent Architect service returned HTTP {resp.status_code}: {resp.text[:200]}")
-
-            data = resp.json()
-            # Map architect response to the format resonant_chat.py expects
-            summary = data.get("text", "")
-            mode = data.get("mode", "control")
-            options_data = data.get("options", {})
-
-            result: Dict[str, Any] = {
-                "success": True,
-                "action": "open_agents_panel",
-                "panel_url": panel_url,
-                "intent": mode.upper(),
-                "operation": "architect_service",
-                "summary": summary,
-            }
-
-            # Map architect options to present_options format
-            if options_data:
-                raw_options = options_data.get("options", [])
-                if isinstance(raw_options, list) and raw_options:
-                    mapped = []
-                    for opt in raw_options[:4]:
-                        if isinstance(opt, str):
-                            mapped.append({
-                                "label": opt,
-                                "value": f"Agent Architect: {opt}",
-                                "description": opt,
-                                "icon": "🔧",
-                            })
-                        elif isinstance(opt, dict):
-                            mapped.append({
-                                "label": opt.get("label", opt.get("text", str(opt))),
-                                "value": f"Agent Architect: {opt.get('value', opt.get('label', ''))}",
-                                "description": opt.get("description", ""),
-                                "icon": opt.get("icon", "🔧"),
-                            })
-                    result["present_options"] = {
-                        "_type": "present_options",
-                        "title": options_data.get("question", "What's next?"),
-                        "options": mapped,
-                        "allow_custom": True,
-                    }
-
-            logger.info(f"🏗️ [ARCHITECT] Response from service: mode={mode}, summary_len={len(summary)}")
-            return result
     # ============================================
     # RABBIT POST SKILL (uses shared/tools/rabbit.py)
     # ============================================
@@ -2616,9 +2399,175 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
             }
 
         skill_module = INTEGRATION_SKILLS[skill_id]
-        ctx_keys = list((context.get("user_api_keys") or {}).keys())
-        logger.info(f"🔌 Executing modular integration skill: {skill_id} ({skill_module.skill_name}), ctx_keys={ctx_keys}")
+        logger.info(f"🔌 Executing modular integration skill: {skill_id} ({skill_module.skill_name})")
         return await skill_module.execute(message, user_id, context)
+
+    # ============================================
+    # AGENT ARCHITECT SKILL (ReAct orchestrator)
+    # ============================================
+
+    async def _execute_agent_architect(
+        self, message: str, user_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Delegate to the standalone Agent Architect service.
+
+        The architect runs a ReAct loop with 26 tools (build_agent, run_agent,
+        modify_agent, set_trigger, check_integrations, memory, blockchain, etc.).
+        We try SSE streaming first, then fall back to sync.
+        """
+        panel_url = "/agents?embed=1"
+        headers = {
+            "x-user-id": user_id,
+            "x-user-role": str(context.get("user_role", "user")),
+            "x-is-superuser": "true" if bool(context.get("is_superuser", False)) else "false",
+            "x-unlimited-credits": "true" if bool(context.get("unlimited_credits", False)) else "false",
+        }
+        svc_payload = {
+            "message": message,
+            "workspace_id": user_id,
+            "user_id": user_id,
+            "context": context.get("prev_assistant_content", ""),
+        }
+
+        # Try SSE streaming first for real-time progress
+        try:
+            result = await self._architect_delegate_to_services(svc_payload, headers, panel_url)
+            return result
+        except Exception as e:
+            logger.error(f"Agent architect delegation failed: {e}")
+            return {
+                "success": False,
+                "action": "open_agents_panel",
+                "panel_url": panel_url,
+                "error": f"Agent Architect unavailable: {e}",
+                "summary": (
+                    "**Agent Architect** is currently unavailable. "
+                    "You can still manage agents directly from the **Agents** panel.\n\n"
+                    f"- Open panel: {panel_url}"
+                ),
+            }
+
+    async def _architect_delegate_to_services(
+        self, svc_payload: Dict, headers: Dict[str, str], panel_url: str
+    ) -> Dict[str, Any]:
+        """Call the architect service via SSE streaming with sync fallback."""
+        result: Dict[str, Any] = {
+            "success": True,
+            "action": "open_agents_panel",
+            "panel_url": panel_url,
+            "summary": "",
+        }
+
+        accumulated_text = ""
+        actions_taken = []
+
+        # Try SSE streaming
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{AGENT_ARCHITECT_URL}/api/message/stream",
+                    json=svc_payload,
+                    headers=headers,
+                ) as resp:
+                    if resp.status_code != 200:
+                        raise httpx.HTTPStatusError(
+                            f"Architect returned {resp.status_code}",
+                            request=resp.request,
+                            response=resp,
+                        )
+
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+
+                        try:
+                            import json
+                            event = json.loads(data_str)
+                        except Exception:
+                            continue
+
+                        etype = event.get("type", "")
+                        if etype == "text":
+                            accumulated_text += event.get("data", {}).get("content", "")
+                        elif etype == "tool_call":
+                            actions_taken.append(event.get("data", {}))
+                        elif etype == "tool_result":
+                            pass  # tracked via actions
+                        elif etype == "complete":
+                            resp_data = event.get("data", {}).get("response", {})
+                            accumulated_text = resp_data.get("text", accumulated_text)
+                            options_data = resp_data.get("options")
+                            if options_data:
+                                result["present_options"] = self._map_architect_options(options_data)
+                        elif etype == "error":
+                            err = event.get("data", {}).get("error", "Unknown error")
+                            result["error"] = err
+
+            if accumulated_text:
+                result["summary"] = accumulated_text
+            if actions_taken:
+                result["actions"] = actions_taken
+            return result
+
+        except Exception as stream_err:
+            logger.warning(f"Architect SSE stream failed, trying sync: {stream_err}")
+
+        # Fallback: synchronous call
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                resp = await client.post(
+                    f"{AGENT_ARCHITECT_URL}/api/message",
+                    json=svc_payload,
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    result["summary"] = data.get("text", data.get("response", ""))
+                    options_data = data.get("options")
+                    if options_data:
+                        result["present_options"] = self._map_architect_options(options_data)
+                    return result
+                else:
+                    result["success"] = False
+                    result["error"] = f"Architect returned {resp.status_code}"
+                    result["summary"] = "Agent Architect is temporarily unavailable."
+                    return result
+        except Exception as sync_err:
+            raise Exception(f"Both SSE and sync calls failed: {stream_err}; {sync_err}")
+
+    def _map_architect_options(self, options_data: Any) -> Dict[str, Any]:
+        """Map architect present_options to the chat UI format."""
+        if not isinstance(options_data, dict):
+            return {}
+        raw_options = options_data.get("options", [])
+        mapped = []
+        if isinstance(raw_options, list):
+            for opt in raw_options[:4]:
+                if isinstance(opt, str):
+                    mapped.append({
+                        "label": opt,
+                        "value": f"Agent Architect: {opt}",
+                        "description": opt,
+                        "icon": "🔧",
+                    })
+                elif isinstance(opt, dict):
+                    mapped.append({
+                        "label": opt.get("label", opt.get("text", str(opt))),
+                        "value": f"Agent Architect: {opt.get('value', opt.get('label', ''))}",
+                        "description": opt.get("description", ""),
+                        "icon": opt.get("icon", "🔧"),
+                    })
+        return {
+            "_type": "present_options",
+            "title": options_data.get("question", "What's next?"),
+            "options": mapped,
+            "allow_custom": True,
+        }
 
     def _parse_rabbit_post_message(self, message: str) -> tuple:
         """Parse title, body, and community_slug from a chat message."""
@@ -2658,209 +2607,6 @@ Respond with ONLY valid JSON: {{"tools": ["tool_name_1", "tool_name_2", ...]}}""
                 body = "\n".join(lines[1:]).strip() if len(lines) > 1 else first
 
         return title, body, community_slug
-
-
-    # ============================================
-    # AUTONOMOUS TOOL BUILDER — Self-Extending Platform
-    # ============================================
-
-    def _get_tool_builder(self):
-        """Lazy-init the autonomous tool builder."""
-        if not hasattr(self, '_tool_builder') or self._tool_builder is None:
-            from ..rg_tool_registry.autonomous_tool_builder import get_tool_builder
-            self._tool_builder = get_tool_builder()
-        return self._tool_builder
-
-    async def _llm_call_for_builder(self, system_prompt: str, user_prompt: str) -> str:
-        """Make an LLM call for the autonomous tool builder."""
-        from ..domain.provider import get_router_for_internal_use
-        router = get_router_for_internal_use()
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-        response = await router.route_query(
-            message=user_prompt,
-            context=messages,
-            preferred_provider="groq",
-        )
-        return response.get("response", "")
-
-    async def _handle_auto_build_tool(
-        self, message: str, user_id: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Handle auto_build_tool — design, validate, register a new tool at runtime."""
-        builder = self._get_tool_builder()
-
-        # Parse need_description from the message
-        need = message.strip()
-        if not need:
-            return {"success": False, "error": "Need description is required"}
-
-        # Build context for the builder
-        build_ctx = {
-            "user_id": user_id,
-            "connected_services": list((context.get("user_api_keys") or {}).keys()),
-            "workspace_tools": [],
-            "api_keys": context.get("user_api_keys", {}),
-        }
-
-        success, msg, tool_def = await builder.build_tool(
-            need_description=need,
-            context=build_ctx,
-            llm_call_fn=self._llm_call_for_builder,
-        )
-
-        if not success:
-            return {"success": False, "error": msg, "action": "auto_build_tool"}
-
-        result = {
-            "success": True,
-            "action": "auto_build_tool",
-            "tool_name": tool_def.name if tool_def else "unknown",
-            "tool_description": tool_def.description if tool_def else "",
-            "message": msg,
-            "response": f"🔧 **Tool Built:** `{tool_def.name}`\n\n{tool_def.description}\n\n"
-                        f"The tool is now registered and ready to use. "
-                        f"Call it with `execute_built_tool` or it will appear in the tool registry.",
-        }
-
-        # Auto-execute if requested
-        auto_exec = context.get("auto_execute", False)
-        exec_params = context.get("execute_params")
-        if auto_exec and exec_params and tool_def:
-            try:
-                exec_result = await builder.execute_built_tool(
-                    tool_def.name, exec_params, build_ctx
-                )
-                result["execution_result"] = exec_result
-                result["response"] += f"\n\n**Auto-executed result:**\n```json\n{json.dumps(exec_result, indent=2, default=str)}\n```"
-            except Exception as e:
-                result["execution_error"] = str(e)
-                result["response"] += f"\n\n⚠️ Auto-execution failed: {e}"
-
-        return result
-
-    async def _handle_list_built_tools(
-        self, message: str, user_id: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Handle list_built_tools — show all dynamically created tools."""
-        builder = self._get_tool_builder()
-        tools = builder.get_built_tools()
-
-        if not tools:
-            return {
-                "success": True,
-                "action": "list_built_tools",
-                "tools": [],
-                "response": "No dynamically built tools in this session. "
-                            "Use `auto_build_tool` to create new capabilities on the fly.",
-            }
-
-        lines = ["🔧 **Dynamically Built Tools:**\n"]
-        for t in tools:
-            param_names = ", ".join(p["name"] for p in t.get("params", []))
-            lines.append(f"- **`{t['name']}`** — {t['description']}")
-            if param_names:
-                lines.append(f"  Params: `{param_names}`")
-            lines.append(f"  Built: {t['created_at'][:19]} | Hash: `{t['code_hash']}`")
-
-        return {
-            "success": True,
-            "action": "list_built_tools",
-            "tools": tools,
-            "response": "\n".join(lines),
-        }
-
-    async def _handle_execute_built_tool(
-        self, message: str, user_id: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Handle execute_built_tool — run a dynamically built tool."""
-        builder = self._get_tool_builder()
-
-        # Parse tool_name and params from message/context
-        tool_name = context.get("tool_name", "")
-        params = context.get("params", {})
-
-        if not tool_name:
-            # Try to parse from message
-            match = re.match(r"(\w+)\s*(.*)", message.strip())
-            if match:
-                tool_name = match.group(1)
-                try:
-                    params = json.loads(match.group(2)) if match.group(2).strip() else {}
-                except json.JSONDecodeError:
-                    params = {"input": match.group(2).strip()}
-
-        if not tool_name:
-            return {"success": False, "error": "tool_name is required", "action": "execute_built_tool"}
-
-        try:
-            exec_ctx = {
-                "user_id": user_id,
-                "api_keys": context.get("user_api_keys", {}),
-                "headers": context.get("headers", {}),
-            }
-            result = await builder.execute_built_tool(tool_name, params, exec_ctx)
-            return {
-                "success": True,
-                "action": "execute_built_tool",
-                "tool_name": tool_name,
-                "result": result,
-                "response": f"✅ **`{tool_name}`** executed:\n```json\n{json.dumps(result, indent=2, default=str)}\n```",
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "action": "execute_built_tool",
-                "tool_name": tool_name,
-                "error": str(e),
-            }
-
-    async def _handle_check_tool_exists(
-        self, message: str, user_id: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Handle check_tool_exists — look up a capability and suggest building if missing."""
-        builder = self._get_tool_builder()
-        capability = context.get("capability", message.strip())
-
-        if builder.has_tool(capability):
-            tool_def = builder._registry.get(capability)
-            return {
-                "success": True,
-                "action": "check_tool_exists",
-                "exists": True,
-                "tool_name": capability,
-                "description": tool_def.description if tool_def else "",
-                "response": f"✅ Tool `{capability}` exists: {tool_def.description if tool_def else 'N/A'}",
-            }
-
-        # Check by capability description (fuzzy)
-        similar = builder._find_similar_tool(capability)
-        if similar:
-            return {
-                "success": True,
-                "action": "check_tool_exists",
-                "exists": True,
-                "tool_name": similar.name,
-                "description": similar.description,
-                "response": f"🔍 Found similar tool: `{similar.name}` — {similar.description}\n"
-                            f"This may satisfy your need for: _{capability}_",
-            }
-
-        return {
-            "success": True,
-            "action": "check_tool_exists",
-            "exists": False,
-            "suggestion": "auto_build_tool",
-            "response": f"❌ No tool matches `{capability}`.\n\n"
-                        f"💡 I can **build it** right now. Say: "
-                        f"_\"Build a tool that {capability}\"_ and I'll design, validate, and register it.",
-            "present_options": [
-                {"label": f"🔧 Build it now", "value": f"auto_build_tool: {capability}"},
-                {"label": "Skip", "value": "Never mind"},
-            ],
-        }
 
 
 # Global singleton
