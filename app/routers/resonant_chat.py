@@ -422,8 +422,7 @@ _SKILL_TOOL_DESCRIPTIONS = {
     "image_generation": "Generate an image with DALL-E. ONLY when user explicitly asks to generate/create/draw/make an image, picture, or illustration.",
     "memory_search": "Search user\'s long-term memory for previously stored information. When user asks \'what did I say about X\' or \'do you remember X\'.",
     "memory_library": "Open the memory library panel. ONLY when user explicitly says \"open memory library\", \"show my memories\", or \"browse memories\".",
-    "agents_os": "Create, manage, rename, delete, or configure AI agents. ONLY when user explicitly asks to create/build/manage/rename/delete agents or open Agents OS.",
-    "agent_architect": "Design and build advanced autonomous agents from a high-level description. When user wants to architect, plan, or design a complex agent workflow, or says 'build me an agent that...'. The architect uses a ReAct loop with real tools to create, configure, and test agents.",
+    "agent_architect": "Create, build, manage, run, diagnose, modify, rename, delete, schedule, or configure AI agents. When user wants to create/build/manage/run/diagnose any agent, asks about their agents, says 'build me an agent', 'create an agent', 'how many agents do I have', 'show my agents', or any agent-related operation. The architect is an autonomous builder that plans, investigates, builds, tests, and configures agents with real tools and persistent memory.",
     "state_physics": "Open State Physics visualization panel. ONLY when user explicitly says \"open state physics\", \"show state physics\", or \"state-space visualization\".",
     "ide_workspace": "Open the IDE workspace split panel. ONLY when user explicitly says \"open IDE\", \"open editor\", \"open terminal\", or \"open workspace\". Do NOT trigger for coding questions or requests to write code.",
     "rabbit_post": "Create a post on Rabbit community forum. When user wants to post something to a Rabbit community.",
@@ -483,7 +482,7 @@ RULES:
 - Most messages do NOT need tools. Default to null.
 - General conversation, questions, coding help, math, explanations -> null.
 - Do NOT call web_search for questions the AI can answer from its training data.
-- Do NOT call agents_os unless user explicitly wants to create/manage/configure agents.
+- Call agent_architect when user wants to create, build, manage, run, diagnose, or configure agents.
 - Do NOT call code_visualizer unless user provides a GitHub URL or explicitly asks to scan a repo.
 - For follow-up confirmations (like \"yes create all\"), check the conversation context."""
 
@@ -1490,11 +1489,12 @@ async def send_message(
     web_search_needed = False
     image_gen_needed = False
     code_visualizer_intent = False
-    agents_os_intent = False
+    architect_intent = False
 
-    if request_body.enabled_skill_ids is not None:
+    if request_body.enabled_skill_ids is not None and len(request_body.enabled_skill_ids) > 0:
         enabled_skill_ids = set(request_body.enabled_skill_ids)
     else:
+        # Frontend sends [] or None — use server defaults (all is_default=True skills)
         enabled_skill_ids = {s.id for s in skills_registry.get_enabled_skills(user_id)}
 
     # Team selection bypass: if user explicitly chose a team, skip tool detection
@@ -1515,8 +1515,8 @@ async def send_message(
                 else:
                     detected_skill = skills_registry.get_skill(detected_tool_id)
                 code_visualizer_intent = (detected_tool_id == "code_visualizer")
-                agents_os_intent = (detected_tool_id == "agents_os")
-                if agents_os_intent and recent_messages:
+                architect_intent = (detected_tool_id == "agent_architect")
+                if architect_intent and recent_messages:
                     for prev_msg in reversed(recent_messages[-3:]):
                         role = prev_msg.role if hasattr(prev_msg, "role") else prev_msg.get("role", "")
                         content = prev_msg.content if hasattr(prev_msg, "content") else prev_msg.get("content", "")
@@ -1700,19 +1700,19 @@ async def send_message(
         provider = "tool_code_visualizer_disabled"
         agent_type = "code"
 
-    # Force tool-grounded reply for ALL Agents OS operations (including create).
+    # Force tool-grounded reply for ALL Agent Architect operations (including create).
     # Delegating create ops to the LLM caused hallucinated fake URLs/configs.
-    if not execute_mode and detected_skill and detected_skill.id == "agents_os" and skill_result:
+    if not execute_mode and detected_skill and detected_skill.id == "agent_architect" and skill_result:
         operation = skill_result.get("operation", "")
         if skill_result.get("success"):
             skill_summary = (skill_result.get("summary") or "").strip()
-            response_text = skill_summary or "Agents OS operation completed successfully."
-            provider = "tool_agents_os"
+            response_text = skill_summary or "Agent Architect operation completed successfully."
+            provider = "tool_agent_architect"
             agent_type = "agents"
         else:
-            error_detail = (skill_result.get("error") or "Agents OS request failed.").strip()
-            response_text = f"Agents OS error: {error_detail}"
-            provider = "tool_agents_os_error"
+            error_detail = (skill_result.get("error") or "Agent Architect request failed.").strip()
+            response_text = f"Agent Architect error: {error_detail}"
+            provider = "tool_agent_architect_error"
             agent_type = "agents"
 
 
@@ -1829,38 +1829,41 @@ async def send_message(
     # ============================================
     # HALLUCINATION GUARD: Agent creation topics
     # ============================================
-    # If the user asks about creating/building agents but the agents_os tool
+    # If the user asks about creating/building agents but the architect tool
     # didn't run, inject a guard so the LLM doesn't fabricate fake agent IDs,
     # webhook URLs, hashes, or endpoint URLs.
     _agent_creation_keywords = [
         "create agent", "create an agent", "build agent", "make agent",
         "create now agent", "create me agent", "build me agent",
+        "how many agent", "show my agent", "list agent", "my agent",
         "agent for my", "agent for google", "agent for discord",
         "agent for slack", "agent for github", "agent that",
         "webhook agent", "google drive agent", "gmail agent",
         "calendar agent", "discord agent", "slack agent",
+        "run agent", "start agent", "stop agent", "delete agent",
+        "diagnose agent", "modify agent", "configure agent",
     ]
     _user_asking_agent_creation = any(
         kw in (safe_user_message or "").lower() for kw in _agent_creation_keywords
     )
-    _agents_tool_ran = (
-        detected_skill and detected_skill.id == "agents_os" and skill_result
+    _architect_tool_ran = (
+        detected_skill and detected_skill.id == "agent_architect" and skill_result
     )
-    if _user_asking_agent_creation and not _agents_tool_ran and response_text is None:
+    if _user_asking_agent_creation and not _architect_tool_ran and response_text is None:
         context_messages.append({
             "role": "system",
             "content": (
-                "CRITICAL ACCURACY RULE: The user is asking about creating or configuring agents. "
-                "The Agents OS tool did NOT run for this query, so you CANNOT create agents. "
+                "CRITICAL ACCURACY RULE: The user is asking about creating, managing, or configuring agents. "
+                "The Agent Architect tool did NOT run for this query, so you CANNOT create or manage agents. "
                 "Do NOT fabricate, invent, or hallucinate any Agent IDs, Agent Hashes, Endpoint URLs, "
                 "Webhook URLs, or any agent configuration details. These are ALL generated by the "
-                "Agent Engine API — you cannot produce them yourself. "
-                "Instead, tell the user to phrase their request as a clear agent creation command "
-                "(e.g., 'create a Google Drive agent') and ensure the Agents OS skill is enabled "
-                "in the input bar. NEVER generate fake agent details."
+                "Agent Architect via the Agent Engine API — you cannot produce them yourself. "
+                "Instead, tell the user you'll connect them with the Agent Architect — ask them "
+                "what kind of agent they want to build or what they want to do with their agents. "
+                "NEVER generate fake agent details."
             ),
         })
-        logger.info("🛡️ HALLUCINATION GUARD: Agent creation question detected but no agents_os tool ran; injected accuracy prompt.")
+        logger.info("🛡️ HALLUCINATION GUARD: Agent question detected but no architect tool ran; injected accuracy prompt.")
 
     # Try team workflow first (Phase 1: Internal Teams)
     team_used = False
