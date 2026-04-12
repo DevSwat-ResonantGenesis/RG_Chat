@@ -2492,20 +2492,23 @@ class SkillExecutor:
                             continue
 
                         etype = event.get("type", "")
+                        # Architect puts fields at top-level (not nested under "data")
+                        # Support both: top-level and nested "data" for robustness
+                        edata = event.get("data", event)
                         if etype == "text":
-                            accumulated_text += event.get("data", {}).get("content", "")
+                            accumulated_text += edata.get("content", "")
                         elif etype == "tool_call":
-                            actions_taken.append(event.get("data", {}))
+                            actions_taken.append(edata)
                         elif etype == "tool_result":
                             pass  # tracked via actions
                         elif etype == "complete":
-                            resp_data = event.get("data", {}).get("response", {})
+                            resp_data = edata.get("response", edata)
                             accumulated_text = resp_data.get("text", accumulated_text)
                             options_data = resp_data.get("options")
                             if options_data:
                                 result["present_options"] = self._map_architect_options(options_data)
                         elif etype == "error":
-                            err = event.get("data", {}).get("error", "Unknown error")
+                            err = edata.get("error", edata.get("message", "Unknown error"))
                             result["error"] = err
 
             if accumulated_text:
