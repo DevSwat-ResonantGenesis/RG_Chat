@@ -70,11 +70,35 @@ class ContextPersistenceEngine:
     Manages persistent context across sessions.
     """
     
+    _MAX_PROJECTS = 2000
+    _MAX_SESSIONS = 5000
+    _MAX_USER_PROJECTS = 2000
+
     def __init__(self, context_ttl_days: int = 90):
         self.projects: Dict[str, ProjectContext] = {}  # project_id -> context
         self.sessions: Dict[str, SessionContext] = {}  # session_id -> context
         self.user_projects: Dict[str, List[str]] = {}  # user_id -> project_ids
         self.context_ttl_days = context_ttl_days
+
+    def _evict_if_needed(self) -> None:
+        """Evict oldest entries when caches exceed size limits."""
+        if len(self.sessions) > self._MAX_SESSIONS:
+            # Sort by started_at, drop oldest half
+            sorted_ids = sorted(self.sessions, key=lambda k: self.sessions[k].started_at)
+            for sid in sorted_ids[:len(sorted_ids) // 2]:
+                del self.sessions[sid]
+            logger.info(f"Evicted {len(sorted_ids) // 2} stale sessions")
+        if len(self.projects) > self._MAX_PROJECTS:
+            sorted_ids = sorted(self.projects, key=lambda k: self.projects[k].updated_at)
+            for pid in sorted_ids[:len(sorted_ids) // 2]:
+                del self.projects[pid]
+            logger.info(f"Evicted {len(sorted_ids) // 2} stale projects")
+        if len(self.user_projects) > self._MAX_USER_PROJECTS:
+            # Drop half of user_projects entries (arbitrary oldest)
+            keys = list(self.user_projects.keys())
+            for k in keys[:len(keys) // 2]:
+                del self.user_projects[k]
+            logger.info(f"Evicted {len(keys) // 2} stale user_projects entries")
     
     def _generate_project_id(self, user_id: str, project_name: str) -> str:
         """Generate unique project ID."""
@@ -92,6 +116,7 @@ class ContextPersistenceEngine:
         project_name: str,
     ) -> ProjectContext:
         """Create or retrieve project context."""
+        self._evict_if_needed()
         project_id = self._generate_project_id(user_id, project_name)
         
         if project_id in self.projects:
@@ -125,6 +150,7 @@ class ContextPersistenceEngine:
         open_files: List[str] = None,
     ) -> SessionContext:
         """Start a new session for a project."""
+        self._evict_if_needed()
         session_id = self._generate_session_id(user_id, project_id)
         
         session = SessionContext(

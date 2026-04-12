@@ -45,7 +45,7 @@ class SkillExecutor:
             "image_generation": self._execute_image_generation,
             "memory_search": self._execute_memory_search,
             "memory_library": self._execute_memory_library,
-            "agents_os": self._execute_agents_os,
+            # "agents_os" removed — all agent operations now route through agent_architect
             "agent_architect": self._execute_agent_architect,
             "state_physics": self._execute_state_physics,
             "ide_workspace": self._execute_ide_workspace,

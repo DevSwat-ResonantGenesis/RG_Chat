@@ -58,6 +58,8 @@ class AgentChainingEngine:
     Manages custom agent pipelines/chains.
     """
     
+    _MAX_CUSTOM_CHAINS = 1000
+
     def __init__(self, agent_engine=None):
         self.agent_engine = agent_engine
         self.chains: Dict[str, AgentChain] = {}

@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -231,10 +233,13 @@ class SkillsRegistry:
     skills are active and routes requests to the appropriate skill handler.
     """
 
+    _MAX_USER_CACHE = 500  # evict oldest half when exceeded
+
     def __init__(self):
         self.skills: Dict[str, SkillDefinition] = dict(BUILTIN_SKILLS)
         # Per-user enabled skills: {user_id: {skill_id: True/False}}
-        self._user_skills: Dict[str, Dict[str, bool]] = {}
+        # Uses OrderedDict for LRU eviction to prevent unbounded memory growth
+        self._user_skills: OrderedDict[str, Dict[str, bool]] = OrderedDict()
 
     def list_skills(self) -> List[Dict[str, Any]]:
         """List all available skills with their definitions."""
@@ -260,10 +265,19 @@ class SkillsRegistry:
     def get_user_skills(self, user_id: str) -> Dict[str, bool]:
         """Get enabled/disabled status of all skills for a user."""
         if user_id not in self._user_skills:
+            # Evict oldest entries if cache is too large
+            if len(self._user_skills) >= self._MAX_USER_CACHE:
+                evict_count = self._MAX_USER_CACHE // 2
+                for _ in range(evict_count):
+                    self._user_skills.popitem(last=False)
+                logger.info(f"Evicted {evict_count} stale user skill caches")
             # Initialize with defaults
             self._user_skills[user_id] = {
                 sid: s.is_default for sid, s in self.skills.items()
             }
+        else:
+            # Move to end (most recently used)
+            self._user_skills.move_to_end(user_id)
         return self._user_skills[user_id]
 
     def get_enabled_skills(self, user_id: str) -> List[SkillDefinition]:

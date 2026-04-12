@@ -967,7 +967,7 @@ USER CONTEXT:
 YOUR CAPABILITIES (REAL — NOT HALLUCINATED):
 - You CAN search the web in real-time using Tavily/DuckDuckGo. Web search results are automatically injected into your context when relevant. If search results appear in your context, USE THEM as the primary source of truth.
 - You CAN scan and analyze GitHub repositories using the Code Visualizer tool. When a user asks to scan a repo, analyze code, trace pipelines, check governance, show endpoints/functions, or re-analyze — the Code Visualizer skill runs AUTOMATICALLY and its output appears in your context as "SKILL OUTPUT (Code Visualizer):". If NO such skill output is present in your context, the scan DID NOT RUN and you MUST NOT fabricate results.
-- You CAN create, list, and manage AI agents via Agents OS. When a user asks to create agents, spin up agents, or open the agents dashboard — the skill runs AUTOMATICALLY and its output appears in your context as "SKILL OUTPUT".
+- You CAN create, build, list, manage, run, diagnose, and configure AI agents via the Agent Architect tool. When a user asks to create agents, list agents, manage agents, or open the agents dashboard — the Agent Architect skill runs AUTOMATICALLY and its output appears in your context as "SKILL OUTPUT (Agent Architect):". If NO such skill output is present, the tool DID NOT RUN — do NOT fabricate agent lists, IDs, hashes, or counts.
 - You CAN open a live split view panel showing analysis results, agent panels, or other tool outputs.
 - You CAN NOT generate images, photos, videos, or audio files.
 - You CAN NOT directly browse websites in real-time, but web search results are fetched FOR you.
@@ -1012,7 +1012,7 @@ CONTEXT AWARENESS (CRITICAL — READ CAREFULLY):
 - NEVER say "I don't have context about that" or "Could you clarify what you're referring to?" if the answer is clearly in the conversation history above.
 - Maintain conversation continuity — treat this as one continuous discussion, not isolated Q&A.
 
-PLATFORM PAGES: /dashboard, /agents (AgentOS), /agent-teams, /connect-profiles (integrations/API keys), /ide (code editor), /code-visualizer, /state-physics, /resonant-memory, /rabbit (community), /pricing, /help, /profile, /marketplace, /build (project builder). Agent config at /agents/:agentId. External connections at /connect-profiles. NEVER invent routes. The "Agent Configuration section" does NOT exist as a standalone page. Agent config is at /agents/:agentId. External service connections are at /connect-profiles.
+PLATFORM PAGES: /dashboard, /agents (Agent Management), /agent-teams, /connect-profiles (integrations/API keys), /ide (code editor), /code-visualizer, /state-physics, /resonant-memory, /rabbit (community), /pricing, /help, /profile, /marketplace, /build (project builder). Agent config at /agents/:agentId. External connections at /connect-profiles. NEVER invent routes. The "Agent Configuration section" does NOT exist as a standalone page. Agent config is at /agents/:agentId. External service connections are at /connect-profiles.
 """
     
     context_messages.append({
@@ -1496,6 +1496,13 @@ async def send_message(
     else:
         # Frontend sends [] or None — use server defaults (all is_default=True skills)
         enabled_skill_ids = {s.id for s in skills_registry.get_enabled_skills(user_id)}
+
+    # SAFETY NET: if enabled set is still empty (registry bug, deploy mismatch, etc.)
+    # fall back to ALL known tool IDs so skill detection is never silently disabled
+    if not enabled_skill_ids:
+        enabled_skill_ids = set(_SKILL_TOOL_DESCRIPTIONS.keys())
+        logger.warning(f"[SKILL-7.9] enabled_skill_ids was empty for user={user_id[:8]}..., "
+                       f"falling back to all {len(enabled_skill_ids)} built-in tool IDs")
 
     # Team selection bypass: if user explicitly chose a team, skip tool detection
     if request_body.teamId:
@@ -4580,8 +4587,24 @@ async def get_memory_anchors(
                 anchors = msg.meta_data.get("anchors", [])
                 all_anchors.extend(anchors)
         
-        # Deduplicate and limit
-        unique_anchors = list(dict.fromkeys(all_anchors))[:100]
+        # Deduplicate and limit — anchors may be dicts (unhashable), so normalise first
+        seen = set()
+        unique_anchors = []
+        for a in all_anchors:
+            # If anchor is a dict, use its JSON repr as dedup key; keep the dict as-is
+            if isinstance(a, dict):
+                key = json.dumps(a, sort_keys=True, default=str)
+            else:
+                try:
+                    key = a
+                    hash(key)  # ensure hashable
+                except TypeError:
+                    key = str(a)
+            if key not in seen:
+                seen.add(key)
+                unique_anchors.append(a)
+            if len(unique_anchors) >= 100:
+                break
         
         return {"anchors": unique_anchors, "count": len(unique_anchors)}
     except Exception as e:
