@@ -141,6 +141,136 @@ class ProviderStatusManager:
         })
         
         
+        # ============================================
+        # BYOK-only providers (OpenAI-compatible APIs)
+        # These show up when user has added their own key
+        # OR when a platform env key exists.
+        # ============================================
+        BYOK_PROVIDERS = [
+            {
+                "id": "openrouter", "name": "OpenRouter (100+ models)",
+                "env_keys": ["OPENROUTER_API_KEY"],
+                "base_url": "https://openrouter.ai/api/v1",
+                "test_model": "openai/gpt-4o-mini",
+                "default_model": "auto",
+                "models": ["auto", "openai/gpt-4o", "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet",
+                           "google/gemini-2.0-flash-exp", "meta-llama/llama-3.3-70b-instruct",
+                           "qwen/qwen-2.5-72b-instruct", "deepseek/deepseek-chat",
+                           "mistralai/mistral-large-latest"],
+                "capabilities": ["chat", "coding", "vision"],
+                "extra_headers": {"HTTP-Referer": "https://dev-swat.com"},
+            },
+            {
+                "id": "mistral", "name": "Mistral AI",
+                "env_keys": ["MISTRAL_API_KEY"],
+                "base_url": "https://api.mistral.ai/v1",
+                "test_model": "mistral-small-latest",
+                "default_model": "mistral-large-latest",
+                "models": ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest",
+                           "open-mixtral-8x22b", "codestral-latest"],
+                "capabilities": ["chat", "coding"],
+            },
+            {
+                "id": "deepseek", "name": "DeepSeek",
+                "env_keys": ["DEEPSEEK_API_KEY"],
+                "base_url": "https://api.deepseek.com/v1",
+                "test_model": "deepseek-chat",
+                "default_model": "deepseek-chat",
+                "models": ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"],
+                "capabilities": ["chat", "coding", "reasoning"],
+            },
+            {
+                "id": "together", "name": "Together AI",
+                "env_keys": ["TOGETHER_API_KEY"],
+                "base_url": "https://api.together.xyz/v1",
+                "test_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                "default_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                "models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "mistralai/Mixtral-8x22B-Instruct-v0.1",
+                           "Qwen/Qwen2.5-72B-Instruct-Turbo"],
+                "capabilities": ["chat", "coding"],
+            },
+            {
+                "id": "perplexity", "name": "Perplexity AI",
+                "env_keys": ["PERPLEXITY_API_KEY"],
+                "base_url": "https://api.perplexity.ai",
+                "test_model": "llama-3.1-sonar-small-128k-online",
+                "default_model": "llama-3.1-sonar-large-128k-online",
+                "models": ["llama-3.1-sonar-large-128k-online", "llama-3.1-sonar-small-128k-online",
+                           "llama-3.1-sonar-huge-128k-online"],
+                "capabilities": ["chat", "reasoning"],
+            },
+            {
+                "id": "fireworks", "name": "Fireworks AI (Fast)",
+                "env_keys": ["FIREWORKS_API_KEY"],
+                "base_url": "https://api.fireworks.ai/inference/v1",
+                "test_model": "accounts/fireworks/models/llama-v3p1-70b-instruct",
+                "default_model": "accounts/fireworks/models/llama-v3p1-70b-instruct",
+                "models": ["accounts/fireworks/models/llama-v3p1-70b-instruct",
+                           "accounts/fireworks/models/mixtral-8x7b-instruct"],
+                "capabilities": ["chat", "coding"],
+            },
+            {
+                "id": "cohere", "name": "Cohere",
+                "env_keys": ["COHERE_API_KEY"],
+                "base_url": "https://api.cohere.ai/v1",
+                "test_model": "command-r",
+                "default_model": "command-r-plus",
+                "models": ["command-r-plus", "command-r", "command"],
+                "capabilities": ["chat"],
+            },
+            {
+                "id": "grok", "name": "Grok (xAI)",
+                "env_keys": ["XAI_API_KEY", "GROK_API_KEY"],
+                "base_url": "https://api.x.ai/v1",
+                "test_model": "grok-2",
+                "default_model": "grok-2",
+                "models": ["grok-2", "grok-2-mini", "grok-beta"],
+                "capabilities": ["chat", "coding", "reasoning"],
+            },
+            {
+                "id": "huggingface", "name": "Hugging Face",
+                "env_keys": ["HUGGINGFACE_API_KEY", "HF_API_KEY"],
+                "base_url": "https://api-inference.huggingface.co/models",
+                "test_model": None,  # HF uses different API format, skip latency test
+                "default_model": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+                "models": ["meta-llama/Meta-Llama-3.1-70B-Instruct",
+                           "mistralai/Mixtral-8x7B-Instruct-v0.1"],
+                "capabilities": ["chat", "coding"],
+            },
+        ]
+        
+        for bp in BYOK_PROVIDERS:
+            # Check platform env key
+            platform_key = None
+            for ek in bp["env_keys"]:
+                platform_key = os.getenv(ek)
+                if platform_key:
+                    break
+            
+            if platform_key and bp.get("test_model"):
+                status = await self._check_byok_provider_latency(
+                    bp["base_url"], platform_key, bp["test_model"],
+                    extra_headers=bp.get("extra_headers", {}),
+                )
+            elif platform_key:
+                # Has key but can't test (e.g. HuggingFace) — assume available
+                status = {"available": True, "latency": None, "status": "key_configured"}
+            else:
+                # No platform key — will be marked available per-user if they have BYOK
+                status = {"available": False, "latency": None, "status": "byok_only"}
+            
+            providers.append({
+                "id": bp["id"],
+                "name": bp["name"],
+                "available": status["available"],
+                "latency": status.get("latency"),
+                "status": status["status"],
+                "model": bp["default_model"],
+                "models": bp["models"],
+                "capabilities": bp.get("capabilities", ["chat"]),
+                "byok_only": not bool(platform_key),
+            })
+        
         # Check CodeLlama (Ollama) - tunneled from Mac - Coding
         codellama_status = await self._check_ollama_status("codellama:13b")
         providers.append({
@@ -243,6 +373,36 @@ class ProviderStatusManager:
         
         except Exception as e:
             logger.warning(f"Provider {provider} check failed: {e}")
+            return {"available": False, "latency": None, "status": "offline", "error": str(e)[:100]}
+    
+    async def _check_byok_provider_latency(
+        self, base_url: str, api_key: str, test_model: str,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Generic health check for any OpenAI-compatible BYOK provider."""
+        try:
+            start_time = time.time()
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                **(extra_headers or {}),
+            }
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json={"model": test_model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+                    timeout=8.0,
+                )
+                latency = int((time.time() - start_time) * 1000)
+                if response.status_code == 200:
+                    return {"available": True, "latency": latency, "status": "online"}
+                elif response.status_code == 429:
+                    return {"available": False, "latency": latency, "status": "quota_exceeded"}
+                else:
+                    return {"available": False, "latency": latency, "status": "error", "error": response.text[:100]}
+        except Exception as e:
+            logger.warning(f"BYOK provider check failed ({base_url}): {e}")
             return {"available": False, "latency": None, "status": "offline", "error": str(e)[:100]}
     
     async def _check_ollama_status(self, model: str = "llama3.1:8b", user_id: str = "") -> Dict[str, Any]:

@@ -28,13 +28,16 @@ class UserApiKeyService:
     
     async def get_user_api_keys(self, user_id: str) -> Dict[str, str]:
         """
-        Retrieve user's API keys from auth service.
+        Retrieve user's primary API keys from auth service.
+        
+        When multiple keys exist per provider, returns the primary key.
+        Falls back to the first key if none is marked primary.
         
         Args:
             user_id: User ID
         
         Returns:
-            Dictionary mapping provider names to API keys
+            Dictionary mapping provider names to API keys (primary key per provider)
         """
         try:
             # Use internal decrypted-key endpoint for BYOK service-to-service calls
@@ -55,18 +58,21 @@ class UserApiKeyService:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    logger.info(f"🔑 Auth service response: {data}")
-                    keys = {}
+                    logger.info(f"🔑 Auth service response keys count: {len(data.get('keys', []))}")
+                    keys: Dict[str, str] = {}
                     
+                    # Auth service returns keys sorted: primary first per provider
                     for key_entry in data.get("keys", []):
                         provider = key_entry.get("provider")
                         api_key = key_entry.get("api_key")
                         
                         if provider and api_key:
-                            keys[provider] = api_key
-                            logger.info(f"🔑 Found key for provider: {provider}")
+                            # Only store the first (primary) key per provider
+                            if provider not in keys:
+                                keys[provider] = api_key
+                                logger.info(f"🔑 Using {'primary' if key_entry.get('is_primary') else 'first'} key for provider: {provider}")
                     
-                    logger.info(f"🔑 Retrieved {len(keys)} API keys for user {user_id}: {list(keys.keys())}")
+                    logger.info(f"🔑 Retrieved keys for {len(keys)} providers for user {user_id}: {list(keys.keys())}")
                     return keys
                 else:
                     logger.warning(f"🔑 Failed to retrieve API keys: {response.status_code} - {response.text}")
@@ -77,6 +83,36 @@ class UserApiKeyService:
             return {}
         except Exception as e:
             logger.error(f"Unexpected error retrieving API keys: {e}")
+            return {}
+    
+    async def get_all_user_keys(self, user_id: str) -> Dict[str, list]:
+        """
+        Retrieve ALL user API keys (multiple per provider).
+        
+        Returns:
+            Dictionary mapping provider names to list of key entries
+        """
+        try:
+            url = f"{self.AUTH_SERVICE_URL.rstrip('/')}/auth/internal/user-api-keys/{user_id}"
+            internal_key = os.getenv("AUTH_INTERNAL_SERVICE_KEY") or os.getenv("INTERNAL_SERVICE_KEY")
+            headers = {"x-user-id": user_id}
+            if internal_key:
+                headers["x-internal-service-key"] = internal_key
+            
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(url, timeout=5.0, headers=headers)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    all_keys: Dict[str, list] = {}
+                    for key_entry in data.get("keys", []):
+                        provider = key_entry.get("provider")
+                        if provider:
+                            all_keys.setdefault(provider, []).append(key_entry)
+                    return all_keys
+                return {}
+        except Exception as e:
+            logger.error(f"Error retrieving all user API keys: {e}")
             return {}
     
     async def get_provider_key(self, user_id: str, provider: str) -> Optional[str]:

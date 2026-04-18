@@ -3082,13 +3082,10 @@ async def get_providers(
     live_providers = live_status.get("providers", [])
     
     # Map chat_service provider IDs → llm_service provider IDs for model lookup
+    # Core providers have ID aliases; all others identity-map
     provider_key_map = {
-        "groq": "groq",
         "chatgpt": "openai",
         "gemini": "google",
-        "anthropic": "anthropic",
-        "local": "local",
-        "codellama": "codellama",
     }
     
     # Enrich live providers with user-specific data + real model lists
@@ -3098,19 +3095,22 @@ async def get_providers(
         provider_key = provider_key_map.get(provider_id, provider_id)
         
         # Check if user has their own key for this provider
-        has_user_key = bool(user_keys.get(provider_key))
+        has_user_key = bool(user_keys.get(provider_key) or user_keys.get(provider_id))
         
         # Determine if this provider uses credits (platform key, not user key, not local)
         is_local = provider_id in ["local", "codellama"]
-        uses_credits = not has_user_key and not is_local and has_credits
+        is_byok_only = p.get("byok_only", False)
+        uses_credits = not has_user_key and not is_local and not is_byok_only and has_credits
         
         # Provider is available if:
-        # 1. Live status says available AND (user has key OR platform has key with credits OR is local)
+        # 1. User has their own key (always available), OR
+        # 2. Platform has key AND (has credits or is local), OR
+        # 3. Is local and live status says available
         live_available = p.get("available", False)
-        can_use = has_user_key or (has_credits and live_available) or (is_local and live_available)
+        can_use = has_user_key or (has_credits and live_available and not is_byok_only) or (is_local and live_available) or (is_byok_only and has_user_key)
         
-        # Get real model list from llm_service (mapped by provider_key)
-        real_models = llm_models_map.get(provider_key, [])
+        # Get real model list from llm_service, fall back to status manager's list
+        real_models = llm_models_map.get(provider_key, []) or p.get("models", [])
         
         providers.append({
             "id": provider_id,
