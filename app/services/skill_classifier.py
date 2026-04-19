@@ -8,13 +8,15 @@ Not keyword matching. Not an LLM prompt. A trained model.
 Architecture:
   1. Sentence-transformer encodes (message + context) → 384-dim embedding
   2. Trained classification head (2-layer MLP) maps embedding → skill probabilities
-  3. Confidence calibration with learned per-skill thresholds
-  4. Active learning collects new labeled data from production usage
+  3. Active skill continuity boost from meta_data.toolResults
+  4. Active learning: every prediction is saved to PostgreSQL
+  5. Model stored in PostgreSQL — survives container restarts forever
+  6. Retraining merges seed data + all accumulated active learning samples
 
-Training:
-  - Seed: ~250+ hand-crafted examples in skill_training_data.py
-  - Active: Production decisions logged with implicit labels
-  - Retraining: On-demand via /retrain endpoint or periodic schedule
+Persistence:
+  - Model weights: skill_classifier_models table (LargeBinary blob)
+  - Active learning: skill_active_samples table (one row per prediction)
+  - No filesystem dependency. Container can be destroyed and rebuilt.
 """
 from __future__ import annotations
 
@@ -24,19 +26,13 @@ import logging
 import os
 import pickle
 import time
+from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
-
-# Where to persist the trained model
-# /app/data survives container restarts if volume-mounted; /tmp does not
-MODEL_DIR = Path(os.getenv("SKILL_MODEL_DIR", "/app/data/skill_classifier"))
-MODEL_PATH = MODEL_DIR / "classifier.pkl"
-ACTIVE_DATA_PATH = MODEL_DIR / "active_learning.jsonl"
 
 # Skill labels (None = general chat)
 ALL_SKILLS = [
@@ -59,6 +55,9 @@ ALL_SKILLS = [
 SKILL_TO_IDX = {s: i for i, s in enumerate(ALL_SKILLS)}
 IDX_TO_SKILL = {i: s for i, s in enumerate(ALL_SKILLS)}
 
+# Batch size for flushing active learning samples to DB
+_FLUSH_BATCH = 50
+
 
 @dataclass
 class ClassifierPrediction:
@@ -71,12 +70,140 @@ class ClassifierPrediction:
     latency_ms: float = 0.0
 
 
+# ---------------------------------------------------------------
+# DB helpers (async — run inside the existing SQLAlchemy session)
+# ---------------------------------------------------------------
+
+async def _load_model_from_db():
+    """Load the latest active classifier from PostgreSQL."""
+    from ..db import async_session
+    from sqlalchemy import select, text
+    try:
+        async with async_session() as session:
+            row = await session.execute(
+                text(
+                    "SELECT model_blob, stats_json, n_samples, version "
+                    "FROM skill_classifier_models "
+                    "WHERE is_active = true "
+                    "ORDER BY version DESC LIMIT 1"
+                )
+            )
+            result = row.fetchone()
+            if result:
+                blob, stats, n_samples, version = result
+                clf = pickle.loads(blob)
+                return clf, stats or {}, n_samples, version
+    except Exception as e:
+        logger.warning(f"[SkillClassifier] DB load failed: {e}")
+    return None, {}, 0, 0
+
+
+async def _save_model_to_db(classifier, stats: dict, n_samples: int, version: int):
+    """Save the trained classifier to PostgreSQL."""
+    from ..db import async_session
+    from ..models import SkillClassifierModel
+    try:
+        blob = pickle.dumps(classifier)
+        async with async_session() as session:
+            # Deactivate old models
+            from sqlalchemy import update
+            await session.execute(
+                update(SkillClassifierModel)
+                .where(SkillClassifierModel.is_active == True)
+                .values(is_active=False)
+            )
+            # Insert new model
+            new_model = SkillClassifierModel(
+                version=version,
+                model_blob=blob,
+                n_samples=n_samples,
+                train_accuracy=stats.get("train_accuracy", 0),
+                cv_accuracy=stats.get("cv_accuracy", 0),
+                stats_json=stats,
+                is_active=True,
+            )
+            session.add(new_model)
+            await session.commit()
+            logger.info(
+                f"[SkillClassifier] Model v{version} saved to DB "
+                f"({len(blob)} bytes, {n_samples} samples)"
+            )
+    except Exception as e:
+        logger.error(f"[SkillClassifier] DB save failed: {e}", exc_info=True)
+
+
+async def _save_active_samples(samples: List[Dict]):
+    """Batch-insert active learning samples into PostgreSQL."""
+    from ..db import async_session
+    from ..models import SkillActiveSample
+    try:
+        async with async_session() as session:
+            for s in samples:
+                session.add(SkillActiveSample(
+                    user_message=s["msg"][:500],
+                    predicted_skill=s.get("predicted"),
+                    confidence=s.get("conf", 0),
+                    method=s.get("method", ""),
+                    active_skill=s.get("active"),
+                    probabilities=s.get("probs", {}),
+                    intents=s.get("intents", []),
+                    user_id=s.get("user_id"),
+                ))
+            await session.commit()
+            logger.info(f"[SkillClassifier] Flushed {len(samples)} active samples to DB")
+    except Exception as e:
+        logger.warning(f"[SkillClassifier] Active sample flush failed: {e}")
+
+
+async def _load_active_samples_from_db(min_confidence: float = 0.6) -> List[Tuple]:
+    """Load high-confidence active learning samples for retraining."""
+    from ..db import async_session
+    from sqlalchemy import text
+    samples = []
+    try:
+        async with async_session() as session:
+            rows = await session.execute(
+                text(
+                    "SELECT user_message, predicted_skill "
+                    "FROM skill_active_samples "
+                    "WHERE confidence >= :conf "
+                    "ORDER BY created_at DESC "
+                    "LIMIT 5000"
+                ),
+                {"conf": min_confidence},
+            )
+            for row in rows.fetchall():
+                msg, skill = row
+                samples.append((msg, [], skill))
+    except Exception as e:
+        logger.warning(f"[SkillClassifier] Active sample load failed: {e}")
+    return samples
+
+
+async def _count_active_samples() -> int:
+    """Count total active learning samples in DB."""
+    from ..db import async_session
+    from sqlalchemy import text
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                text("SELECT count(*) FROM skill_active_samples")
+            )
+            return result.scalar() or 0
+    except Exception:
+        return 0
+
+
+# ---------------------------------------------------------------
+# Main classifier
+# ---------------------------------------------------------------
+
 class SkillClassifier:
     """
     Trained neural skill classifier.
 
     Uses sentence-transformers for encoding + sklearn MLP for classification.
-    Supports active learning and periodic retraining.
+    Model + active learning data stored in PostgreSQL — container-independent.
     """
 
     def __init__(self):
@@ -84,8 +211,8 @@ class SkillClassifier:
         self._classifier = None
         self._is_trained = False
         self._load_lock = asyncio.Lock()
-        self._active_log: List[Dict] = []
-        self._max_active_log = 2000
+        self._pending_samples: List[Dict] = []
+        self._model_version = 0
         self._train_stats: Dict[str, Any] = {}
 
     async def ensure_ready(self) -> bool:
@@ -96,57 +223,49 @@ class SkillClassifier:
             if self._is_trained and self._encoder is not None:
                 return True
             try:
-                return await asyncio.get_event_loop().run_in_executor(
-                    None, self._init_sync
+                # Load the sentence-transformer encoder (sync, in thread pool)
+                ok = await asyncio.get_event_loop().run_in_executor(
+                    None, self._load_encoder
                 )
+                if not ok:
+                    return False
+
+                # Try loading trained model from PostgreSQL
+                clf, stats, n_samples, version = await _load_model_from_db()
+                if clf is not None:
+                    self._classifier = clf
+                    self._train_stats = stats
+                    self._model_version = version
+                    self._is_trained = True
+                    logger.info(
+                        f"[SkillClassifier] Loaded model v{version} from DB "
+                        f"({n_samples} samples, acc={stats.get('train_accuracy', '?')})"
+                    )
+                    return True
+
+                # No model in DB — train from seed and save
+                logger.info("[SkillClassifier] No model in DB, training from seed...")
+                await self._train_and_save(source="seed")
+                return True
+
             except Exception as e:
                 logger.error(f"[SkillClassifier] Init failed: {e}", exc_info=True)
                 return False
 
-    def _init_sync(self) -> bool:
-        """Synchronous init: load encoder, load or train classifier."""
-        t0 = time.time()
+    def _load_encoder(self) -> bool:
+        """Load the sentence-transformer encoder (synchronous)."""
         try:
             from sentence_transformers import SentenceTransformer
-
             model_name = os.getenv("SKILL_ROUTER_MODEL", "all-MiniLM-L6-v2")
             logger.info(f"[SkillClassifier] Loading encoder: {model_name}")
             self._encoder = SentenceTransformer(model_name)
-
-            # Try to load a pre-trained classifier
-            if MODEL_PATH.exists():
-                logger.info(f"[SkillClassifier] Loading saved classifier from {MODEL_PATH}")
-                with open(MODEL_PATH, "rb") as f:
-                    saved = pickle.load(f)
-                self._classifier = saved["classifier"]
-                self._train_stats = saved.get("stats", {})
-                self._is_trained = True
-                elapsed = (time.time() - t0) * 1000
-                logger.info(
-                    f"[SkillClassifier] Loaded in {elapsed:.0f}ms "
-                    f"(trained on {self._train_stats.get('n_samples', '?')} samples)"
-                )
-                return True
-
-            # No saved model — train from seed data
-            logger.info("[SkillClassifier] No saved model, training from seed data...")
-            self._train_from_seed()
-            elapsed = (time.time() - t0) * 1000
-            logger.info(f"[SkillClassifier] Trained + saved in {elapsed:.0f}ms")
             return True
-
         except ImportError:
             logger.warning("[SkillClassifier] sentence-transformers not installed")
             return False
         except Exception as e:
-            logger.error(f"[SkillClassifier] Init error: {e}", exc_info=True)
+            logger.error(f"[SkillClassifier] Encoder load error: {e}")
             return False
-
-    def _train_from_seed(self) -> None:
-        """Train classifier on seed data."""
-        from .skill_training_data import get_training_data
-        samples = get_training_data()
-        self._train_on_samples(samples, source="seed")
 
     def _encode_sample(
         self, message: str, context: List[Dict[str, str]]
@@ -166,14 +285,12 @@ class SkillClassifier:
     def _train_on_samples(
         self, samples: List[Tuple], source: str = "unknown"
     ) -> Dict[str, Any]:
-        """Train the MLP classifier on labeled samples."""
+        """Train the MLP classifier on labeled samples (synchronous)."""
         from sklearn.neural_network import MLPClassifier
         from sklearn.model_selection import cross_val_score
 
         logger.info(f"[SkillClassifier] Encoding {len(samples)} samples...")
-        X_list = []
-        y_list = []
-
+        X_list, y_list = [], []
         for msg, ctx, skill_id in samples:
             emb = self._encode_sample(msg, ctx)
             X_list.append(emb)
@@ -182,14 +299,11 @@ class SkillClassifier:
         X = np.array(X_list)
         y = np.array(y_list)
 
-        logger.info(f"[SkillClassifier] Training MLP classifier...")
-
-        # 2-layer MLP with dropout-like regularization
         clf = MLPClassifier(
             hidden_layer_sizes=(256, 128),
             activation="relu",
             solver="adam",
-            alpha=0.001,  # L2 regularization
+            alpha=0.001,
             max_iter=500,
             early_stopping=True,
             validation_fraction=0.15,
@@ -198,30 +312,24 @@ class SkillClassifier:
             verbose=False,
         )
 
-        # Cross-validation to measure real accuracy
+        cv_mean, cv_std = 0.0, 0.0
         if len(samples) > 30:
-            cv_scores = cross_val_score(clf, X, y, cv=min(5, len(samples) // 10), scoring="accuracy")
-            cv_mean = float(cv_scores.mean())
-            cv_std = float(cv_scores.std())
-            logger.info(
-                f"[SkillClassifier] Cross-val accuracy: {cv_mean:.3f} ± {cv_std:.3f}"
-            )
-        else:
-            cv_mean = 0.0
-            cv_std = 0.0
+            n_cv = min(5, len(samples) // 10)
+            try:
+                cv_scores = cross_val_score(clf, X, y, cv=n_cv, scoring="accuracy")
+                cv_mean = float(cv_scores.mean())
+                cv_std = float(cv_scores.std())
+            except Exception:
+                pass
 
-        # Final training on full dataset
         clf.fit(X, y)
         train_acc = float(clf.score(X, y))
-
         self._classifier = clf
         self._is_trained = True
 
-        # Per-class stats
-        from collections import Counter
         class_dist = Counter(y_list)
         class_stats = {
-            IDX_TO_SKILL.get(k, f"class_{k}"): v
+            (IDX_TO_SKILL.get(k) or "none"): v
             for k, v in sorted(class_dist.items())
         }
 
@@ -239,19 +347,30 @@ class SkillClassifier:
         logger.info(
             f"[SkillClassifier] Training complete: "
             f"accuracy={train_acc:.3f}, cv={cv_mean:.3f}±{cv_std:.3f}, "
-            f"classes={len(set(y_list))}, samples={len(samples)}"
+            f"classes={len(set(y_list))}, samples={len(samples)}, source={source}"
+        )
+        return self._train_stats
+
+    async def _train_and_save(self, source: str = "seed") -> Dict[str, Any]:
+        """Train from seed (+ active data) and save to DB."""
+        from .skill_training_data import get_training_data
+        samples = get_training_data()
+
+        # Include active learning data from DB
+        active = await _load_active_samples_from_db(min_confidence=0.6)
+        if active:
+            samples.extend(active)
+            logger.info(f"[SkillClassifier] Added {len(active)} active samples from DB")
+
+        stats = await asyncio.get_event_loop().run_in_executor(
+            None, self._train_on_samples, samples, source
         )
 
-        # Save the trained model
-        MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        with open(MODEL_PATH, "wb") as f:
-            pickle.dump(
-                {"classifier": self._classifier, "stats": self._train_stats},
-                f,
-            )
-        logger.info(f"[SkillClassifier] Model saved to {MODEL_PATH}")
-
-        return self._train_stats
+        self._model_version += 1
+        await _save_model_to_db(
+            self._classifier, stats, len(samples), self._model_version
+        )
+        return stats
 
     def _detect_active_skill(
         self, recent_messages: list, enabled_ids: Set[str]
@@ -285,11 +404,13 @@ class SkillClassifier:
         enabled_skill_ids: Set[str],
         recent_messages: list = None,
         intents: List[str] = None,
+        user_id: str = None,
     ) -> ClassifierPrediction:
         """
         Predict which skill to route to.
 
         Uses active skill continuity + trained classifier.
+        Every prediction is logged to DB for continuous learning.
         """
         t0 = time.time()
 
@@ -318,7 +439,7 @@ class SkillClassifier:
                 latency_ms=(time.time() - t0) * 1000,
             )
 
-        # --- Build context for encoding ---
+        # --- Build context ---
         ctx_dicts = []
         if recent_messages:
             for msg in recent_messages[-3:]:
@@ -338,7 +459,6 @@ class SkillClassifier:
 
         proba = self._classifier.predict_proba(emb.reshape(1, -1))[0]
 
-        # Build probabilities dict (only enabled skills + None)
         prob_dict: Dict[str, float] = {}
         for idx, prob in enumerate(proba):
             skill = IDX_TO_SKILL.get(idx)
@@ -346,10 +466,8 @@ class SkillClassifier:
             if skill is None or skill in enabled_skill_ids:
                 prob_dict[label] = round(float(prob), 4)
 
-        # Get top prediction (only from enabled skills)
         best_skill = None
         best_prob = prob_dict.get("none", 0.0)
-
         for skill_id in enabled_skill_ids:
             sp = prob_dict.get(skill_id, 0.0)
             if sp > best_prob:
@@ -357,11 +475,8 @@ class SkillClassifier:
                 best_skill = skill_id
 
         # --- Continuity boost ---
-        # If there's an active skill and classifier gives it reasonable probability,
-        # boost it significantly (the model was trained on follow-up examples but
-        # real conversations can have patterns not in training data)
         CONTINUITY_BOOST = 0.30
-        CONTINUITY_MIN = 0.10  # Minimum classifier probability to apply boost
+        CONTINUITY_MIN = 0.10
 
         if active_skill and active_skill in prob_dict:
             active_prob = prob_dict[active_skill]
@@ -383,8 +498,19 @@ class SkillClassifier:
             latency_ms=latency,
         )
 
-        # --- Active learning: log decision ---
-        self._log_active(message, result, intents)
+        # --- Active learning: queue sample for DB ---
+        self._pending_samples.append({
+            "msg": message[:500],
+            "predicted": result.skill_id,
+            "conf": round(result.confidence, 4),
+            "method": result.method,
+            "active": result.active_skill,
+            "probs": {k: v for k, v in sorted(prob_dict.items(), key=lambda x: -x[1])[:5]},
+            "intents": (intents or [])[:3],
+            "user_id": user_id,
+        })
+        if len(self._pending_samples) >= _FLUSH_BATCH:
+            asyncio.create_task(self._flush_to_db())
 
         logger.info(
             f"[SkillClassifier] skill={result.skill_id} conf={result.confidence:.3f} "
@@ -394,85 +520,34 @@ class SkillClassifier:
 
         return result
 
-    def _log_active(
-        self, message: str, result: ClassifierPrediction, intents: List[str] = None
-    ) -> None:
-        """Log decision for active learning."""
-        entry = {
-            "msg": message[:150],
-            "predicted": result.skill_id,
-            "conf": round(result.confidence, 4),
-            "method": result.method,
-            "active": result.active_skill,
-            "probs": {k: v for k, v in sorted(result.probabilities.items(), key=lambda x: -x[1])[:5]},
-            "intents": (intents or [])[:3],
-            "ts": time.time(),
-        }
-        self._active_log.append(entry)
-        if len(self._active_log) > self._max_active_log:
-            self._flush_active_log()
+    async def _flush_to_db(self) -> None:
+        """Flush pending active learning samples to PostgreSQL."""
+        if not self._pending_samples:
+            return
+        batch = self._pending_samples[:]
+        self._pending_samples.clear()
+        await _save_active_samples(batch)
 
-    def _flush_active_log(self) -> None:
-        """Persist active learning log to disk."""
-        try:
-            MODEL_DIR.mkdir(parents=True, exist_ok=True)
-            with open(ACTIVE_DATA_PATH, "a") as f:
-                for entry in self._active_log:
-                    f.write(json.dumps(entry) + "\n")
-            logger.info(
-                f"[SkillClassifier] Flushed {len(self._active_log)} active learning entries"
-            )
-            self._active_log.clear()
-        except Exception as e:
-            logger.warning(f"[SkillClassifier] Flush failed: {e}")
-
-    async def retrain(self, include_active: bool = True) -> Dict[str, Any]:
+    async def retrain(self) -> Dict[str, Any]:
         """
-        Retrain the classifier.
-
-        Combines seed data + active learning data (if available).
+        Retrain classifier using seed data + all active learning from DB.
+        The model gets smarter with every retrain.
         """
-        from .skill_training_data import get_training_data
+        # Flush any pending samples first
+        await self._flush_to_db()
 
-        samples = get_training_data()
-        logger.info(f"[SkillClassifier] Seed samples: {len(samples)}")
-
-        # Add active learning data if available
-        active_samples = 0
-        if include_active and ACTIVE_DATA_PATH.exists():
-            try:
-                with open(ACTIVE_DATA_PATH) as f:
-                    for line in f:
-                        entry = json.loads(line.strip())
-                        # Use entries where the user implicitly confirmed the prediction
-                        # (continued the conversation without switching)
-                        if entry.get("conf", 0) > 0.6:
-                            skill = entry.get("predicted")
-                            msg = entry.get("msg", "")
-                            if msg:
-                                samples.append((msg, [], skill))
-                                active_samples += 1
-            except Exception as e:
-                logger.warning(f"[SkillClassifier] Error reading active data: {e}")
-
-        logger.info(
-            f"[SkillClassifier] Retraining on {len(samples)} samples "
-            f"(seed + {active_samples} active)"
-        )
-
-        stats = await asyncio.get_event_loop().run_in_executor(
-            None, self._train_on_samples, samples, "retrain"
-        )
+        stats = await self._train_and_save(source="retrain")
         return stats
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Get classifier statistics."""
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get classifier statistics including DB counts."""
+        active_count = await _count_active_samples()
         return {
             "is_trained": self._is_trained,
+            "model_version": self._model_version,
             "train_stats": self._train_stats,
-            "active_log_size": len(self._active_log),
-            "model_path": str(MODEL_PATH),
-            "model_exists": MODEL_PATH.exists(),
+            "pending_samples": len(self._pending_samples),
+            "active_samples_in_db": active_count,
         }
 
 
@@ -483,19 +558,20 @@ skill_classifier = SkillClassifier()
 async def preload_skill_classifier() -> None:
     """
     Call at app startup (lifespan) to pre-train/load the classifier.
-    Ensures no user ever hits a cold-start delay.
+    Loads from PostgreSQL — no filesystem dependency.
     """
     t0 = time.time()
     logger.info("[SkillClassifier] Preloading at startup...")
     ok = await skill_classifier.ensure_ready()
     elapsed = (time.time() - t0) * 1000
     if ok:
-        stats = skill_classifier.get_stats()
+        stats = await skill_classifier.get_stats()
         logger.info(
             f"[SkillClassifier] Preload complete in {elapsed:.0f}ms — "
-            f"trained={stats['is_trained']}, "
+            f"v{stats['model_version']}, "
             f"samples={stats['train_stats'].get('n_samples', 0)}, "
-            f"accuracy={stats['train_stats'].get('train_accuracy', 0)}"
+            f"accuracy={stats['train_stats'].get('train_accuracy', 0)}, "
+            f"active_in_db={stats['active_samples_in_db']}"
         )
     else:
         logger.warning(f"[SkillClassifier] Preload FAILED in {elapsed:.0f}ms")

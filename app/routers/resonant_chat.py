@@ -1382,6 +1382,7 @@ async def send_message(
                 enabled_skill_ids=enabled_skill_ids,
                 recent_messages=recent_messages[-6:] if recent_messages else None,
                 intents=msg_intents,
+                user_id=user_id,
             )
 
             detected_tool_id = prediction.skill_id

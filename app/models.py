@@ -8,7 +8,7 @@ Includes:
 from datetime import datetime
 import uuid
 
-from sqlalchemy import Column, DateTime, Float, String, Text, JSON
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, LargeBinary, String, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
@@ -166,4 +166,39 @@ class KnowledgeBaseEntryDB(Base):
     content = Column(Text, nullable=False)
     entry_type = Column(String(50), default="fact")  # fact, document, data, book_excerpt
     file_name = Column(String(500), nullable=True)  # original filename if uploaded
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SkillClassifierModel(Base):
+    """Persisted trained ML classifier for skill routing.
+    Stored in DB so it survives container restarts and gets smarter over time."""
+    __tablename__ = "skill_classifier_models"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(Integer, nullable=False, default=1)
+    model_blob = Column(LargeBinary, nullable=False)  # pickled classifier
+    n_samples = Column(Integer, default=0)
+    train_accuracy = Column(Float, default=0.0)
+    cv_accuracy = Column(Float, default=0.0)
+    stats_json = Column(JSON, default={})
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SkillActiveSample(Base):
+    """Active learning sample collected from production usage.
+    Accumulates over time for periodic retraining."""
+    __tablename__ = "skill_active_samples"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_message = Column(Text, nullable=False)
+    predicted_skill = Column(String(100), nullable=True)  # None = general chat
+    confidence = Column(Float, nullable=False)
+    method = Column(String(50), nullable=False)  # classifier, continuity
+    active_skill = Column(String(100), nullable=True)
+    probabilities = Column(JSON, default={})
+    intents = Column(JSON, default=[])
+    user_id = Column(String(255), nullable=True)
+    # Implicit feedback: did the user continue with this skill or switch?
+    was_correct = Column(Boolean, nullable=True)  # set later by feedback loop
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
