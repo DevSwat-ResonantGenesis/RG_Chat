@@ -2427,6 +2427,7 @@ class SkillExecutor:
             "workspace_id": user_id,
             "user_id": user_id,
             "context": context.get("prev_assistant_content", ""),
+            "conversation_history": context.get("recent_messages", []),
         }
 
         # Try SSE streaming first for real-time progress

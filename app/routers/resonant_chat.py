@@ -1488,6 +1488,13 @@ async def send_message(
             }
             if _prev_assistant_agent_content:
                 skill_context["prev_assistant_content"] = _prev_assistant_agent_content
+            # Pass recent conversation history for agent_architect context
+            if detected_skill.id == "agent_architect" and recent_messages:
+                skill_context["recent_messages"] = [
+                    {"role": (m.role if hasattr(m, "role") else m.get("role", "")),
+                     "content": (m.content if hasattr(m, "content") else m.get("content", ""))[:500]}
+                    for m in recent_messages[-8:]
+                ]
             github_token = _extract_github_token_from_user_keys(user_api_keys)
             if github_token:
                 skill_context["github_token"] = github_token
