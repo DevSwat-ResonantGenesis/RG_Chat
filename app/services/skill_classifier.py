@@ -33,7 +33,8 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Where to persist the trained model
-MODEL_DIR = Path(os.getenv("SKILL_MODEL_DIR", "/tmp/skill_classifier"))
+# /app/data survives container restarts if volume-mounted; /tmp does not
+MODEL_DIR = Path(os.getenv("SKILL_MODEL_DIR", "/app/data/skill_classifier"))
 MODEL_PATH = MODEL_DIR / "classifier.pkl"
 ACTIVE_DATA_PATH = MODEL_DIR / "active_learning.jsonl"
 
@@ -477,3 +478,24 @@ class SkillClassifier:
 
 # Global singleton
 skill_classifier = SkillClassifier()
+
+
+async def preload_skill_classifier() -> None:
+    """
+    Call at app startup (lifespan) to pre-train/load the classifier.
+    Ensures no user ever hits a cold-start delay.
+    """
+    t0 = time.time()
+    logger.info("[SkillClassifier] Preloading at startup...")
+    ok = await skill_classifier.ensure_ready()
+    elapsed = (time.time() - t0) * 1000
+    if ok:
+        stats = skill_classifier.get_stats()
+        logger.info(
+            f"[SkillClassifier] Preload complete in {elapsed:.0f}ms — "
+            f"trained={stats['is_trained']}, "
+            f"samples={stats['train_stats'].get('n_samples', 0)}, "
+            f"accuracy={stats['train_stats'].get('train_accuracy', 0)}"
+        )
+    else:
+        logger.warning(f"[SkillClassifier] Preload FAILED in {elapsed:.0f}ms")
