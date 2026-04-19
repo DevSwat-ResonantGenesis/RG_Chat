@@ -105,7 +105,7 @@ class ResonanceTokenOptimizer:
     def optimize_context(
         self,
         context_messages: List[Dict[str, Any]],
-        max_tokens: int = 2000
+        max_tokens: int = 16000
     ) -> List[Dict[str, Any]]:
         """Optimize entire context message list to fit within token limit."""
         try:

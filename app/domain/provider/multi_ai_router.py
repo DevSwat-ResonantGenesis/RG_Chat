@@ -349,7 +349,7 @@ class MultiAIRouter:
                 model="gpt-4o",
                 messages=messages,
                 temperature=0.7,
-                max_tokens=4096
+                max_tokens=16384
             )
             
             return {
@@ -433,7 +433,7 @@ class MultiAIRouter:
             async with httpx.AsyncClient() as client:
                 payload = {
                     "model": "claude-sonnet-4-20250514",
-                    "max_tokens": 4096,
+                    "max_tokens": 16384,
                     "messages": messages,
                 }
                 if system_message:
@@ -533,9 +533,9 @@ class MultiAIRouter:
                             "model": "llama-3.3-70b-versatile",
                             "messages": messages,
                             "temperature": 0.7,
-                            "max_tokens": 4096
+                            "max_tokens": 16384
                         },
-                        timeout=30.0
+                        timeout=60.0
                     )
                     response.raise_for_status()
                     data = response.json()
@@ -673,7 +673,7 @@ class MultiAIRouter:
                                     "contents": contents,
                                     "generationConfig": {
                                         "temperature": 0.7,
-                                        "maxOutputTokens": 4096,
+                                        "maxOutputTokens": 16384,
                                     },
                                 },
                                 timeout=30.0

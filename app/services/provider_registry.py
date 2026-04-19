@@ -42,7 +42,7 @@ class ProviderConfig:
     headers: Dict[str, str] = field(default_factory=dict)  # Custom headers
     supports_vision: bool = False  # Supports image input
     supports_streaming: bool = True  # Supports streaming
-    max_tokens: int = 4096  # Default max tokens
+    max_tokens: int = 16384  # Default max tokens
     enabled: bool = True  # Whether provider is enabled
 
 

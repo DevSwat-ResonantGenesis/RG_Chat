@@ -50,7 +50,7 @@ class MemoryOptimizer:
     TOKENS_PER_CHAR = 0.3
     
     # Default context limits
-    DEFAULT_MAX_TOKENS = 8000
+    DEFAULT_MAX_TOKENS = 32000
     SUMMARY_THRESHOLD = 10  # Summarize after this many messages
     
     # Importance keywords
@@ -264,8 +264,8 @@ class MemoryOptimizer:
         if new_total > max_tokens:
             for msg in optimized_messages:
                 content = msg.get("content", "")
-                if len(content) > 2000:
-                    msg["content"] = content[:2000] + "... [truncated]"
+                if len(content) > 8000:
+                    msg["content"] = content[:8000] + "... [truncated]"
             new_total = sum(self.estimate_tokens(m.get("content", "")) for m in optimized_messages)
         
         dropped_count = len(messages) - len(optimized_messages) + (1 if summary_text else 0)

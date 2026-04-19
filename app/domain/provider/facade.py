@@ -186,7 +186,7 @@ async def _stream_local(messages: list, model: str, user_id: str):
                 "messages": messages,
                 "model": model,
                 "temperature": 0.7,
-                "max_tokens": 4096,
+                "max_tokens": 16384,
             },
         )
         
