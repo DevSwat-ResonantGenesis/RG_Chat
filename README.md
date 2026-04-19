@@ -8,11 +8,32 @@
 ## Features
 - Multi-provider LLM routing (OpenAI, Anthropic, Groq, Gemini)
 - SSE streaming with hallucination detection
-- Skills system (Code Visualizer, web search, etc.)
+- **Neural Skill Classifier** — trained ML model for intelligent skill routing
+- Skills system (Agent Architect, Code Visualizer, Web Search, Memory, Google Drive/Calendar, IDE, etc.)
 - Debate engine, error correction, multi-provider chunking
 - Chat analytics dashboard
 - IDE completions endpoint for Resonant IDE
 - Provider status monitoring
+
+## Neural Skill Classifier (ML)
+Real trained neural network for skill routing — not keywords, not LLM prompts.
+
+**Architecture:**
+1. `all-MiniLM-L6-v2` sentence-transformer encodes (message + context) → 384-dim embedding
+2. Trained 2-layer MLP (256→128→14 classes) maps embedding → skill probabilities
+3. Active skill continuity boost from conversation `meta_data.toolResults`
+4. Active learning: every prediction saved to PostgreSQL for continuous improvement
+
+**Persistence (PostgreSQL — container-independent):**
+- `skill_classifier_models` — trained model weights (binary blob), versioned
+- `skill_active_samples` — every routing decision logged for retraining
+
+**Performance:** ~5ms inference, no API calls, no external dependencies at runtime.
+
+**Files:**
+- `app/services/skill_classifier.py` — classifier, DB persistence, active learning
+- `app/services/skill_training_data.py` — 250+ curated seed training samples
+- `app/services/neural_skill_router.py` — embedding cosine-sim fallback (backup)
 
 ## Volume Mounts
 - `rg_llm` — Shared LLM client library (read-only)
