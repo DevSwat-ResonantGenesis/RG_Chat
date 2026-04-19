@@ -33,7 +33,6 @@ Real trained neural network for skill routing — not keywords, not LLM prompts.
 **Files:**
 - `app/services/skill_classifier.py` — classifier, DB persistence, active learning
 - `app/services/skill_training_data.py` — 250+ curated seed training samples
-- `app/services/neural_skill_router.py` — embedding cosine-sim fallback (backup)
 
 ## Volume Mounts
 - `rg_llm` — Shared LLM client library (read-only)

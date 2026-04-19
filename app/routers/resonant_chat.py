@@ -413,16 +413,6 @@ def _extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
 
 
 
-# ============================================
-# SKILL DETECTION — Neural Skill Router (replaced LLM prompt on 2026-04-18)
-# ============================================
-# Skill detection is now handled by neural_skill_router.py:
-#   Layer 1: Active skill continuity (meta_data.toolResults)
-#   Layer 2: Neural semantic matching (sentence-transformer embeddings, ~5ms)
-#   Layer 3: Intent + narrative signals (boost/penalty)
-# See: app/services/neural_skill_router.py
-
-
 def _extract_current_time_tool_results(user_message: str) -> List[ToolResultData]:
     msg = (user_message or "").strip()
     if not msg:
