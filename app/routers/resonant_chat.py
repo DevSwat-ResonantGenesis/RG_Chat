@@ -101,7 +101,7 @@ from ..services.enhanced_metrics import enhanced_metrics_calculator, EnhancedMet
 # Skills System (Multi-Skill Mode)
 from ..services.skills_registry import skills_registry
 from ..services.skill_executor import skill_executor
-from ..services.neural_skill_router import neural_skill_router
+from ..services.skill_classifier import skill_classifier
 
 logger = logging.getLogger(__name__)
 
@@ -1367,35 +1367,24 @@ async def send_message(
         enabled_skill_ids = {s.id for s in skills_registry.get_enabled_skills(user_id)}
 
     if not enabled_skill_ids:
-        from ..services.neural_skill_router import SKILL_SEMANTIC_PROFILES
-        enabled_skill_ids = set(SKILL_SEMANTIC_PROFILES.keys())
+        from ..services.skill_classifier import ALL_SKILLS
+        enabled_skill_ids = {s for s in ALL_SKILLS if s is not None}
         logger.warning(f"[SKILL-7.9] enabled_skill_ids empty, falling back to all {len(enabled_skill_ids)} skills")
 
     if request_body.teamId:
         print(f"[SKILL-7.9] BYPASSED — user selected team {request_body.teamId}", flush=True)
     else:
         try:
-            # Extract intelligence signals
             msg_intents = intent_engine.extract(safe_user_message)
-            msg_latent = latent_intent_predictor.predict(safe_user_message) if hasattr(latent_intent_predictor, 'predict') else {}
-            msg_threads = []
-            try:
-                history_dicts = [{"content": m.content, "role": m.role} for m in recent_messages[:-1]] if recent_messages else []
-                msg_threads = narrative_continuity_engine.extract_threads(history_dicts, max_threads=2)
-            except Exception:
-                pass
 
-            # Neural routing
-            routing = await neural_skill_router.route(
+            prediction = await skill_classifier.predict(
                 message=safe_user_message,
                 enabled_skill_ids=enabled_skill_ids,
                 recent_messages=recent_messages[-6:] if recent_messages else None,
                 intents=msg_intents,
-                latent_intents=msg_latent,
-                narrative_threads=msg_threads,
             )
 
-            detected_tool_id = routing.skill_id
+            detected_tool_id = prediction.skill_id
             if detected_tool_id:
                 if detected_tool_id == "web_search":
                     web_search_needed = True
@@ -1412,12 +1401,13 @@ async def send_message(
                         if role == "assistant" and content:
                             _prev_assistant_agent_content = content
                             break
-            print(f"[SKILL-7.9] Neural: skill={detected_tool_id or 'None'} "
-                  f"conf={routing.confidence:.3f} method={routing.method} "
-                  f"active={routing.active_skill} latency={routing.latency_ms:.1f}ms "
-                  f"intents={msg_intents[:2]} msg={safe_user_message[:60]!r}", flush=True)
+            print(f"[SKILL-7.9] Classifier: skill={detected_tool_id or 'None'} "
+                  f"conf={prediction.confidence:.3f} method={prediction.method} "
+                  f"active={prediction.active_skill} latency={prediction.latency_ms:.1f}ms "
+                  f"intents={msg_intents[:2]} probs={dict(list(prediction.probabilities.items())[:3])} "
+                  f"msg={safe_user_message[:60]!r}", flush=True)
         except Exception as e:
-            logger.warning(f"Neural skill detection failed: {e}", exc_info=True)
+            logger.warning(f"Skill classifier failed: {e}", exc_info=True)
 
     # ============================================
     # STEP 7.6: CHECK RESPONSE CACHE
