@@ -101,6 +101,7 @@ from ..services.enhanced_metrics import enhanced_metrics_calculator, EnhancedMet
 # Skills System (Multi-Skill Mode)
 from ..services.skills_registry import skills_registry
 from ..services.skill_executor import skill_executor
+from ..services.neural_skill_router import neural_skill_router
 
 logger = logging.getLogger(__name__)
 
@@ -413,127 +414,13 @@ def _extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
 
 
 # ============================================
-# LLM-DRIVEN TOOL DETECTION
+# SKILL DETECTION — Neural Skill Router (replaced LLM prompt on 2026-04-18)
 # ============================================
-
-_SKILL_TOOL_DESCRIPTIONS = {
-    "code_visualizer": "Scan and analyze a GitHub repository or codebase. ONLY when user provides a GitHub URL or explicitly asks to scan/analyze a repo/codebase.",
-    "web_search": "Search the web for real-time information. ONLY for current events, live prices, weather, recent news, or facts that require up-to-date data the AI cannot know.",
-    "image_generation": "Generate an image with DALL-E. ONLY when user explicitly asks to generate/create/draw/make an image, picture, or illustration.",
-    "memory_search": "Search user\'s long-term memory for previously stored information. When user asks \'what did I say about X\' or \'do you remember X\'.",
-    "memory_library": "Open the memory library panel. ONLY when user explicitly says \"open memory library\", \"show my memories\", or \"browse memories\".",
-    "agent_architect": "Create, build, manage, run, diagnose, modify, rename, delete, schedule, or configure AI agents. When user wants to create/build/manage/run/diagnose any agent, asks about their agents, says 'build me an agent', 'create an agent', 'how many agents do I have', 'show my agents', or any agent-related operation. The architect is an autonomous builder that plans, investigates, builds, tests, and configures agents with real tools and persistent memory.",
-    "state_physics": "Open State Physics visualization panel. ONLY when user explicitly says \"open state physics\", \"show state physics\", or \"state-space visualization\".",
-    "ide_workspace": "Open the IDE workspace split panel. ONLY when user explicitly says \"open IDE\", \"open editor\", \"open terminal\", or \"open workspace\". Do NOT trigger for coding questions or requests to write code.",
-    "rabbit_post": "Create a post on Rabbit community forum. When user wants to post something to a Rabbit community.",
-    "google_drive": "Access Google Drive files. When user asks about their Drive files, documents, or wants to search/read/create files.",
-    "google_calendar": "Access Google Calendar. When user asks about their schedule, events, meetings, or wants to create/view calendar events.",
-    "figma": "Access Figma designs. When user asks about their Figma projects, design files, or components.",
-    "sigma": "Access Sigma Computing dashboards. When user asks about their Sigma reports or analytics.",
-}
-
-
-async def _llm_detect_tool(
-    message: str,
-    enabled_skill_ids: set,
-    recent_messages: list = None,
-) -> Optional[str]:
-    """Use LLM to decide which tool (if any) to call for this message.
-
-    Makes a fast Groq call with JSON mode. Returns skill_id or None.
-    """
-    # Build tool list from enabled skills only
-    tool_lines = []
-    for skill_id, desc in _SKILL_TOOL_DESCRIPTIONS.items():
-        if skill_id in enabled_skill_ids:
-            tool_lines.append(f"  - {skill_id}: {desc}")
-    if not tool_lines:
-        return None
-
-    tools_str = "\n".join(tool_lines)
-
-    # Build recent conversation context (last 3 messages for follow-up awareness)
-    recent_str = "(no prior messages)"
-    if recent_messages:
-        recent_lines = []
-        for msg in recent_messages[-3:]:
-            role = msg.role if hasattr(msg, "role") else msg.get("role", "user")
-            content = msg.content if hasattr(msg, "content") else msg.get("content", "")
-            if content:
-                recent_lines.append(f"{role}: {str(content)[:200]}")
-        if recent_lines:
-            recent_str = "\n".join(recent_lines)
-
-    prompt = f"""Decide if the user\'s message requires calling a tool.
-
-AVAILABLE TOOLS:
-{tools_str}
-
-RECENT CONVERSATION:
-{recent_str}
-
-USER MESSAGE: {message}
-
-Respond with ONLY valid JSON:
-- If a tool is needed: {{\"tool\": \"<tool_id>\"}}
-- If NO tool is needed: {{\"tool\": null}}
-
-RULES:
-- Most messages do NOT need tools. Default to null.
-- General conversation, questions, coding help, math, explanations -> null.
-- Do NOT call web_search for questions the AI can answer from its training data.
-- Call agent_architect when user wants to create, build, manage, run, diagnose, or configure agents.
-- Do NOT call code_visualizer unless user provides a GitHub URL or explicitly asks to scan a repo.
-- For follow-up confirmations (like \"yes create all\"), check the conversation context."""
-
-    try:
-        groq_keys = os.getenv("GROQ_API_KEY", "")
-        groq_key = groq_keys.split(",")[0].strip() if groq_keys else ""
-        if not groq_key:
-            logger.warning("[LLM-TOOL] No GROQ_API_KEY, skipping tool detection")
-            return None
-
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {groq_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [
-                        {"role": "system", "content": "You are a tool-selection assistant. Respond with JSON only."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.0,
-                    "max_tokens": 60,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-
-            if resp.status_code != 200:
-                logger.warning(f"[LLM-TOOL] Groq returned {resp.status_code}: {resp.text[:200]}")
-                return None
-
-            data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            parsed = json.loads(content)
-            tool_id = parsed.get("tool")
-
-            if tool_id and tool_id in enabled_skill_ids:
-                logger.info(f"[LLM-TOOL] LLM selected tool: {tool_id}")
-                return tool_id
-            elif tool_id:
-                logger.info(f"[LLM-TOOL] LLM selected {tool_id} but not in enabled skills, ignoring")
-                return None
-            else:
-                logger.info("[LLM-TOOL] LLM decided no tool needed")
-                return None
-
-    except Exception as e:
-        logger.warning(f"[LLM-TOOL] Tool detection failed: {e}")
-        return None
+# Skill detection is now handled by neural_skill_router.py:
+#   Layer 1: Active skill continuity (meta_data.toolResults)
+#   Layer 2: Neural semantic matching (sentence-transformer embeddings, ~5ms)
+#   Layer 3: Intent + narrative signals (boost/penalty)
+# See: app/services/neural_skill_router.py
 
 
 def _extract_current_time_tool_results(user_message: str) -> List[ToolResultData]:
@@ -1461,8 +1348,12 @@ async def send_message(
         )
 
     # ============================================
-    # STEP 7.9: LLM-DRIVEN TOOL DETECTION (runs FIRST — drives all tool decisions)
+    # STEP 7.9: NEURAL SKILL DETECTION (Intelligence Stack)
     # ============================================
+    # Layer 1: Active skill continuity (from meta_data.toolResults)
+    # Layer 2: Neural semantic matching (sentence-transformer embeddings)
+    # Layer 3: Intent + narrative signals (boost/penalty)
+    # No more blind LLM prompt — pure neural semantic understanding.
     detected_skill = None
     skill_result = None
     web_search_needed = False
@@ -1473,26 +1364,38 @@ async def send_message(
     if request_body.enabled_skill_ids is not None and len(request_body.enabled_skill_ids) > 0:
         enabled_skill_ids = set(request_body.enabled_skill_ids)
     else:
-        # Frontend sends [] or None — use server defaults (all is_default=True skills)
         enabled_skill_ids = {s.id for s in skills_registry.get_enabled_skills(user_id)}
 
-    # SAFETY NET: if enabled set is still empty (registry bug, deploy mismatch, etc.)
-    # fall back to ALL known tool IDs so skill detection is never silently disabled
     if not enabled_skill_ids:
-        enabled_skill_ids = set(_SKILL_TOOL_DESCRIPTIONS.keys())
-        logger.warning(f"[SKILL-7.9] enabled_skill_ids was empty for user={user_id[:8]}..., "
-                       f"falling back to all {len(enabled_skill_ids)} built-in tool IDs")
+        from ..services.neural_skill_router import SKILL_SEMANTIC_PROFILES
+        enabled_skill_ids = set(SKILL_SEMANTIC_PROFILES.keys())
+        logger.warning(f"[SKILL-7.9] enabled_skill_ids empty, falling back to all {len(enabled_skill_ids)} skills")
 
-    # Team selection bypass: if user explicitly chose a team, skip tool detection
     if request_body.teamId:
         print(f"[SKILL-7.9] BYPASSED — user selected team {request_body.teamId}", flush=True)
     else:
         try:
-            detected_tool_id = await _llm_detect_tool(
+            # Extract intelligence signals
+            msg_intents = intent_engine.extract(safe_user_message)
+            msg_latent = latent_intent_predictor.predict(safe_user_message) if hasattr(latent_intent_predictor, 'predict') else {}
+            msg_threads = []
+            try:
+                history_dicts = [{"content": m.content, "role": m.role} for m in recent_messages[:-1]] if recent_messages else []
+                msg_threads = narrative_continuity_engine.extract_threads(history_dicts, max_threads=2)
+            except Exception:
+                pass
+
+            # Neural routing
+            routing = await neural_skill_router.route(
                 message=safe_user_message,
                 enabled_skill_ids=enabled_skill_ids,
-                recent_messages=recent_messages[-4:] if recent_messages else None,
+                recent_messages=recent_messages[-6:] if recent_messages else None,
+                intents=msg_intents,
+                latent_intents=msg_latent,
+                narrative_threads=msg_threads,
             )
+
+            detected_tool_id = routing.skill_id
             if detected_tool_id:
                 if detected_tool_id == "web_search":
                     web_search_needed = True
@@ -1509,11 +1412,12 @@ async def send_message(
                         if role == "assistant" and content:
                             _prev_assistant_agent_content = content
                             break
-            print(f"[SKILL-7.9] LLM detected={detected_tool_id or 'None'}, "
-                  f"web_search={web_search_needed}, image_gen={image_gen_needed}, "
-                  f"enabled={sorted(enabled_skill_ids)}, msg={safe_user_message[:80]!r}", flush=True)
+            print(f"[SKILL-7.9] Neural: skill={detected_tool_id or 'None'} "
+                  f"conf={routing.confidence:.3f} method={routing.method} "
+                  f"active={routing.active_skill} latency={routing.latency_ms:.1f}ms "
+                  f"intents={msg_intents[:2]} msg={safe_user_message[:60]!r}", flush=True)
         except Exception as e:
-            logger.warning(f"LLM tool detection failed: {e}")
+            logger.warning(f"Neural skill detection failed: {e}", exc_info=True)
 
     # ============================================
     # STEP 7.6: CHECK RESPONSE CACHE
