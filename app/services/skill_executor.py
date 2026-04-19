@@ -19,11 +19,8 @@ import httpx
 from .skills_registry import SkillDefinition, skills_registry
 from .skills import INTEGRATION_SKILLS
 
-try:
-    from platform_tools.auth import AuthContext, build_service_headers
-except ImportError:
-    AuthContext = None
-    build_service_headers = None
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -2302,71 +2299,12 @@ class SkillExecutor:
     async def _execute_rabbit_post(
         self, message: str, user_id: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Create a Rabbit post from a chat message using shared tools."""
-        try:
-            from platform_tools.rabbit import tool_create_rabbit_post, tool_list_rabbit_communities
-            from platform_tools.auth import AuthContext
-
-            auth = AuthContext(
-                user_id=user_id,
-                org_id=context.get("org_id"),
-                user_role=str(context.get("user_role", "user")),
-            )
-
-            # Parse title and body from message
-            title, body, community_slug = self._parse_rabbit_post_message(message)
-
-            if not title or not body:
-                # List available communities and return help
-                communities_result = await tool_list_rabbit_communities(auth=auth)
-                community_list = communities_result.get("communities", [])
-                community_names = ", ".join([c["slug"] for c in community_list[:10]]) if community_list else "none found"
-
-                return {
-                    "success": True,
-                    "action": "rabbit_post_help",
-                    "summary": (
-                        "**Create a Rabbit Post**\n\n"
-                        "To create a post, include a title and body:\n"
-                        "`create post titled 'My Title' body 'My content here' in r/community`\n\n"
-                        f"**Available communities:** {community_names}\n"
-                    ),
-                }
-
-            result = await tool_create_rabbit_post(
-                title=title,
-                body=body,
-                community_slug=community_slug,
-                auth=auth,
-            )
-
-            if result.get("success"):
-                return {
-                    "success": True,
-                    "action": "rabbit_post_created",
-                    "post_id": result.get("post_id"),
-                    "summary": f"**Post Created!**\n\n{result.get('message', '')}",
-                }
-            else:
-                return {
-                    "success": False,
-                    "action": "rabbit_post_failed",
-                    "error": result.get("error", "Unknown error"),
-                    "summary": f"Failed to create post: {result.get('error', 'Unknown error')}",
-                }
-
-        except ImportError:
-            return {
-                "success": False,
-                "action": "rabbit_post",
-                "error": "Shared tools not available",
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "action": "rabbit_post",
-                "error": str(e),
-            }
+        """Create a Rabbit post — Rabbit services currently disabled."""
+        return {
+            "success": False,
+            "action": "rabbit_post",
+            "error": "Rabbit community services are currently disabled",
+        }
 
     # ============================================
     # MODULAR INTEGRATION SKILLS (figma, google_drive, google_calendar, sigma, etc.)
@@ -2428,6 +2366,7 @@ class SkillExecutor:
             "user_id": user_id,
             "context": context.get("prev_assistant_content", ""),
             "conversation_history": context.get("recent_messages", []),
+            "user_api_keys": context.get("user_api_keys", {}),
         }
 
         # Try SSE streaming first for real-time progress
