@@ -1384,8 +1384,30 @@ async def send_message(
                 else:
                     detected_tool = tools_registry.get_tool(detected_tool_id)
                 code_visualizer_intent = (detected_tool_id == "code_visualizer")
-                # NOTE: agent_architect is NOT a tool — it's an agent selected
-                # by user dropdown or autonomous daemon, never by classifier.
+
+            # agent_architect is an AGENT, not a tool — it's not in the classifier.
+            # But we still need to detect agent-related requests via keywords so
+            # the architect tool executor can handle them (build/list/run agents).
+            _msg_lower = (safe_user_message or "").lower()
+            _architect_keywords = [
+                "build me an agent", "build an agent", "create an agent", "create agent",
+                "make an agent", "make me an agent", "list my agents", "show my agents",
+                "how many agents", "delete agent", "stop agent", "run agent",
+                "start agent", "schedule agent", "diagnose agent", "agent is broken",
+                "agent keeps failing", "configure agent", "modify agent",
+                "build a bot", "create a bot", "set up an agent",
+            ]
+            if not detected_tool_id and any(kw in _msg_lower for kw in _architect_keywords):
+                architect_intent = True
+                detected_tool = tools_registry.get_tool("agent_architect")
+                if recent_messages:
+                    for prev_msg in reversed(recent_messages[-3:]):
+                        role = prev_msg.role if hasattr(prev_msg, "role") else prev_msg.get("role", "")
+                        content = prev_msg.content if hasattr(prev_msg, "content") else prev_msg.get("content", "")
+                        if role == "assistant" and content:
+                            _prev_assistant_agent_content = content
+                            break
+                print(f"[TOOL-7.9] Architect intent detected via keywords", flush=True)
             print(f"[TOOL-7.9] Classifier: tool={detected_tool_id or 'None'} "
                   f"conf={prediction.confidence:.3f} method={prediction.method} "
                   f"active={prediction.active_tool} latency={prediction.latency_ms:.1f}ms "
