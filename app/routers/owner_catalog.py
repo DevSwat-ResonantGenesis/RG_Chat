@@ -109,13 +109,13 @@ async def get_internal_catalog(request: Request):
     except Exception as e:
         logger.warning(f"Could not load INTERNAL_TEAMS: {e}")
 
-    # ── Chat skills from skills_registry ──
-    skills_list = []
+    # ── Chat tools from tools_registry ──
+    tools_list = []
     try:
-        from ..services.skills_registry import skills_registry
-        skills_list = skills_registry.list_skills()
+        from ..services.tools_registry import tools_registry
+        tools_list = tools_registry.list_tools()
     except Exception as e:
-        logger.warning(f"Could not load skills: {e}")
+        logger.warning(f"Could not load tools: {e}")
 
     # ── RARA agent types ──
     rara_types = []
@@ -146,13 +146,13 @@ async def get_internal_catalog(request: Request):
     return {
         "agents": agents_list,
         "teams": teams_list,
-        "skills": skills_list,
+        "tools": tools_list,
         "rara_types": rara_types,
         "infrastructure": infra,
         "counts": {
             "agents": len(agents_list),
             "teams": len(teams_list),
-            "skills": len(skills_list),
+            "tools": len(tools_list),
             "rara_types": len(rara_types),
             "infrastructure": len(infra),
         },

@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
     
     # Auto-create new tables (hallucination_settings, knowledge_base_entries)
     from .db import engine
-    from .models import Base, HallucinationSettings, KnowledgeBaseEntryDB, SkillClassifierModel, SkillActiveSample
+    from .models import Base, HallucinationSettings, KnowledgeBaseEntryDB, ToolClassifierModel, ToolActiveSample
     from sqlalchemy import inspect as sa_inspect
     async with engine.begin() as conn:
         def _create_missing(sync_conn):
@@ -28,8 +28,8 @@ async def lifespan(app: FastAPI):
             for table in [
                 HallucinationSettings.__table__,
                 KnowledgeBaseEntryDB.__table__,
-                SkillClassifierModel.__table__,
-                SkillActiveSample.__table__,
+                ToolClassifierModel.__table__,
+                ToolActiveSample.__table__,
             ]:
                 if table.name not in existing:
                     table.create(sync_conn)
@@ -37,11 +37,11 @@ async def lifespan(app: FastAPI):
     
     # Pre-train/load the ML skill classifier so no user hits cold-start
     try:
-        from .services.skill_classifier import preload_skill_classifier
-        await preload_skill_classifier()
+        from .services.tool_classifier import preload_tool_classifier
+        await preload_tool_classifier()
     except Exception as e:
         import logging
-        logging.getLogger(__name__).warning(f"Skill classifier preload failed (non-fatal): {e}")
+        logging.getLogger(__name__).warning(f"Tool classifier preload failed (non-fatal): {e}")
 
     # Start the provider status monitor loop
     monitor_task = asyncio.create_task(status_manager.monitor_loop())
@@ -92,7 +92,7 @@ from .routers.analytics import router as analytics_router
 from .routers.streaming import router as streaming_router
 from .routers.websocket import router as websocket_router
 from .routers.provider_status_ws import router as provider_status_router
-from .routers.skills import router as skills_router
+from .routers.tools import router as tools_router
 from .routers.owner_catalog import router as owner_catalog_router
 from .routers.ide_completions import router as ide_completions_router
 
@@ -101,7 +101,7 @@ app.include_router(analytics_router)
 app.include_router(streaming_router)
 app.include_router(websocket_router)
 app.include_router(provider_status_router)
-app.include_router(skills_router)
+app.include_router(tools_router)
 app.include_router(owner_catalog_router)
 app.include_router(ide_completions_router)
 

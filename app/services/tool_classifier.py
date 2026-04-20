@@ -1,8 +1,8 @@
 """
-Trained Neural Skill Classifier
+Trained Neural Tool Classifier
 =================================
 
-A REAL trained ML classifier for skill routing.
+A REAL trained ML classifier for tool routing.
 Not keyword matching. Not an LLM prompt. A trained model.
 
 Architecture:
@@ -13,9 +13,12 @@ Architecture:
   5. Model stored in PostgreSQL — survives container restarts forever
   6. Retraining merges seed data + all accumulated active learning samples
 
+Renamed from SkillClassifier → ToolClassifier (Apr 2026)
+These ARE tools, not just skills. Same architecture, expanded to 130+ tools.
+
 Persistence:
-  - Model weights: skill_classifier_models table (LargeBinary blob)
-  - Active learning: skill_active_samples table (one row per prediction)
+  - Model weights: tool_classifier_models table (LargeBinary blob)
+  - Active learning: tool_active_samples table (one row per prediction)
   - No filesystem dependency. Container can be destroyed and rebuilt.
 """
 from __future__ import annotations
@@ -34,9 +37,12 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Skill labels (None = general chat)
-ALL_SKILLS = [
+# Tool labels (None = general chat)
+# Expanded from 13 original skills to 196 tools from RG_Unified_Tool_Registry.
+# skill_* prefixed tools excluded (they are chat-level wrappers, not real tools).
+ALL_TOOLS = [
     None,  # index 0 = general chat / no tool
+    # ── Original high-level routing tools (kept for backward compat) ──
     "agent_architect",
     "code_visualizer",
     "web_search",
@@ -50,23 +56,240 @@ ALL_SKILLS = [
     "rabbit_post",
     "figma",
     "sigma",
+    # ── Search & Web ──
+    "fetch_url",
+    "read_webpage",
+    "read_many_pages",
+    "reddit_search",
+    "image_search",
+    "news_search",
+    "places_search",
+    "youtube_search",
+    "deep_research",
+    "wikipedia",
+    # ── Memory / Hash Sphere ──
+    "memory_read",
+    "memory_write",
+    "memory_stats",
+    "hash_sphere_search",
+    "hash_sphere_anchor",
+    "hash_sphere_list_anchors",
+    "hash_sphere_hash",
+    "hash_sphere_resonance",
+    # ── Utilities ──
+    "weather",
+    "stock_crypto",
+    "generate_chart",
+    "visualize",
+    "get_current_time",
+    "get_system_info",
+    # ── Code Visualizer (granular) ──
+    "code_visualizer_scan",
+    "code_visualizer_functions",
+    "code_visualizer_trace",
+    "code_visualizer_governance",
+    "code_visualizer_graph",
+    "code_visualizer_pipeline",
+    "code_visualizer_filter",
+    "code_visualizer_by_type",
+    # ── Agents OS ──
+    "agents_list",
+    "agents_create",
+    "agents_start",
+    "agents_stop",
+    "agents_status",
+    "agents_delete",
+    "agents_sessions",
+    "agents_session_steps",
+    "agents_session_trace",
+    "agents_metrics",
+    "agents_session_detail",
+    "agents_session_cancel",
+    "agents_update",
+    "agents_available_tools",
+    "agents_templates",
+    "agents_versions",
+    "schedule_agent",
+    "run_snapshot",
+    "list_workspace_tools",
+    "agent_snapshot",
+    "session_log",
+    "workspace_snapshot",
+    "run_agent",
+    "present_options",
+    # ── Agent Architect (granular) ──
+    "architect_plan",
+    "architect_create_agent",
+    "architect_assign_goal",
+    "architect_create_schedule",
+    "architect_create_webhook",
+    "architect_set_autonomy",
+    "architect_list_available_tools",
+    "architect_list_providers",
+    # ── Media ──
+    "generate_image",
+    "generate_audio",
+    "generate_music",
+    "generate_video",
+    # ── Integrations ──
+    "gmail_send",
+    "gmail_read",
+    "slack_send",
+    "slack_read",
+    "send_email",
+    "configure_smtp",
+    "delete_smtp",
+    # ── State Physics (granular) ──
+    "sp_state",
+    "sp_reset",
+    "sp_nodes",
+    "sp_metrics",
+    "sp_identity",
+    "sp_simulate",
+    "sp_galaxy",
+    "sp_demo",
+    "sp_asymmetry",
+    "sp_physics_config",
+    "sp_entropy_config",
+    "sp_entropy_toggle",
+    "sp_entropy_perturbation",
+    "sp_agent_spawn",
+    "sp_agent_step",
+    "sp_agent_kill",
+    "sp_agents_spawn",
+    "sp_agents_kill_all",
+    "sp_experiment",
+    "sp_memory_cost",
+    "sp_metrics_record",
+    # ── Community / Rabbit ──
+    "create_rabbit_post",
+    "list_rabbit_communities",
+    "list_rabbit_posts",
+    "rabbit_vote",
+    "create_rabbit_community",
+    "get_rabbit_community",
+    "search_rabbit_posts",
+    "get_rabbit_post",
+    "delete_rabbit_post",
+    "create_rabbit_comment",
+    "list_rabbit_comments",
+    "delete_rabbit_comment",
+    # ── Developer ──
+    "execute_code",
+    "http_request",
+    "external_http_request",
+    "dev_tool",
+    # ── GitHub ──
+    "github_create_repo",
+    "github_list_repos",
+    "github_list_files",
+    "github_download_file",
+    "github_upload_file",
+    "github_pull_request",
+    "github_issue",
+    "github_commit",
+    "github_comment",
+    # ── Git ──
+    "git_clone",
+    "git_branch",
+    "git_merge",
+    "git_push",
+    "git_pull",
+    # ── Tool Management ──
+    "create_tool",
+    "list_tools",
+    "delete_tool",
+    "update_tool",
+    # ── Platform API ──
+    "platform_api_search",
+    "platform_api_call",
+    # ── Filesystem / IDE ──
+    "file_read",
+    "file_write",
+    "file_edit",
+    "multi_edit",
+    "file_list",
+    "file_delete",
+    "grep_search",
+    "find_by_name",
+    "run_command",
+    "command_status",
+    # ── Scraping ──
+    "scrape_page",
+    "scrape_platforms",
+    # ── Documents ──
+    "google_sheets",
+    "google_docs",
+    "create_presentation",
+    # ── Orchestrator ──
+    "build_agent",
+    "continue_build",
+    "message_build",
+    "stop_run",
+    "set_trigger",
+    "set_workspace_name",
+    "open_interface_editor",
+    "get_user_memory",
+    "update_user_memory",
+    "list_workspace_databases",
+    "query_cross_agent_database",
+    "get_credits_info",
+    "present_billing_offer",
+    # ── Stock Market ──
+    "stock_market_data",
+    # ── OAuth Integrations ──
+    "notion",
+    "discord",
+    "asana",
+    "clickup",
+    "linear",
+    "monday",
+    "miro",
+    "atlassian",
+    "zoom",
+    "calendly",
+    "dropbox",
+    "dribbble",
+    "typeform",
+    "hubspot",
+    "salesforce",
+    "pipedrive",
+    "attio",
+    "zoho_crm",
+    "mailchimp",
+    "airtable",
+    "gitlab",
+    "linkedin",
+    "twitter_x",
+    "xero",
+    "microsoft",
+    "youtube",
+    # ── Autonomous Builder ──
+    "auto_build_tool",
+    "list_built_tools",
+    "execute_built_tool",
+    "check_tool_exists",
+    # ── Filesystem (extended) ──
+    "file_download_curl",
+    "file_upload_curl",
+    "file_extract_zip",
 ]
 
-SKILL_TO_IDX = {s: i for i, s in enumerate(ALL_SKILLS)}
-IDX_TO_SKILL = {i: s for i, s in enumerate(ALL_SKILLS)}
+TOOL_TO_IDX = {s: i for i, s in enumerate(ALL_TOOLS)}
+IDX_TO_TOOL = {i: s for i, s in enumerate(ALL_TOOLS)}
 
 # Batch size for flushing active learning samples to DB
 _FLUSH_BATCH = 50
 
 
 @dataclass
-class ClassifierPrediction:
+class ToolPrediction:
     """Result of the classifier."""
-    skill_id: Optional[str]
+    tool_id: Optional[str]
     confidence: float
     probabilities: Dict[str, float]
     method: str  # "classifier", "continuity", "fallback"
-    active_skill: Optional[str] = None
+    active_tool: Optional[str] = None
     latency_ms: float = 0.0
 
 
@@ -75,7 +298,7 @@ class ClassifierPrediction:
 # ---------------------------------------------------------------
 
 async def _load_model_from_db():
-    """Load the latest active classifier from PostgreSQL."""
+    """Load the latest active tool classifier from PostgreSQL."""
     from ..db import async_session
     from sqlalchemy import select, text
     try:
@@ -94,26 +317,26 @@ async def _load_model_from_db():
                 clf = pickle.loads(blob)
                 return clf, stats or {}, n_samples, version
     except Exception as e:
-        logger.warning(f"[SkillClassifier] DB load failed: {e}")
+        logger.warning(f"[ToolClassifier] DB load failed: {e}")
     return None, {}, 0, 0
 
 
 async def _save_model_to_db(classifier, stats: dict, n_samples: int, version: int):
-    """Save the trained classifier to PostgreSQL."""
+    """Save the trained tool classifier to PostgreSQL."""
     from ..db import async_session
-    from ..models import SkillClassifierModel
+    from ..models import ToolClassifierModel
     try:
         blob = pickle.dumps(classifier)
         async with async_session() as session:
             # Deactivate old models
             from sqlalchemy import update
             await session.execute(
-                update(SkillClassifierModel)
-                .where(SkillClassifierModel.is_active == True)
+                update(ToolClassifierModel)
+                .where(ToolClassifierModel.is_active == True)
                 .values(is_active=False)
             )
             # Insert new model
-            new_model = SkillClassifierModel(
+            new_model = ToolClassifierModel(
                 version=version,
                 model_blob=blob,
                 n_samples=n_samples,
@@ -125,34 +348,34 @@ async def _save_model_to_db(classifier, stats: dict, n_samples: int, version: in
             session.add(new_model)
             await session.commit()
             logger.info(
-                f"[SkillClassifier] Model v{version} saved to DB "
+                f"[ToolClassifier] Model v{version} saved to DB "
                 f"({len(blob)} bytes, {n_samples} samples)"
             )
     except Exception as e:
-        logger.error(f"[SkillClassifier] DB save failed: {e}", exc_info=True)
+        logger.error(f"[ToolClassifier] DB save failed: {e}", exc_info=True)
 
 
 async def _save_active_samples(samples: List[Dict]):
     """Batch-insert active learning samples into PostgreSQL."""
     from ..db import async_session
-    from ..models import SkillActiveSample
+    from ..models import ToolActiveSample
     try:
         async with async_session() as session:
             for s in samples:
-                session.add(SkillActiveSample(
+                session.add(ToolActiveSample(
                     user_message=s["msg"][:500],
-                    predicted_skill=s.get("predicted"),
+                    predicted_tool=s.get("predicted"),
                     confidence=s.get("conf", 0),
                     method=s.get("method", ""),
-                    active_skill=s.get("active"),
+                    active_tool=s.get("active"),
                     probabilities=s.get("probs", {}),
                     intents=s.get("intents", []),
                     user_id=s.get("user_id"),
                 ))
             await session.commit()
-            logger.info(f"[SkillClassifier] Flushed {len(samples)} active samples to DB")
+            logger.info(f"[ToolClassifier] Flushed {len(samples)} active samples to DB")
     except Exception as e:
-        logger.warning(f"[SkillClassifier] Active sample flush failed: {e}")
+        logger.warning(f"[ToolClassifier] Active sample flush failed: {e}")
 
 
 async def _load_active_samples_from_db(min_confidence: float = 0.6) -> List[Tuple]:
@@ -176,7 +399,7 @@ async def _load_active_samples_from_db(min_confidence: float = 0.6) -> List[Tupl
                 msg, skill = row
                 samples.append((msg, [], skill))
     except Exception as e:
-        logger.warning(f"[SkillClassifier] Active sample load failed: {e}")
+        logger.warning(f"[ToolClassifier] Active sample load failed: {e}")
     return samples
 
 
@@ -198,9 +421,9 @@ async def _count_active_samples() -> int:
 # Main classifier
 # ---------------------------------------------------------------
 
-class SkillClassifier:
+class ToolClassifier:
     """
-    Trained neural skill classifier.
+    Trained neural tool classifier.
 
     Uses sentence-transformers for encoding + sklearn MLP for classification.
     Model + active learning data stored in PostgreSQL — container-independent.
@@ -238,18 +461,18 @@ class SkillClassifier:
                     self._model_version = version
                     self._is_trained = True
                     logger.info(
-                        f"[SkillClassifier] Loaded model v{version} from DB "
+                        f"[ToolClassifier] Loaded model v{version} from DB "
                         f"({n_samples} samples, acc={stats.get('train_accuracy', '?')})"
                     )
                     return True
 
                 # No model in DB — train from seed and save
-                logger.info("[SkillClassifier] No model in DB, training from seed...")
+                logger.info("[ToolClassifier] No model in DB, training from seed...")
                 await self._train_and_save(source="seed")
                 return True
 
             except Exception as e:
-                logger.error(f"[SkillClassifier] Init failed: {e}", exc_info=True)
+                logger.error(f"[ToolClassifier] Init failed: {e}", exc_info=True)
                 return False
 
     def _load_encoder(self) -> bool:
@@ -257,14 +480,14 @@ class SkillClassifier:
         try:
             from sentence_transformers import SentenceTransformer
             model_name = os.getenv("SKILL_ROUTER_MODEL", "all-MiniLM-L6-v2")
-            logger.info(f"[SkillClassifier] Loading encoder: {model_name}")
+            logger.info(f"[ToolClassifier] Loading encoder: {model_name}")
             self._encoder = SentenceTransformer(model_name)
             return True
         except ImportError:
-            logger.warning("[SkillClassifier] sentence-transformers not installed")
+            logger.warning("[ToolClassifier] sentence-transformers not installed")
             return False
         except Exception as e:
-            logger.error(f"[SkillClassifier] Encoder load error: {e}")
+            logger.error(f"[ToolClassifier] Encoder load error: {e}")
             return False
 
     def _encode_sample(
@@ -289,12 +512,12 @@ class SkillClassifier:
         from sklearn.neural_network import MLPClassifier
         from sklearn.model_selection import cross_val_score
 
-        logger.info(f"[SkillClassifier] Encoding {len(samples)} samples...")
+        logger.info(f"[ToolClassifier] Encoding {len(samples)} samples...")
         X_list, y_list = [], []
         for msg, ctx, skill_id in samples:
             emb = self._encode_sample(msg, ctx)
             X_list.append(emb)
-            y_list.append(SKILL_TO_IDX.get(skill_id, 0))
+            y_list.append(TOOL_TO_IDX.get(skill_id, 0))
 
         X = np.array(X_list)
         y = np.array(y_list)
@@ -329,7 +552,7 @@ class SkillClassifier:
 
         class_dist = Counter(y_list)
         class_stats = {
-            (IDX_TO_SKILL.get(k) or "none"): v
+            (IDX_TO_TOOL.get(k) or "none"): v
             for k, v in sorted(class_dist.items())
         }
 
@@ -345,7 +568,7 @@ class SkillClassifier:
         }
 
         logger.info(
-            f"[SkillClassifier] Training complete: "
+            f"[ToolClassifier] Training complete: "
             f"accuracy={train_acc:.3f}, cv={cv_mean:.3f}±{cv_std:.3f}, "
             f"classes={len(set(y_list))}, samples={len(samples)}, source={source}"
         )
@@ -353,14 +576,14 @@ class SkillClassifier:
 
     async def _train_and_save(self, source: str = "seed") -> Dict[str, Any]:
         """Train from seed (+ active data) and save to DB."""
-        from .skill_training_data import get_training_data
+        from .tool_training_data import get_training_data
         samples = get_training_data()
 
         # Include active learning data from DB
         active = await _load_active_samples_from_db(min_confidence=0.6)
         if active:
             samples.extend(active)
-            logger.info(f"[SkillClassifier] Added {len(active)} active samples from DB")
+            logger.info(f"[ToolClassifier] Added {len(active)} active samples from DB")
 
         stats = await asyncio.get_event_loop().run_in_executor(
             None, self._train_on_samples, samples, source
@@ -372,10 +595,10 @@ class SkillClassifier:
         )
         return stats
 
-    def _detect_active_skill(
+    def _detect_active_tool(
         self, recent_messages: list, enabled_ids: Set[str]
     ) -> Optional[str]:
-        """Detect which skill was used in the most recent assistant message."""
+        """Detect which tool was used in the most recent assistant message."""
         if not recent_messages:
             return None
         for msg in reversed(recent_messages[-6:]):
@@ -401,38 +624,38 @@ class SkillClassifier:
     async def predict(
         self,
         message: str,
-        enabled_skill_ids: Set[str],
+        enabled_tool_ids: Set[str],
         recent_messages: list = None,
         intents: List[str] = None,
         user_id: str = None,
-    ) -> ClassifierPrediction:
+    ) -> ToolPrediction:
         """
-        Predict which skill to route to.
+        Predict which tool to route to.
 
-        Uses active skill continuity + trained classifier.
+        Uses active tool continuity + trained classifier.
         Every prediction is logged to DB for continuous learning.
         """
         t0 = time.time()
 
-        # --- Layer 1: Active skill continuity ---
-        active_skill = self._detect_active_skill(
-            recent_messages or [], enabled_skill_ids
+        # --- Layer 1: Active tool continuity ---
+        active_tool = self._detect_active_tool(
+            recent_messages or [], enabled_tool_ids
         )
 
         # --- Ensure model ready ---
         ready = await self.ensure_ready()
         if not ready:
-            if active_skill:
-                return ClassifierPrediction(
-                    skill_id=active_skill,
+            if active_tool:
+                return ToolPrediction(
+                    tool_id=active_tool,
                     confidence=0.7,
                     probabilities={},
                     method="continuity_fallback",
-                    active_skill=active_skill,
+                    active_tool=active_tool,
                     latency_ms=(time.time() - t0) * 1000,
                 )
-            return ClassifierPrediction(
-                skill_id=None,
+            return ToolPrediction(
+                tool_id=None,
                 confidence=0.0,
                 probabilities={},
                 method="model_unavailable",
@@ -461,50 +684,50 @@ class SkillClassifier:
 
         prob_dict: Dict[str, float] = {}
         for idx, prob in enumerate(proba):
-            skill = IDX_TO_SKILL.get(idx)
+            skill = IDX_TO_TOOL.get(idx)
             label = skill if skill else "none"
-            if skill is None or skill in enabled_skill_ids:
+            if skill is None or skill in enabled_tool_ids:
                 prob_dict[label] = round(float(prob), 4)
 
         best_skill = None
         best_prob = prob_dict.get("none", 0.0)
-        for skill_id in enabled_skill_ids:
-            sp = prob_dict.get(skill_id, 0.0)
+        for tid in enabled_tool_ids:
+            sp = prob_dict.get(tid, 0.0)
             if sp > best_prob:
                 best_prob = sp
-                best_skill = skill_id
+                best_skill = tid
 
         # --- Continuity boost ---
         CONTINUITY_BOOST = 0.30
         CONTINUITY_MIN = 0.10
 
-        if active_skill and active_skill in prob_dict:
-            active_prob = prob_dict[active_skill]
+        if active_tool and active_tool in prob_dict:
+            active_prob = prob_dict[active_tool]
             if active_prob >= CONTINUITY_MIN:
                 boosted = min(active_prob + CONTINUITY_BOOST, 0.99)
                 if boosted > best_prob:
-                    best_skill = active_skill
+                    best_skill = active_tool
                     best_prob = boosted
-                    prob_dict[active_skill] = round(boosted, 4)
+                    prob_dict[active_tool] = round(boosted, 4)
 
         latency = (time.time() - t0) * 1000
 
-        result = ClassifierPrediction(
-            skill_id=best_skill,
+        result = ToolPrediction(
+            tool_id=best_skill,
             confidence=best_prob,
             probabilities=prob_dict,
-            method="continuity" if (best_skill == active_skill and active_skill is not None) else "classifier",
-            active_skill=active_skill,
+            method="continuity" if (best_skill == active_tool and active_tool is not None) else "classifier",
+            active_tool=active_tool,
             latency_ms=latency,
         )
 
         # --- Active learning: queue sample for DB ---
         self._pending_samples.append({
             "msg": message[:500],
-            "predicted": result.skill_id,
+            "predicted": result.tool_id,
             "conf": round(result.confidence, 4),
             "method": result.method,
-            "active": result.active_skill,
+            "active": result.active_tool,
             "probs": {k: v for k, v in sorted(prob_dict.items(), key=lambda x: -x[1])[:5]},
             "intents": (intents or [])[:3],
             "user_id": user_id,
@@ -513,8 +736,8 @@ class SkillClassifier:
             asyncio.create_task(self._flush_to_db())
 
         logger.info(
-            f"[SkillClassifier] skill={result.skill_id} conf={result.confidence:.3f} "
-            f"method={result.method} active={active_skill} "
+            f"[ToolClassifier] tool={result.tool_id} conf={result.confidence:.3f} "
+            f"method={result.method} active={active_tool} "
             f"latency={latency:.1f}ms msg={message[:60]!r}"
         )
 
@@ -552,26 +775,26 @@ class SkillClassifier:
 
 
 # Global singleton
-skill_classifier = SkillClassifier()
+tool_classifier = ToolClassifier()
 
 
-async def preload_skill_classifier() -> None:
+async def preload_tool_classifier() -> None:
     """
     Call at app startup (lifespan) to pre-train/load the classifier.
     Loads from PostgreSQL — no filesystem dependency.
     """
     t0 = time.time()
-    logger.info("[SkillClassifier] Preloading at startup...")
-    ok = await skill_classifier.ensure_ready()
+    logger.info("[ToolClassifier] Preloading at startup...")
+    ok = await tool_classifier.ensure_ready()
     elapsed = (time.time() - t0) * 1000
     if ok:
-        stats = await skill_classifier.get_stats()
+        stats = await tool_classifier.get_stats()
         logger.info(
-            f"[SkillClassifier] Preload complete in {elapsed:.0f}ms — "
+            f"[ToolClassifier] Preload complete in {elapsed:.0f}ms — "
             f"v{stats['model_version']}, "
             f"samples={stats['train_stats'].get('n_samples', 0)}, "
             f"accuracy={stats['train_stats'].get('train_accuracy', 0)}, "
             f"active_in_db={stats['active_samples_in_db']}"
         )
     else:
-        logger.warning(f"[SkillClassifier] Preload FAILED in {elapsed:.0f}ms")
+        logger.warning(f"[ToolClassifier] Preload FAILED in {elapsed:.0f}ms")

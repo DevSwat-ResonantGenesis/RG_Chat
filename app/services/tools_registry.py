@@ -1,18 +1,18 @@
 """
-Skills Registry Service
+Tools Registry Service
 ========================
 
-Multi-Skill system for Resonant Chat. Skills are modular capabilities
+Multi-Tool system for Resonant Chat. Tools are modular capabilities
 that can be connected/disconnected to the chat pipeline via API.
 
-Each skill:
+Each tool:
 - Has a unique ID, name, description, icon
 - Can be enabled/disabled per user
 - Can execute actions on behalf of the user
 - Can be routed to specific agents/teams
 - Returns structured results to the chat
 
-Built-in skills:
+Built-in tools:
 - code_visualizer: Analyze codebases, trace pipelines, navigate code
 - web_search: Search the web for information
 - image_generation: Generate images with DALL-E
@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-class SkillCategory(str, Enum):
+class ToolCategory(str, Enum):
     ANALYSIS = "analysis"
     SEARCH = "search"
     GENERATION = "generation"
@@ -41,33 +41,34 @@ class SkillCategory(str, Enum):
 
 
 @dataclass
-class SkillDefinition:
-    """Definition of an available skill."""
+class ToolDefinition:
+    """Definition of an available tool."""
     id: str
     name: str
     description: str
     icon: str  # SVG icon name or emoji
-    category: SkillCategory
+    category: ToolCategory
     agent_type: Optional[str] = None  # Maps to agent type for routing
     team_id: Optional[str] = None  # Maps to team for routing
     service_url: Optional[str] = None  # Internal service URL
     capabilities: List[str] = field(default_factory=list)
+    trigger_keywords: List[str] = field(default_factory=list)
     credit_cost: int = 0
     requires_api_key: Optional[str] = None  # Provider key needed
     is_default: bool = False  # Enabled by default for new users
 
 
 # ============================================
-# BUILT-IN SKILL DEFINITIONS
+# BUILT-IN TOOL DEFINITIONS
 # ============================================
 
-BUILTIN_SKILLS: Dict[str, SkillDefinition] = {
-    "code_visualizer": SkillDefinition(
+BUILTIN_TOOLS: Dict[str, ToolDefinition] = {
+    "code_visualizer": ToolDefinition(
         id="code_visualizer",
         name="Code Visualizer",
         description="Analyze codebases, trace execution pipelines, navigate code structure, generate reports, run governance checks. Upload or connect a GitHub repo to analyze.",
         icon="code",
-        category=SkillCategory.ANALYSIS,
+        category=ToolCategory.ANALYSIS,
         agent_type="code",
         service_url=os.getenv("AST_ANALYSIS_SERVICE_URL") or os.getenv("CODE_VISUALIZER_URL", "http://rg_ast_analysis:8000"),
         capabilities=[
@@ -85,58 +86,58 @@ BUILTIN_SKILLS: Dict[str, SkillDefinition] = {
         credit_cost=200,
         is_default=True,
     ),
-    "web_search": SkillDefinition(
+    "web_search": ToolDefinition(
         id="web_search",
         name="Web Search",
         description="Search the web for real-time information, news, documentation, and answers.",
         icon="search",
-        category=SkillCategory.SEARCH,
+        category=ToolCategory.SEARCH,
         agent_type="research",
         capabilities=["web_search", "news_search"],
         credit_cost=50,
         requires_api_key="tavily",
         is_default=True,
     ),
-    "image_generation": SkillDefinition(
+    "image_generation": ToolDefinition(
         id="image_generation",
         name="Image Generation",
         description="Generate images using DALL-E 3. Describe what you want and get AI-generated images.",
         icon="image",
-        category=SkillCategory.GENERATION,
+        category=ToolCategory.GENERATION,
         capabilities=["generate_image", "edit_image"],
         credit_cost=100,
         requires_api_key="openai",
         is_default=True,
     ),
-    "memory_search": SkillDefinition(
+    "memory_search": ToolDefinition(
         id="memory_search",
         name="Memory Search",
         description="Deep search through your conversation history, memories, and knowledge base.",
         icon="brain",
-        category=SkillCategory.MEMORY,
+        category=ToolCategory.MEMORY,
         agent_type="research",
         service_url=os.getenv("MEMORY_SERVICE_URL", "http://memory_service:8000"),
         capabilities=["search_memories", "search_conversations"],
         credit_cost=20,
         is_default=True,
     ),
-    "memory_library": SkillDefinition(
+    "memory_library": ToolDefinition(
         id="memory_library",
         name="Memory Library",
         description="Open your unified memory library with long-term memory, anchors, and recent context.",
         icon="memory",
-        category=SkillCategory.MEMORY,
+        category=ToolCategory.MEMORY,
         agent_type="memory",
         capabilities=["open_memory_panel", "browse_memory_library", "memory_timeline"],
         credit_cost=10,
         is_default=True,
     ),
-    "agent_architect": SkillDefinition(
+    "agent_architect": ToolDefinition(
         id="agent_architect",
         name="Agent Architect",
         description="Autonomous agent builder & orchestrator. Designs, builds, configures, runs, diagnoses, and manages agents using a ReAct loop with real tools, persistent memory, and SSE streaming.",
         icon="agents",
-        category=SkillCategory.UTILITY,
+        category=ToolCategory.UTILITY,
         agent_type="orchestration",
         service_url=os.getenv("AGENT_ARCHITECT_URL", "http://agent_architect:8000"),
         capabilities=["build_agent", "run_agent", "modify_agent", "delete_agent",
@@ -145,78 +146,78 @@ BUILTIN_SKILLS: Dict[str, SkillDefinition] = {
         credit_cost=25,
         is_default=True,
     ),
-    "state_physics": SkillDefinition(
+    "state_physics": ToolDefinition(
         id="state_physics",
         name="State Physics",
         description="Open the State Physics visualization for real-time state-space and universe analytics.",
         icon="state_physics",
-        category=SkillCategory.ANALYSIS,
+        category=ToolCategory.ANALYSIS,
         agent_type="analysis",
         capabilities=["open_state_physics_panel", "state_metrics", "state_visualization"],
         credit_cost=20,
         is_default=True,
     ),
-    "ide_workspace": SkillDefinition(
+    "ide_workspace": ToolDefinition(
         id="ide_workspace",
         name="IDE Workspace",
         description="Open IDE workspace tools for coding, terminal execution, and live preview.",
         icon="ide",
-        category=SkillCategory.UTILITY,
+        category=ToolCategory.UTILITY,
         agent_type="code",
         capabilities=["open_ide_panel", "workspace_terminal", "workspace_preview"],
         credit_cost=20,
         is_default=True,
     ),
-    "rabbit_post": SkillDefinition(
+    "rabbit_post": ToolDefinition(
         id="rabbit_post",
         name="Rabbit Post",
         description="Create a post on Rabbit (Reddit-like community). Specify title, body, and community.",
         icon="rabbit",
-        category=SkillCategory.UTILITY,
+        category=ToolCategory.UTILITY,
         service_url=os.getenv("RABBIT_API_URL", "http://rabbit_api_service:8000"),
         capabilities=["create_rabbit_post", "list_rabbit_communities"],
         credit_cost=10,
         is_default=True,
     ),
-    "google_drive": SkillDefinition(
+    "google_drive": ToolDefinition(
         id="google_drive",
         name="Google Drive",
         description="Access your Google Drive: list files, search documents, read file contents, and create new files.",
         icon="folder",
-        category=SkillCategory.UTILITY,
+        category=ToolCategory.UTILITY,
         capabilities=["list_files", "search_files", "read_file", "create_file"],
         credit_cost=15,
         requires_api_key="google-drive",
         is_default=True,
     ),
-    "google_calendar": SkillDefinition(
+    "google_calendar": ToolDefinition(
         id="google_calendar",
         name="Google Calendar",
         description="Access your Google Calendar: list upcoming events, create events, check schedule, and manage meetings.",
         icon="calendar",
-        category=SkillCategory.UTILITY,
+        category=ToolCategory.UTILITY,
         capabilities=["list_events", "create_event", "check_availability"],
         credit_cost=15,
         requires_api_key="google-calendar",
         is_default=True,
     ),
-    "figma": SkillDefinition(
+    "figma": ToolDefinition(
         id="figma",
         name="Figma",
         description="Access your Figma projects: list files, get design details, inspect components, and export assets.",
         icon="design",
-        category=SkillCategory.UTILITY,
+        category=ToolCategory.UTILITY,
         capabilities=["list_files", "get_file", "list_components", "get_styles"],
         credit_cost=15,
         requires_api_key="figma",
         is_default=True,
     ),
-    "sigma": SkillDefinition(
+    "sigma": ToolDefinition(
         id="sigma",
         name="Sigma Computing",
         description="Access your Sigma Computing dashboards and workbooks: list reports, view analytics, query data.",
         icon="chart",
-        category=SkillCategory.ANALYSIS,
+        category=ToolCategory.ANALYSIS,
         capabilities=["list_workbooks", "get_workbook", "query_data"],
         credit_cost=15,
         requires_api_key="sigma",
@@ -225,24 +226,24 @@ BUILTIN_SKILLS: Dict[str, SkillDefinition] = {
 }
 
 
-class SkillsRegistry:
+class ToolsRegistry:
     """
-    Registry for managing available skills and user skill preferences.
+    Registry for managing available tools and user tool preferences.
 
-    Skills can be enabled/disabled per user. The registry tracks which
-    skills are active and routes requests to the appropriate skill handler.
+    Tools can be enabled/disabled per user. The registry tracks which
+    tools are active and routes requests to the appropriate tool handler.
     """
 
     _MAX_USER_CACHE = 500  # evict oldest half when exceeded
 
     def __init__(self):
-        self.skills: Dict[str, SkillDefinition] = dict(BUILTIN_SKILLS)
+        self.tools: Dict[str, ToolDefinition] = dict(BUILTIN_TOOLS)
         # Per-user enabled skills: {user_id: {skill_id: True/False}}
         # Uses OrderedDict for LRU eviction to prevent unbounded memory growth
-        self._user_skills: OrderedDict[str, Dict[str, bool]] = OrderedDict()
+        self._user_tools: OrderedDict[str, Dict[str, bool]] = OrderedDict()
 
-    def list_skills(self) -> List[Dict[str, Any]]:
-        """List all available skills with their definitions."""
+    def list_tools(self) -> List[Dict[str, Any]]:
+        """List all available tools with their definitions."""
         return [
             {
                 "id": s.id,
@@ -255,78 +256,78 @@ class SkillsRegistry:
                 "requires_api_key": s.requires_api_key,
                 "is_default": s.is_default,
             }
-            for s in self.skills.values()
+            for s in self.tools.values()
         ]
 
-    def get_skill(self, skill_id: str) -> Optional[SkillDefinition]:
-        """Get a skill definition by ID."""
-        return self.skills.get(skill_id)
+    def get_tool(self, tool_id: str) -> Optional[ToolDefinition]:
+        """Get a tool definition by ID."""
+        return self.tools.get(tool_id)
 
-    def get_user_skills(self, user_id: str) -> Dict[str, bool]:
-        """Get enabled/disabled status of all skills for a user."""
-        if user_id not in self._user_skills:
+    def get_user_tools(self, user_id: str) -> Dict[str, bool]:
+        """Get enabled/disabled status of all tools for a user."""
+        if user_id not in self._user_tools:
             # Evict oldest entries if cache is too large
-            if len(self._user_skills) >= self._MAX_USER_CACHE:
+            if len(self._user_tools) >= self._MAX_USER_CACHE:
                 evict_count = self._MAX_USER_CACHE // 2
                 for _ in range(evict_count):
-                    self._user_skills.popitem(last=False)
-                logger.info(f"Evicted {evict_count} stale user skill caches")
+                    self._user_tools.popitem(last=False)
+                logger.info(f"Evicted {evict_count} stale user tool caches")
             # Initialize with defaults
-            self._user_skills[user_id] = {
-                sid: s.is_default for sid, s in self.skills.items()
+            self._user_tools[user_id] = {
+                sid: s.is_default for sid, s in self.tools.items()
             }
         else:
             # Move to end (most recently used)
-            self._user_skills.move_to_end(user_id)
-        return self._user_skills[user_id]
+            self._user_tools.move_to_end(user_id)
+        return self._user_tools[user_id]
 
-    def get_enabled_skills(self, user_id: str) -> List[SkillDefinition]:
-        """Get list of enabled skills for a user."""
-        user_prefs = self.get_user_skills(user_id)
+    def get_enabled_tools(self, user_id: str) -> List[ToolDefinition]:
+        """Get list of enabled tools for a user."""
+        user_prefs = self.get_user_tools(user_id)
         return [
-            self.skills[sid]
+            self.tools[sid]
             for sid, enabled in user_prefs.items()
-            if enabled and sid in self.skills
+            if enabled and sid in self.tools
         ]
 
-    def enable_skill(self, user_id: str, skill_id: str) -> bool:
-        """Enable a skill for a user."""
-        if skill_id not in self.skills:
+    def enable_tool(self, user_id: str, tool_id: str) -> bool:
+        """Enable a tool for a user."""
+        if tool_id not in self.tools:
             return False
-        if user_id not in self._user_skills:
-            self._user_skills[user_id] = {
-                sid: s.is_default for sid, s in self.skills.items()
+        if user_id not in self._user_tools:
+            self._user_tools[user_id] = {
+                sid: s.is_default for sid, s in self.tools.items()
             }
-        self._user_skills[user_id][skill_id] = True
-        logger.info(f"Skill {skill_id} enabled for user {user_id}")
+        self._user_tools[user_id][tool_id] = True
+        logger.info(f"Tool {tool_id} enabled for user {user_id}")
         return True
 
-    def disable_skill(self, user_id: str, skill_id: str) -> bool:
-        """Disable a skill for a user."""
-        if skill_id not in self.skills:
+    def disable_tool(self, user_id: str, tool_id: str) -> bool:
+        """Disable a tool for a user."""
+        if tool_id not in self.tools:
             return False
-        if user_id not in self._user_skills:
-            self._user_skills[user_id] = {
-                sid: s.is_default for sid, s in self.skills.items()
+        if user_id not in self._user_tools:
+            self._user_tools[user_id] = {
+                sid: s.is_default for sid, s in self.tools.items()
             }
-        self._user_skills[user_id][skill_id] = False
-        logger.info(f"Skill {skill_id} disabled for user {user_id}")
+        self._user_tools[user_id][tool_id] = False
+        logger.info(f"Tool {tool_id} disabled for user {user_id}")
         return True
 
 
-    def register_skill(self, skill: SkillDefinition) -> None:
-        """Register a new skill (for plugins/extensions)."""
-        self.skills[skill.id] = skill
-        logger.info(f"Registered skill: {skill.id}")
+    def register_tool(self, tool: ToolDefinition) -> None:
+        """Register a new tool (for plugins/extensions)."""
+        self.tools[tool.id] = tool
+        logger.info(f"Registered tool: {tool.id}")
 
-    def unregister_skill(self, skill_id: str) -> bool:
-        """Unregister a skill."""
-        if skill_id in self.skills:
-            del self.skills[skill_id]
-            logger.info(f"Unregistered skill: {skill_id}")
+    def unregister_tool(self, tool_id: str) -> bool:
+        """Unregister a tool."""
+        if tool_id in self.tools:
+            del self.tools[tool_id]
+            logger.info(f"Unregistered tool: {tool_id}")
             return True
         return False
 
 
 # Global singleton
-skills_registry = SkillsRegistry()
+tools_registry = ToolsRegistry()

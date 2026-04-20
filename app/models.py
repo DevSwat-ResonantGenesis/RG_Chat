@@ -169,9 +169,10 @@ class KnowledgeBaseEntryDB(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-class SkillClassifierModel(Base):
-    """Persisted trained ML classifier for skill routing.
-    Stored in DB so it survives container restarts and gets smarter over time."""
+class ToolClassifierModel(Base):
+    """Persisted trained ML classifier for tool routing.
+    Stored in DB so it survives container restarts and gets smarter over time.
+    NOTE: table name kept as skill_classifier_models for backward compat (no migration needed)."""
     __tablename__ = "skill_classifier_models"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -185,17 +186,18 @@ class SkillClassifierModel(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-class SkillActiveSample(Base):
+class ToolActiveSample(Base):
     """Active learning sample collected from production usage.
-    Accumulates over time for periodic retraining."""
+    Accumulates over time for periodic retraining.
+    NOTE: table name kept as skill_active_samples for backward compat (no migration needed)."""
     __tablename__ = "skill_active_samples"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_message = Column(Text, nullable=False)
-    predicted_skill = Column(String(100), nullable=True)  # None = general chat
+    predicted_tool = Column("predicted_skill", String(100), nullable=True)  # None = general chat
     confidence = Column(Float, nullable=False)
     method = Column(String(50), nullable=False)  # classifier, continuity
-    active_skill = Column(String(100), nullable=True)
+    active_tool = Column("active_skill", String(100), nullable=True)
     probabilities = Column(JSON, default={})
     intents = Column(JSON, default=[])
     user_id = Column(String(255), nullable=True)

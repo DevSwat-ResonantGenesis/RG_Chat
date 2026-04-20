@@ -98,10 +98,10 @@ from ..services.credit_deduction import deduct_credits
 from ..services.output_correction import output_correction
 # Enhanced Metrics Calculation (NLP + Semantic Analysis)
 from ..services.enhanced_metrics import enhanced_metrics_calculator, EnhancedMetricsResult
-# Skills System (Multi-Skill Mode)
-from ..services.skills_registry import skills_registry
-from ..services.skill_executor import skill_executor
-from ..services.skill_classifier import skill_classifier
+# Tools System (Neural Tool Classification)
+from ..services.tools_registry import tools_registry
+from ..services.tool_executor import tool_executor
+from ..services.tool_classifier import tool_classifier
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,7 @@ class SendMessageRequest(BaseModel):
     images: Optional[List[Dict[str, Any]]] = None  # Base64 images for vision models: [{type, data, name}]
     code_selection: Optional[Dict[str, Any]] = None
     isolate_anchors: Optional[bool] = False
-    enabled_skill_ids: Optional[List[str]] = None  # Frontend skill toggles — overrides server defaults when provided
+    enabled_tool_ids: Optional[List[str]] = None  # Frontend tool toggles — overrides server defaults when provided
     # IDE Chat Integration
     execute_mode: Optional[bool] = False  # When True: skip explanations, return structured code changes
     project_context: Optional[Dict[str, Any]] = None  # IDE project context (files, structure)
@@ -832,14 +832,14 @@ You are DevSwat Chat, a specialized AI with persistent memory (Hash Sphere), web
 
 <capabilities>
 - **Web search**: Real-time via Tavily/DuckDuckGo. Results appear in your context — use them as primary source of truth. Never say "I can't access the internet" when search results are present.
-- **Code Visualizer**: AST analysis of repositories. Output appears as "SKILL OUTPUT (Code Visualizer):". If no skill output is present, the scan did NOT run — never fabricate results.
-- **Agent Architect**: Create, build, run, diagnose AI agents. Output appears as "SKILL OUTPUT (Agent Architect):". If no skill output is present, the tool did NOT run — never fabricate agent data.
+- **Code Visualizer**: AST analysis of repositories. Output appears as "TOOL OUTPUT (Code Visualizer):". If no tool output is present, the scan did NOT run — never fabricate results.
+- **Agent Architect**: Create, build, run, diagnose AI agents. Output appears as "TOOL OUTPUT (Agent Architect):". If no tool output is present, the tool did NOT run — never fabricate agent data.
 - **Split view panel**: Live tool output display.
 - **Cannot**: generate images/videos/audio, or browse websites directly (but search results are fetched for you).
 </capabilities>
 
 <anti_hallucination>
-- If no "SKILL OUTPUT" section exists in your context for a tool, it did NOT run. Say so and offer to retry. Never fabricate scan results, statistics, endpoints, IDs, or analysis data.
+- If no "TOOL OUTPUT" section exists in your context for a tool, it did NOT run. Say so and offer to retry. Never fabricate scan results, statistics, endpoints, IDs, or analysis data.
 - Never invent facts, sources, metrics, IDs, links, or tool results. Prefer "I don't know" over guessing.
 </anti_hallucination>
 
@@ -1338,51 +1338,51 @@ async def send_message(
         )
 
     # ============================================
-    # STEP 7.9: NEURAL SKILL DETECTION (Intelligence Stack)
+    # STEP 7.9: NEURAL TOOL DETECTION (Intelligence Stack)
     # ============================================
-    # Layer 1: Active skill continuity (from meta_data.toolResults)
+    # Layer 1: Active tool continuity (from meta_data.toolResults)
     # Layer 2: Neural semantic matching (sentence-transformer embeddings)
     # Layer 3: Intent + narrative signals (boost/penalty)
     # No more blind LLM prompt — pure neural semantic understanding.
-    detected_skill = None
-    skill_result = None
+    detected_tool = None
+    tool_result = None
     web_search_needed = False
     image_gen_needed = False
     code_visualizer_intent = False
     architect_intent = False
 
-    if request_body.enabled_skill_ids is not None and len(request_body.enabled_skill_ids) > 0:
-        enabled_skill_ids = set(request_body.enabled_skill_ids)
+    if request_body.enabled_tool_ids is not None and len(request_body.enabled_tool_ids) > 0:
+        enabled_tool_ids = set(request_body.enabled_tool_ids)
     else:
-        enabled_skill_ids = {s.id for s in skills_registry.get_enabled_skills(user_id)}
+        enabled_tool_ids = {s.id for s in tools_registry.get_enabled_tools(user_id)}
 
-    if not enabled_skill_ids:
-        from ..services.skill_classifier import ALL_SKILLS
-        enabled_skill_ids = {s for s in ALL_SKILLS if s is not None}
-        logger.warning(f"[SKILL-7.9] enabled_skill_ids empty, falling back to all {len(enabled_skill_ids)} skills")
+    if not enabled_tool_ids:
+        from ..services.tool_classifier import ALL_TOOLS
+        enabled_tool_ids = {s for s in ALL_TOOLS if s is not None}
+        logger.warning(f"[TOOL-7.9] enabled_tool_ids empty, falling back to all {len(enabled_tool_ids)} tools")
 
     if request_body.teamId:
-        print(f"[SKILL-7.9] BYPASSED — user selected team {request_body.teamId}", flush=True)
+        print(f"[TOOL-7.9] BYPASSED — user selected team {request_body.teamId}", flush=True)
     else:
         try:
             msg_intents = intent_engine.extract(safe_user_message)
 
-            prediction = await skill_classifier.predict(
+            prediction = await tool_classifier.predict(
                 message=safe_user_message,
-                enabled_skill_ids=enabled_skill_ids,
+                enabled_tool_ids=enabled_tool_ids,
                 recent_messages=recent_messages[-6:] if recent_messages else None,
                 intents=msg_intents,
                 user_id=user_id,
             )
 
-            detected_tool_id = prediction.skill_id
+            detected_tool_id = prediction.tool_id
             if detected_tool_id:
                 if detected_tool_id == "web_search":
                     web_search_needed = True
                 elif detected_tool_id == "image_generation":
                     image_gen_needed = True
                 else:
-                    detected_skill = skills_registry.get_skill(detected_tool_id)
+                    detected_tool = tools_registry.get_tool(detected_tool_id)
                 code_visualizer_intent = (detected_tool_id == "code_visualizer")
                 architect_intent = (detected_tool_id == "agent_architect")
                 if architect_intent and recent_messages:
@@ -1392,13 +1392,13 @@ async def send_message(
                         if role == "assistant" and content:
                             _prev_assistant_agent_content = content
                             break
-            print(f"[SKILL-7.9] Classifier: skill={detected_tool_id or 'None'} "
+            print(f"[TOOL-7.9] Classifier: tool={detected_tool_id or 'None'} "
                   f"conf={prediction.confidence:.3f} method={prediction.method} "
-                  f"active={prediction.active_skill} latency={prediction.latency_ms:.1f}ms "
+                  f"active={prediction.active_tool} latency={prediction.latency_ms:.1f}ms "
                   f"intents={msg_intents[:2]} probs={dict(list(prediction.probabilities.items())[:3])} "
                   f"msg={safe_user_message[:60]!r}", flush=True)
         except Exception as e:
-            logger.warning(f"Skill classifier failed: {e}", exc_info=True)
+            logger.warning(f"Tool classifier failed: {e}", exc_info=True)
 
     # ============================================
     # STEP 7.6: CHECK RESPONSE CACHE
@@ -1472,12 +1472,12 @@ async def send_message(
             logger.warning(f"Image generation failed: {e}")
 
     # ============================================
-    # STEP 7.95: SKILL EXECUTION (for non-web/non-image skills detected by LLM)
+    # STEP 7.95: TOOL EXECUTION (for non-web/non-image tools detected by classifier)
     # ============================================
-    if detected_skill:
+    if detected_tool:
         try:
-            print(f"[SKILL-7.95] EXECUTING: {detected_skill.id} ({detected_skill.name})", flush=True)
-            skill_context = {
+            print(f"[TOOL-7.95] EXECUTING: {detected_tool.id} ({detected_tool.name})", flush=True)
+            tool_context = {
                 "analysis_id": (request_body.project_context or {}).get("projectId", ""),
                 "chat_id": chat_id,
                 "unlimited_credits": unlimited_credits,
@@ -1487,39 +1487,39 @@ async def send_message(
                 "user_api_keys": user_api_keys or {},
             }
             if _prev_assistant_agent_content:
-                skill_context["prev_assistant_content"] = _prev_assistant_agent_content
+                tool_context["prev_assistant_content"] = _prev_assistant_agent_content
             # Pass recent conversation history for agent_architect context
-            if detected_skill.id == "agent_architect" and recent_messages:
-                skill_context["recent_messages"] = [
+            if detected_tool.id == "agent_architect" and recent_messages:
+                tool_context["recent_messages"] = [
                     {"role": (m.role if hasattr(m, "role") else m.get("role", "")),
                      "content": (m.content if hasattr(m, "content") else m.get("content", ""))[:500]}
                     for m in recent_messages[-8:]
                 ]
             github_token = _extract_github_token_from_user_keys(user_api_keys)
             if github_token:
-                skill_context["github_token"] = github_token
-            skill_result = await skill_executor.execute(
-                skill=detected_skill,
+                tool_context["github_token"] = github_token
+            tool_result = await tool_executor.execute(
+                tool=detected_tool,
                 message=raw_user_message,
                 user_id=user_id,
                 user_role=user_role,
                 is_superuser=is_superuser,
-                context=skill_context,
+                context=tool_context,
             )
-            print(f"[SKILL-7.95] RESULT: success={skill_result.get('success') if skill_result else 'None'}, "
-                  f"delegate={skill_result.get('delegate_to_pipeline') if skill_result else 'N/A'}, "
-                  f"summary_len={len(skill_result.get('summary', '')) if skill_result else 0}, "
-                  f"error={skill_result.get('error', '')[:100] if skill_result else 'N/A'}", flush=True)
-            if skill_result and skill_result.get("success"):
-                skill_summary = skill_result.get("summary", "")
-                if skill_summary and not skill_result.get("delegate_to_pipeline"):
+            print(f"[TOOL-7.95] RESULT: success={tool_result.get('success') if tool_result else 'None'}, "
+                  f"delegate={tool_result.get('delegate_to_pipeline') if tool_result else 'N/A'}, "
+                  f"summary_len={len(tool_result.get('summary', '')) if tool_result else 0}, "
+                  f"error={tool_result.get('error', '')[:100] if tool_result else 'N/A'}", flush=True)
+            if tool_result and tool_result.get("success"):
+                tool_summary = tool_result.get("summary", "")
+                if tool_summary and not tool_result.get("delegate_to_pipeline"):
                     context_messages.append({
                         "role": "system",
-                        "content": f"SKILL OUTPUT ({detected_skill.name}):\n{skill_summary}\n\nUse this data to answer the user's question. Present the information clearly.",
+                        "content": f"TOOL OUTPUT ({detected_tool.name}):\n{tool_summary}\n\nUse this data to answer the user's question. Present the information clearly.",
                     })
-                    logger.info(f"\U0001f527 Skill output added to context: {len(skill_summary)} chars")
+                    logger.info(f"\U0001f527 Tool output added to context: {len(tool_summary)} chars")
         except Exception as e:
-            logger.warning(f"Skill execution failed: {e}")
+            logger.warning(f"Tool execution failed: {e}")
 
     # ============================================
     # STEP 8: Agent Debate/Spawn (Patches #40, #41)
@@ -1530,23 +1530,23 @@ async def send_message(
     provider = "unknown"
 
     # Force tool-grounded reply for Code Visualizer to avoid synthetic/hallucinated summaries.
-    if not execute_mode and detected_skill and detected_skill.id == "code_visualizer" and skill_result:
-        skill_summary = (skill_result.get("summary") or "").strip()
-        if skill_result.get("success"):
-            response_text = skill_summary or "Code Visualizer completed successfully."
+    if not execute_mode and detected_tool and detected_tool.id == "code_visualizer" and tool_result:
+        tool_summary = (tool_result.get("summary") or "").strip()
+        if tool_result.get("success"):
+            response_text = tool_summary or "Code Visualizer completed successfully."
             provider = "tool_code_visualizer"
             agent_type = "code"
         else:
-            error_detail = (skill_result.get("error") or "Code Visualizer request failed.").strip()
+            error_detail = (tool_result.get("error") or "Code Visualizer request failed.").strip()
             response_text = f"Code Visualizer failed: {error_detail}"
             provider = "tool_code_visualizer_error"
             agent_type = "code"
 
-    if not execute_mode and detected_skill and detected_skill.id == "code_visualizer" and not skill_result:
+    if not execute_mode and detected_tool and detected_tool.id == "code_visualizer" and not tool_result:
         logger.warning("Code Visualizer was detected but no tool result was returned; forcing failure response.")
-        skill_result = {
-            "skill_id": "code_visualizer",
-            "skill_name": "Code Visualizer",
+        tool_result = {
+            "tool_id": "code_visualizer",
+            "tool_name": "Code Visualizer",
             "success": False,
             "action": "scan_github",
             "error": "Code Visualizer did not execute. No scan was run.",
@@ -1559,13 +1559,13 @@ async def send_message(
         not execute_mode
         and response_text is None
         and code_visualizer_intent
-        and "code_visualizer" not in enabled_skill_ids
-        and (not detected_skill or detected_skill.id != "code_visualizer")
+        and "code_visualizer" not in enabled_tool_ids
+        and (not detected_tool or detected_tool.id != "code_visualizer")
     ):
-        logger.info("Code Visualizer intent detected but skill is disabled/not selected; returning tool-grounded disabled response.")
-        skill_result = {
-            "skill_id": "code_visualizer",
-            "skill_name": "Code Visualizer",
+        logger.info("Code Visualizer intent detected but tool is disabled/not selected; returning tool-grounded disabled response.")
+        tool_result = {
+            "tool_id": "code_visualizer",
+            "tool_name": "Code Visualizer",
             "success": False,
             "action": "scan_github",
             "error": "Code Visualizer skill is disabled, so no scan was run.",
@@ -1580,15 +1580,15 @@ async def send_message(
 
     # Force tool-grounded reply for ALL Agent Architect operations (including create).
     # Delegating create ops to the LLM caused hallucinated fake URLs/configs.
-    if not execute_mode and detected_skill and detected_skill.id == "agent_architect" and skill_result:
-        operation = skill_result.get("operation", "")
-        if skill_result.get("success"):
-            skill_summary = (skill_result.get("summary") or "").strip()
-            response_text = skill_summary or "Agent Architect operation completed successfully."
+    if not execute_mode and detected_tool and detected_tool.id == "agent_architect" and tool_result:
+        operation = tool_result.get("operation", "")
+        if tool_result.get("success"):
+            tool_summary = (tool_result.get("summary") or "").strip()
+            response_text = tool_summary or "Agent Architect operation completed successfully."
             provider = "tool_agent_architect"
             agent_type = "agents"
         else:
-            error_detail = (skill_result.get("error") or "Agent Architect request failed.").strip()
+            error_detail = (tool_result.get("error") or "Agent Architect request failed.").strip()
             response_text = f"Agent Architect error: {error_detail}"
             provider = "tool_agent_architect_error"
             agent_type = "agents"
@@ -1596,20 +1596,20 @@ async def send_message(
 
     # Force tool-grounded reply for integration skill failures (google_calendar, figma, google_drive, sigma).
     # Without this, failed integration skills silently fall back to LLM which hallucinates.
-    _integration_skill_ids = {"figma", "google_drive", "google_calendar", "sigma"}
+    _integration_tool_ids = {"figma", "google_drive", "google_calendar", "sigma"}
     if (
         not execute_mode
         and response_text is None
-        and detected_skill
-        and detected_skill.id in _integration_skill_ids
-        and skill_result
-        and not skill_result.get("success")
+        and detected_tool
+        and detected_tool.id in _integration_tool_ids
+        and tool_result
+        and not tool_result.get("success")
     ):
-        error_detail = (skill_result.get("error") or f"{detected_skill.name} request failed.").strip()
-        response_text = f"{detected_skill.name} error: {error_detail}"
-        provider = f"tool_{detected_skill.id}_error"
+        error_detail = (tool_result.get("error") or f"{detected_tool.name} request failed.").strip()
+        response_text = f"{detected_tool.name} error: {error_detail}"
+        provider = f"tool_{detected_tool.id}_error"
         agent_type = "integration"
-        logger.info(f"Integration skill {detected_skill.id} failed, returning error directly: {error_detail[:120]}")
+        logger.info(f"Integration tool {detected_tool.id} failed, returning error directly: {error_detail[:120]}")
     if not execute_mode and response_text is None and time_tool_results and _is_time_only_query(safe_user_message):
         tr = time_tool_results[0].result or {}
         local_str = tr.get("local") or tr.get("iso")
@@ -1686,7 +1686,7 @@ async def send_message(
         kw in (safe_user_message or "").lower() for kw in _code_analysis_keywords
     )
     _cv_tool_ran = (
-        detected_skill and detected_skill.id == "code_visualizer" and skill_result and skill_result.get("success")
+        detected_tool and detected_tool.id == "code_visualizer" and tool_result and tool_result.get("success")
     )
     if _user_asking_code_analysis and not _cv_tool_ran and response_text is None:
         context_messages.append({
@@ -1725,7 +1725,7 @@ async def send_message(
         kw in (safe_user_message or "").lower() for kw in _agent_creation_keywords
     )
     _architect_tool_ran = (
-        detected_skill and detected_skill.id == "agent_architect" and skill_result
+        detected_tool and detected_tool.id == "agent_architect" and tool_result
     )
     if _user_asking_agent_creation and not _architect_tool_ran and response_text is None:
         context_messages.append({
@@ -2343,24 +2343,24 @@ async def send_message(
     tool_results.extend(_extract_navigation_tool_results(safe_user_message))
     tool_results.extend(time_tool_results)
     # Add skill results (success and failure) for frontend-grounded behavior.
-    if skill_result:
-        skill_success = bool(skill_result.get("success"))
-        skill_payload: Dict[str, Any] = {
-            "action": skill_result.get("action"),
-            "skill_name": skill_result.get("skill_name"),
-            "summary": (skill_result.get("summary") or "")[:500],
+    if tool_result:
+        tool_success = bool(tool_result.get("success"))
+        tool_payload: Dict[str, Any] = {
+            "action": tool_result.get("action"),
+            "tool_name": tool_result.get("tool_name"),
+            "summary": (tool_result.get("summary") or "")[:500],
         }
-        if "analysis_id" in skill_result:
-            skill_payload["analysis_id"] = skill_result["analysis_id"]
+        if "analysis_id" in tool_result:
+            tool_payload["analysis_id"] = tool_result["analysis_id"]
         for key in ["panel_url", "operation", "created_agent_id", "created_agent_name", "created_agent_public_hash"]:
-            if key in skill_result and skill_result.get(key) is not None:
-                skill_payload[key] = skill_result.get(key)
+            if key in tool_result and tool_result.get(key) is not None:
+                tool_payload[key] = tool_result.get(key)
         tool_results.append(
             ToolResultData(
-                tool_name=f"skill_{skill_result.get('skill_id', 'unknown')}",
-                success=skill_success,
-                result=skill_payload,
-                error=None if skill_success else str(skill_result.get("error") or "Skill execution failed"),
+                tool_name=f"tool_{tool_result.get('tool_id', 'unknown')}",
+                success=tool_success,
+                result=tool_payload,
+                error=None if tool_success else str(tool_result.get("error") or "Tool execution failed"),
             )
         )
 

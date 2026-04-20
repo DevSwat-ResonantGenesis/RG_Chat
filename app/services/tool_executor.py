@@ -1,9 +1,9 @@
 """
-Skill Executor Service
+Tool Executor Service
 =======================
 
-Executes skill actions on behalf of users within Resonant Chat.
-Each skill has its own executor that handles the specific API calls
+Executes tool actions on behalf of users within Resonant Chat.
+Each tool has its own executor that handles the specific API calls
 and returns structured results for the chat response.
 """
 
@@ -16,8 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .skills_registry import SkillDefinition, skills_registry
-from .skills import INTEGRATION_SKILLS
+from .tools_registry import ToolDefinition, tools_registry
+from .tools import INTEGRATION_SKILLS
 
 
 
@@ -32,8 +32,8 @@ IDE_SERVICE_URL = os.getenv("IDE_SERVICE_URL", "http://ide_platform_service:8080
 AGENT_ARCHITECT_URL = os.getenv("AGENT_ARCHITECT_URL", "http://agent_architect:8000")
 
 
-class SkillExecutor:
-    """Executes skill actions and returns structured results."""
+class ToolExecutor:
+    """Executes tool actions and returns structured results."""
 
     def __init__(self):
         self._executors = {
@@ -55,36 +55,36 @@ class SkillExecutor:
 
     async def execute(
         self,
-        skill: SkillDefinition,
+        tool: ToolDefinition,
         message: str,
         user_id: str,
         user_role: str = "user",
         is_superuser: bool = False,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Execute a skill and return results."""
-        executor = self._executors.get(skill.id)
+        """Execute a tool and return results."""
+        executor = self._executors.get(tool.id)
         if not executor:
             return {
-                "skill_id": skill.id,
+                "tool_id": tool.id,
                 "success": False,
-                "error": f"No executor for skill: {skill.id}",
+                "error": f"No executor for tool: {tool.id}",
             }
 
         try:
             exec_context = dict(context or {})
             exec_context.setdefault("user_role", user_role)
             exec_context.setdefault("is_superuser", is_superuser)
-            exec_context["_integration_skill_id"] = skill.id
+            exec_context["_integration_tool_id"] = tool.id
             result = await executor(message, user_id, exec_context)
-            result["skill_id"] = skill.id
-            result["skill_name"] = skill.name
+            result["tool_id"] = tool.id
+            result["tool_name"] = tool.name
             return result
         except Exception as e:
-            logger.error(f"Skill execution failed ({skill.id}): {e}")
+            logger.error(f"Tool execution failed ({tool.id}): {e}")
             return {
-                "skill_id": skill.id,
-                "skill_name": skill.name,
+                "tool_id": tool.id,
+                "tool_name": tool.name,
                 "success": False,
                 "error": str(e),
             }
@@ -2323,10 +2323,10 @@ class SkillExecutor:
         """
         # Determine which skill is being executed from the executor map
         # The skill_id is passed through context by the execute() wrapper
-        skill_id = context.get("_integration_skill_id")
+        skill_id = context.get("_integration_tool_id")
         if not skill_id:
             # Fallback: detect from message
-            from .skills import is_integration_intent
+            from .tools import is_integration_intent
             skill_id = is_integration_intent(message)
 
         if not skill_id or skill_id not in INTEGRATION_SKILLS:
@@ -2553,4 +2553,4 @@ class SkillExecutor:
 
 
 # Global singleton
-skill_executor = SkillExecutor()
+tool_executor = ToolExecutor()

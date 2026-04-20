@@ -1,13 +1,13 @@
 """
-Modular Integration Skills for Resonant Chat
+Modular Integration Tools for Resonant Chat
 =============================================
 
-Each skill is a separate file that can be easily connected/disconnected
+Each tool is a separate file that can be easily connected/disconnected
 without affecting Resonant Chat's core intelligence.
 
 Pattern (same as code_visualizer / agents_os):
 1. Detect intent from user message
-2. Check if skill is enabled
+2. Check if tool is enabled
 3. Fetch user's API key / webhook / credentials
 4. Execute the real API call
 5. Return structured result to chat pipeline
@@ -20,6 +20,7 @@ from .google_calendar import GoogleCalendarSkill
 from .sigma import SigmaSkill
 
 # Registry of all modular integration skills
+# NOTE: INTEGRATION_SKILLS name kept for now — internal detail, not public API
 INTEGRATION_SKILLS = {
     "figma": FigmaSkill(),
     "google_drive": GoogleDriveSkill(),
