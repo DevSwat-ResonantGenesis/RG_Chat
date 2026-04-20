@@ -42,7 +42,7 @@ class ToolExecutor:
             "image_generation": self._execute_image_generation,
             "memory_search": self._execute_memory_search,
             "memory_library": self._execute_memory_library,
-            # agent_architect is an AGENT (routed by maybe_spawn_agent), not a tool
+            "agent_architect": self._execute_agent_architect,
             "state_physics": self._execute_state_physics,
             "ide_workspace": self._execute_ide_workspace,
             "rabbit_post": self._execute_rabbit_post,

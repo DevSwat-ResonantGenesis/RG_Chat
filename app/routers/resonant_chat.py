@@ -833,7 +833,7 @@ You are DevSwat Chat, a specialized AI with persistent memory (Hash Sphere), web
 <capabilities>
 - **Web search**: Real-time via Tavily/DuckDuckGo. Results appear in your context — use them as primary source of truth. Never say "I can't access the internet" when search results are present.
 - **Code Visualizer**: AST analysis of repositories. Output appears as "TOOL OUTPUT (Code Visualizer):". If no tool output is present, the scan did NOT run — never fabricate results.
-- **Agent Architect**: An agent that creates, builds, runs, and diagnoses AI agents. Selected by user from agent dropdown or automatically by the system.
+- **Agent Architect**: Create, build, run, diagnose AI agents. Selected by user or autonomous daemon. Output appears as "TOOL OUTPUT (Agent Architect):". If no tool output is present, the tool did NOT run — never fabricate agent data.
 - **Split view panel**: Live tool output display.
 - **Cannot**: generate images/videos/audio, or browse websites directly (but search results are fetched for you).
 </capabilities>
@@ -1482,6 +1482,13 @@ async def send_message(
             }
             if _prev_assistant_agent_content:
                 tool_context["prev_assistant_content"] = _prev_assistant_agent_content
+            # Pass recent conversation history for agent_architect context
+            if detected_tool.id == "agent_architect" and recent_messages:
+                tool_context["recent_messages"] = [
+                    {"role": (m.role if hasattr(m, "role") else m.get("role", "")),
+                     "content": (m.content if hasattr(m, "content") else m.get("content", ""))[:500]}
+                    for m in recent_messages[-8:]
+                ]
             github_token = _extract_github_token_from_user_keys(user_api_keys)
             if github_token:
                 tool_context["github_token"] = github_token
@@ -1565,6 +1572,20 @@ async def send_message(
         provider = "tool_code_visualizer_disabled"
         agent_type = "code"
 
+    # Force tool-grounded reply for ALL Agent Architect operations (including create).
+    # Delegating create ops to the LLM caused hallucinated fake URLs/configs.
+    if not execute_mode and detected_tool and detected_tool.id == "agent_architect" and tool_result:
+        operation = tool_result.get("operation", "")
+        if tool_result.get("success"):
+            tool_summary = (tool_result.get("summary") or "").strip()
+            response_text = tool_summary or "Agent Architect operation completed successfully."
+            provider = "tool_agent_architect"
+            agent_type = "agents"
+        else:
+            error_detail = (tool_result.get("error") or "Agent Architect request failed.").strip()
+            response_text = f"Agent Architect error: {error_detail}"
+            provider = "tool_agent_architect_error"
+            agent_type = "agents"
 
     # Force tool-grounded reply for integration skill failures (google_calendar, figma, google_drive, sigma).
     # Without this, failed integration skills silently fall back to LLM which hallucinates.
@@ -1696,7 +1717,10 @@ async def send_message(
     _user_asking_agent_creation = any(
         kw in (safe_user_message or "").lower() for kw in _agent_creation_keywords
     )
-    if _user_asking_agent_creation and response_text is None:
+    _architect_tool_ran = (
+        detected_tool and detected_tool.id == "agent_architect" and tool_result
+    )
+    if _user_asking_agent_creation and not _architect_tool_ran and response_text is None:
         context_messages.append({
             "role": "system",
             "content": (
