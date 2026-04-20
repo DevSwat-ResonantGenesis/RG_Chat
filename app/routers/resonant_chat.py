@@ -1384,14 +1384,8 @@ async def send_message(
                 else:
                     detected_tool = tools_registry.get_tool(detected_tool_id)
                 code_visualizer_intent = (detected_tool_id == "code_visualizer")
-                architect_intent = (detected_tool_id == "agent_architect")
-                if architect_intent and recent_messages:
-                    for prev_msg in reversed(recent_messages[-3:]):
-                        role = prev_msg.role if hasattr(prev_msg, "role") else prev_msg.get("role", "")
-                        content = prev_msg.content if hasattr(prev_msg, "content") else prev_msg.get("content", "")
-                        if role == "assistant" and content:
-                            _prev_assistant_agent_content = content
-                            break
+                # NOTE: agent_architect is NOT a tool — it's an agent selected
+                # by user dropdown or autonomous daemon, never by classifier.
             print(f"[TOOL-7.9] Classifier: tool={detected_tool_id or 'None'} "
                   f"conf={prediction.confidence:.3f} method={prediction.method} "
                   f"active={prediction.active_tool} latency={prediction.latency_ms:.1f}ms "

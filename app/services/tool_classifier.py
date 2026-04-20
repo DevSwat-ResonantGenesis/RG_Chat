@@ -38,12 +38,11 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Tool labels (None = general chat)
-# Expanded from 13 original skills to 196 tools from RG_Unified_Tool_Registry.
-# skill_* prefixed tools excluded (they are chat-level wrappers, not real tools).
+# NOTE: agent_architect is an AGENT system (chosen by user/autonomous daemon),
+#       NOT a tool. It must NOT be in this list.
 ALL_TOOLS = [
     None,  # index 0 = general chat / no tool
     # ── Original high-level routing tools (kept for backward compat) ──
-    "agent_architect",
     "code_visualizer",
     "web_search",
     "image_generation",
@@ -117,15 +116,6 @@ ALL_TOOLS = [
     "workspace_snapshot",
     "run_agent",
     "present_options",
-    # ── Agent Architect (granular) ──
-    "architect_plan",
-    "architect_create_agent",
-    "architect_assign_goal",
-    "architect_create_schedule",
-    "architect_create_webhook",
-    "architect_set_autonomy",
-    "architect_list_available_tools",
-    "architect_list_providers",
     # ── Media ──
     "generate_image",
     "generate_audio",
@@ -456,17 +446,28 @@ class ToolClassifier:
                 # Try loading trained model from PostgreSQL
                 clf, stats, n_samples, version = await _load_model_from_db()
                 if clf is not None:
-                    self._classifier = clf
-                    self._train_stats = stats
-                    self._model_version = version
-                    self._is_trained = True
-                    logger.info(
-                        f"[ToolClassifier] Loaded model v{version} from DB "
-                        f"({n_samples} samples, acc={stats.get('train_accuracy', '?')})"
-                    )
-                    return True
+                    # Validate class count matches current ALL_TOOLS
+                    try:
+                        n_model_classes = len(clf.classes_)
+                    except Exception:
+                        n_model_classes = -1
+                    if n_model_classes == len(ALL_TOOLS):
+                        self._classifier = clf
+                        self._train_stats = stats
+                        self._model_version = version
+                        self._is_trained = True
+                        logger.info(
+                            f"[ToolClassifier] Loaded model v{version} from DB "
+                            f"({n_samples} samples, acc={stats.get('train_accuracy', '?')})"
+                        )
+                        return True
+                    else:
+                        logger.warning(
+                            f"[ToolClassifier] DB model has {n_model_classes} classes "
+                            f"but ALL_TOOLS has {len(ALL_TOOLS)} — retraining..."
+                        )
 
-                # No model in DB — train from seed and save
+                # No valid model in DB — train from seed and save
                 logger.info("[ToolClassifier] No model in DB, training from seed...")
                 await self._train_and_save(source="seed")
                 return True
@@ -689,11 +690,16 @@ class ToolClassifier:
             if skill is None or skill in enabled_tool_ids:
                 prob_dict[label] = round(float(prob), 4)
 
+        # --- Min confidence: with 208 classes, random ≈ 0.5%.
+        #     Tool must beat "none" AND exceed this floor to activate.
+        MIN_TOOL_CONFIDENCE = 0.15
+
         best_skill = None
-        best_prob = prob_dict.get("none", 0.0)
+        none_prob = prob_dict.get("none", 0.0)
+        best_prob = none_prob
         for tid in enabled_tool_ids:
             sp = prob_dict.get(tid, 0.0)
-            if sp > best_prob:
+            if sp > best_prob and sp >= MIN_TOOL_CONFIDENCE:
                 best_prob = sp
                 best_skill = tid
 

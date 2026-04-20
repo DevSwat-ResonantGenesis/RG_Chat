@@ -25,80 +25,6 @@ def get_training_data() -> List[TrainingSample]:
     samples: List[TrainingSample] = []
 
     # ------------------------------------------------------------------
-    # AGENT_ARCHITECT — building, managing, running agents
-    # ------------------------------------------------------------------
-    _arch = "agent_architect"
-
-    # Direct requests
-    samples += [
-        ("build me an agent that monitors stock prices every hour", [], _arch),
-        ("create an agent to scrape Y Combinator and list startups", [], _arch),
-        ("I want to automate scraping websites and saving results", [], _arch),
-        ("make an agent that checks my competitors' pricing daily", [], _arch),
-        ("set up an autonomous agent to collect news about AI", [], _arch),
-        ("build a bot that searches Twitter for mentions of my brand", [], _arch),
-        ("create an agent to monitor Hacker News for relevant posts", [], _arch),
-        ("I need an agent that summarizes my emails every morning", [], _arch),
-        ("how many agents do I have", [], _arch),
-        ("show my agents", [], _arch),
-        ("list all my agents", [], _arch),
-        ("delete the test agent", [], _arch),
-        ("rename my scraper agent to DataCollector", [], _arch),
-        ("run my weather agent now", [], _arch),
-        ("stop the news monitoring agent", [], _arch),
-        ("schedule the report agent to run every day at 9am", [], _arch),
-        ("modify my scraper to also save results to Google Drive", [], _arch),
-        ("my agent keeps failing, can you diagnose it", [], _arch),
-        ("the web scraper agent is broken", [], _arch),
-        ("configure the agent to use GPT-4 instead of Gemini", [], _arch),
-        ("add web search tool to my research agent", [], _arch),
-        ("I want to build something that automatically researches topics", [], _arch),
-        ("can you make me an automated workflow to process data", [], _arch),
-        ("create an AI assistant that handles customer questions", [], _arch),
-        ("build an agent to track cryptocurrency prices", [], _arch),
-        ("set up a monitoring agent for my website uptime", [], _arch),
-        ("I want an agent that reads RSS feeds and sends summaries", [], _arch),
-        ("create a data collection agent for market research", [], _arch),
-        ("build me an agent", [], _arch),
-        ("I want to create an autonomous bot", [], _arch),
-        ("make an automated pipeline for web scraping", [], _arch),
-        ("help me set up an agent to do recurring tasks", [], _arch),
-    ]
-
-    # Follow-ups in agent architect context
-    samples += [
-        ("yes, create it", [
-            {"role": "assistant", "content": "I'll build an agent that scrapes Y Combinator. The agent will use web_search and fetch_url tools. Shall I proceed?"},
-        ], _arch),
-        ("use Gemini for the LLM", [
-            {"role": "assistant", "content": "What LLM provider would you like for this agent? Options: GPT-4, Gemini, Claude"},
-        ], _arch),
-        ("yes create all of them", [
-            {"role": "assistant", "content": "I've planned 3 agents: News Monitor, Price Tracker, Report Generator. Want me to create all three?"},
-        ], _arch),
-        ("try again", [
-            {"role": "assistant", "content": "The agent creation failed because web_search tool returned an error. Would you like me to retry?"},
-        ], _arch),
-        ("add Google Drive to it", [
-            {"role": "assistant", "content": "The agent is ready. It will scrape websites and collect data. Any additional tools you'd like?"},
-        ], _arch),
-        ("change the schedule to every 2 hours", [
-            {"role": "assistant", "content": "The agent is scheduled to run every hour. Want to modify the schedule?"},
-        ], _arch),
-        ("yes please proceed", [
-            {"role": "user", "content": "build me an agent that tracks bitcoin price"},
-            {"role": "assistant", "content": "I'll create a Bitcoin Price Tracker agent. It will check the price every 30 minutes. Ready to build?"},
-        ], _arch),
-        ("actually make it check every 15 minutes", [
-            {"role": "user", "content": "build an agent to monitor prices"},
-            {"role": "assistant", "content": "How often should it check? I recommend every 30 minutes to balance freshness and credits."},
-        ], _arch),
-        ("no, use web search instead of fetch_url", [
-            {"role": "assistant", "content": "For the scraping agent, I'll configure these tools: fetch_url, code_sandbox. Sound good?"},
-        ], _arch),
-    ]
-
-    # ------------------------------------------------------------------
     # GOOGLE_DRIVE — file access, search, create
     # ------------------------------------------------------------------
     _gdrive = "google_drive"
@@ -402,30 +328,6 @@ def get_training_data() -> List[TrainingSample]:
     # ------------------------------------------------------------------
     # CROSS-SKILL CONTINUITY — follow-ups that should stick with active skill
     # ------------------------------------------------------------------
-
-    # User answering architect's questions (mentions Drive but should stay with architect)
-    samples += [
-        ("yes I have a Google Drive account, and Excel format please", [
-            {"role": "user", "content": "build an agent that scrapes websites and saves to Drive"},
-            {"role": "assistant", "content": "Do you have a Google Drive account? What format for the summary sheet — CSV or Excel?"},
-        ], _arch),
-        ("I just connected it, try again", [
-            {"role": "assistant", "content": "Google Drive is not connected. Go to Settings → Connect Profiles to add your API key."},
-            {"role": "user", "content": "build an agent to save data to my drive"},
-        ], _arch),
-        ("excel format", [
-            {"role": "user", "content": "create an agent that monitors prices and exports to sheets"},
-            {"role": "assistant", "content": "What format would you like for the export — CSV, Excel, or Google Sheets?"},
-        ], _arch),
-        ("ye", [
-            {"role": "user", "content": "build me an agent to track news"},
-            {"role": "assistant", "content": "I'll create a News Tracker agent with web_search and summarization. Proceed?"},
-        ], _arch),
-        ("no change it to every 2 hours", [
-            {"role": "user", "content": "create an agent to check prices"},
-            {"role": "assistant", "content": "The agent is set to run every hour. Ready to deploy?"},
-        ], _arch),
-    ]
 
     # User answering Google Drive's questions (should stay with Drive)
     samples += [
@@ -970,78 +872,6 @@ def get_training_data() -> List[TrainingSample]:
         ("give me a multiple choice selection", [], "present_options"),
         ("display action options", [], "present_options"),
         ("offer me a list of choices", [], "present_options"),
-    ]
-
-    # ── architect_plan ──
-    samples += [
-        ("plan an agent system for monitoring social media", [], "architect_plan"),
-        ("design agents for my e-commerce workflow", [], "architect_plan"),
-        ("create a blueprint for a customer support agent system", [], "architect_plan"),
-        ("architect an agent pipeline for data processing", [], "architect_plan"),
-        ("plan out agents for my content moderation needs", [], "architect_plan"),
-    ]
-
-    # ── architect_create_agent ──
-    samples += [
-        ("create an agent with these specs", [], "architect_create_agent"),
-        ("build a fully configured research agent", [], "architect_create_agent"),
-        ("architect a production-ready scraping agent", [], "architect_create_agent"),
-        ("set up an optimally configured monitoring agent", [], "architect_create_agent"),
-        ("create a professional agent with best tools and model", [], "architect_create_agent"),
-    ]
-
-    # ── architect_assign_goal ──
-    samples += [
-        ("assign the goal of daily reporting to my agent", [], "architect_assign_goal"),
-        ("set the agent's primary objective", [], "architect_assign_goal"),
-        ("give this agent a new goal", [], "architect_assign_goal"),
-        ("update the architect agent's goal to price tracking", [], "architect_assign_goal"),
-        ("define the mission for this agent", [], "architect_assign_goal"),
-    ]
-
-    # ── architect_create_schedule ──
-    samples += [
-        ("set up a weekly schedule for the agent", [], "architect_create_schedule"),
-        ("create a cron schedule running every 6 hours", [], "architect_create_schedule"),
-        ("schedule this agent to run daily at midnight", [], "architect_create_schedule"),
-        ("configure recurring runs for the architect agent", [], "architect_create_schedule"),
-        ("set up automated execution every Monday morning", [], "architect_create_schedule"),
-    ]
-
-    # ── architect_create_webhook ──
-    samples += [
-        ("create a webhook trigger for the agent", [], "architect_create_webhook"),
-        ("set up an external webhook to invoke the agent", [], "architect_create_webhook"),
-        ("make a webhook so I can trigger the agent via API", [], "architect_create_webhook"),
-        ("generate a webhook URL for this agent", [], "architect_create_webhook"),
-        ("enable external triggering via webhook", [], "architect_create_webhook"),
-    ]
-
-    # ── architect_set_autonomy ──
-    samples += [
-        ("set the agent to governed autonomy mode", [], "architect_set_autonomy"),
-        ("change autonomy to unbounded for this agent", [], "architect_set_autonomy"),
-        ("make this agent fully autonomous", [], "architect_set_autonomy"),
-        ("switch the agent to supervised mode", [], "architect_set_autonomy"),
-        ("restrict agent autonomy to governed", [], "architect_set_autonomy"),
-    ]
-
-    # ── architect_list_available_tools ──
-    samples += [
-        ("what tools can I assign to agents via architect", [], "architect_list_available_tools"),
-        ("list tools available for agent assignment", [], "architect_list_available_tools"),
-        ("show me which tools the architect can assign", [], "architect_list_available_tools"),
-        ("available tools for the architect to use", [], "architect_list_available_tools"),
-        ("what tools does the agent architect support", [], "architect_list_available_tools"),
-    ]
-
-    # ── architect_list_providers ──
-    samples += [
-        ("which LLM providers are available", [], "architect_list_providers"),
-        ("what models can I use for my agents", [], "architect_list_providers"),
-        ("list supported LLM providers and models", [], "architect_list_providers"),
-        ("show available AI model providers", [], "architect_list_providers"),
-        ("what LLMs can the architect use", [], "architect_list_providers"),
     ]
 
     # ── generate_image ──
