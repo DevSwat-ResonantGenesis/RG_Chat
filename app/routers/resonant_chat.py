@@ -833,7 +833,7 @@ You are DevSwat Chat, a specialized AI with persistent memory (Hash Sphere), web
 <capabilities>
 - **Web search**: Real-time via Tavily/DuckDuckGo. Results appear in your context — use them as primary source of truth. Never say "I can't access the internet" when search results are present.
 - **Code Visualizer**: AST analysis of repositories. Output appears as "TOOL OUTPUT (Code Visualizer):". If no tool output is present, the scan did NOT run — never fabricate results.
-- **Agent Architect**: Create, build, run, diagnose AI agents. Output appears as "TOOL OUTPUT (Agent Architect):". If no tool output is present, the tool did NOT run — never fabricate agent data.
+- **Agent Architect**: An agent that creates, builds, runs, and diagnoses AI agents. Selected by user from agent dropdown or automatically by the system.
 - **Split view panel**: Live tool output display.
 - **Cannot**: generate images/videos/audio, or browse websites directly (but search results are fetched for you).
 </capabilities>
@@ -1349,7 +1349,6 @@ async def send_message(
     web_search_needed = False
     image_gen_needed = False
     code_visualizer_intent = False
-    architect_intent = False
 
     if request_body.enabled_tool_ids is not None and len(request_body.enabled_tool_ids) > 0:
         enabled_tool_ids = set(request_body.enabled_tool_ids)
@@ -1385,29 +1384,8 @@ async def send_message(
                     detected_tool = tools_registry.get_tool(detected_tool_id)
                 code_visualizer_intent = (detected_tool_id == "code_visualizer")
 
-            # agent_architect is an AGENT, not a tool — it's not in the classifier.
-            # But we still need to detect agent-related requests via keywords so
-            # the architect tool executor can handle them (build/list/run agents).
-            _msg_lower = (safe_user_message or "").lower()
-            _architect_keywords = [
-                "build me an agent", "build an agent", "create an agent", "create agent",
-                "make an agent", "make me an agent", "list my agents", "show my agents",
-                "how many agents", "delete agent", "stop agent", "run agent",
-                "start agent", "schedule agent", "diagnose agent", "agent is broken",
-                "agent keeps failing", "configure agent", "modify agent",
-                "build a bot", "create a bot", "set up an agent",
-            ]
-            if not detected_tool_id and any(kw in _msg_lower for kw in _architect_keywords):
-                architect_intent = True
-                detected_tool = tools_registry.get_tool("agent_architect")
-                if recent_messages:
-                    for prev_msg in reversed(recent_messages[-3:]):
-                        role = prev_msg.role if hasattr(prev_msg, "role") else prev_msg.get("role", "")
-                        content = prev_msg.content if hasattr(prev_msg, "content") else prev_msg.get("content", "")
-                        if role == "assistant" and content:
-                            _prev_assistant_agent_content = content
-                            break
-                print(f"[TOOL-7.9] Architect intent detected via keywords", flush=True)
+            # agent_architect is an AGENT (like Reasoning, Code, Debug, etc.)
+            # — routed by maybe_spawn_agent(), not by the tool classifier.
             print(f"[TOOL-7.9] Classifier: tool={detected_tool_id or 'None'} "
                   f"conf={prediction.confidence:.3f} method={prediction.method} "
                   f"active={prediction.active_tool} latency={prediction.latency_ms:.1f}ms "
@@ -1504,13 +1482,6 @@ async def send_message(
             }
             if _prev_assistant_agent_content:
                 tool_context["prev_assistant_content"] = _prev_assistant_agent_content
-            # Pass recent conversation history for agent_architect context
-            if detected_tool.id == "agent_architect" and recent_messages:
-                tool_context["recent_messages"] = [
-                    {"role": (m.role if hasattr(m, "role") else m.get("role", "")),
-                     "content": (m.content if hasattr(m, "content") else m.get("content", ""))[:500]}
-                    for m in recent_messages[-8:]
-                ]
             github_token = _extract_github_token_from_user_keys(user_api_keys)
             if github_token:
                 tool_context["github_token"] = github_token
@@ -1593,21 +1564,6 @@ async def send_message(
         )
         provider = "tool_code_visualizer_disabled"
         agent_type = "code"
-
-    # Force tool-grounded reply for ALL Agent Architect operations (including create).
-    # Delegating create ops to the LLM caused hallucinated fake URLs/configs.
-    if not execute_mode and detected_tool and detected_tool.id == "agent_architect" and tool_result:
-        operation = tool_result.get("operation", "")
-        if tool_result.get("success"):
-            tool_summary = (tool_result.get("summary") or "").strip()
-            response_text = tool_summary or "Agent Architect operation completed successfully."
-            provider = "tool_agent_architect"
-            agent_type = "agents"
-        else:
-            error_detail = (tool_result.get("error") or "Agent Architect request failed.").strip()
-            response_text = f"Agent Architect error: {error_detail}"
-            provider = "tool_agent_architect_error"
-            agent_type = "agents"
 
 
     # Force tool-grounded reply for integration skill failures (google_calendar, figma, google_drive, sigma).
@@ -1740,10 +1696,7 @@ async def send_message(
     _user_asking_agent_creation = any(
         kw in (safe_user_message or "").lower() for kw in _agent_creation_keywords
     )
-    _architect_tool_ran = (
-        detected_tool and detected_tool.id == "agent_architect" and tool_result
-    )
-    if _user_asking_agent_creation and not _architect_tool_ran and response_text is None:
+    if _user_asking_agent_creation and response_text is None:
         context_messages.append({
             "role": "system",
             "content": (

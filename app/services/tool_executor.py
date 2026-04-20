@@ -42,8 +42,7 @@ class ToolExecutor:
             "image_generation": self._execute_image_generation,
             "memory_search": self._execute_memory_search,
             "memory_library": self._execute_memory_library,
-            # "agents_os" removed — all agent operations now route through agent_architect
-            "agent_architect": self._execute_agent_architect,
+            # agent_architect is an AGENT (routed by maybe_spawn_agent), not a tool
             "state_physics": self._execute_state_physics,
             "ide_workspace": self._execute_ide_workspace,
             "rabbit_post": self._execute_rabbit_post,
