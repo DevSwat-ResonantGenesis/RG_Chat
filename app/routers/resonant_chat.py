@@ -1350,15 +1350,10 @@ async def send_message(
     image_gen_needed = False
     code_visualizer_intent = False
 
-    if request_body.enabled_tool_ids is not None and len(request_body.enabled_tool_ids) > 0:
-        enabled_tool_ids = set(request_body.enabled_tool_ids)
-    else:
-        enabled_tool_ids = {s.id for s in tools_registry.get_enabled_tools(user_id)}
-
-    if not enabled_tool_ids:
-        from ..services.tool_classifier import ALL_TOOLS
-        enabled_tool_ids = {s for s in ALL_TOOLS if s is not None}
-        logger.warning(f"[TOOL-7.9] enabled_tool_ids empty, falling back to all {len(enabled_tool_ids)} tools")
+    # Always use full ALL_TOOLS for classifier — the old tools_registry only
+    # knows 13 legacy skills but the neural classifier covers 199 tools.
+    from ..services.tool_classifier import ALL_TOOLS
+    enabled_tool_ids = {s for s in ALL_TOOLS if s is not None}
 
     if request_body.teamId:
         print(f"[TOOL-7.9] BYPASSED — user selected team {request_body.teamId}", flush=True)
