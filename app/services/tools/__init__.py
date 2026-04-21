@@ -5,7 +5,7 @@ Modular Integration Tools for Resonant Chat
 Each tool is a separate file that can be easily connected/disconnected
 without affecting Resonant Chat's core intelligence.
 
-Pattern (same as code_visualizer / agents_os):
+Pattern (same as code_visualizer):
 1. Detect intent from user message
 2. Check if tool is enabled
 3. Fetch user's API key / webhook / credentials
