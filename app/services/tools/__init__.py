@@ -18,14 +18,37 @@ from .figma import FigmaSkill
 from .google_drive import GoogleDriveSkill
 from .google_calendar import GoogleCalendarSkill
 from .sigma import SigmaSkill
+from .web_tools import WEB_TOOLS
+from .memory_tools import MEMORY_TOOLS
+from .code_visualizer_tools import CODE_VISUALIZER_TOOLS
+from .state_physics_tools import STATE_PHYSICS_TOOLS
+from .rabbit_tools import RABBIT_TOOLS
+from .dev_tools import DEV_TOOLS
+from .github_tools import GITHUB_TOOLS
+from .filesystem_tools import FILESYSTEM_TOOLS
+from .media_tools import MEDIA_TOOLS
+from .email_tools import EMAIL_TOOLS
+from .google_docs_tools import GOOGLE_DOCS_TOOLS
+from .oauth_integrations import OAUTH_TOOLS
 
 # Registry of all modular integration skills
-# NOTE: INTEGRATION_SKILLS name kept for now — internal detail, not public API
 INTEGRATION_SKILLS = {
     "figma": FigmaSkill(),
     "google_drive": GoogleDriveSkill(),
     "google_calendar": GoogleCalendarSkill(),
     "sigma": SigmaSkill(),
+    **WEB_TOOLS,
+    **MEMORY_TOOLS,
+    **CODE_VISUALIZER_TOOLS,
+    **STATE_PHYSICS_TOOLS,
+    **RABBIT_TOOLS,
+    **DEV_TOOLS,
+    **GITHUB_TOOLS,
+    **FILESYSTEM_TOOLS,
+    **MEDIA_TOOLS,
+    **EMAIL_TOOLS,
+    **GOOGLE_DOCS_TOOLS,
+    **OAUTH_TOOLS,
 }
 
 

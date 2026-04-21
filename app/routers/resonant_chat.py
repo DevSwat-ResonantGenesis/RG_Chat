@@ -1335,9 +1335,7 @@ async def send_message(
 
             detected_tool_id = prediction.tool_id
             if detected_tool_id:
-                # Resolve granular sub-tools to parent executor
-                resolved_parent = tools_registry.TOOL_RESOLUTION.get(detected_tool_id)
-                effective_id = resolved_parent or detected_tool_id
+                effective_id = detected_tool_id
 
                 if effective_id == "web_search":
                     web_search_needed = True
