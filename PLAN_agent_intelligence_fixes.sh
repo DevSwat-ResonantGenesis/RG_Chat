@@ -164,79 +164,23 @@
 #         and will be consumed by neural agent classifier for retraining
 #
 # ============================================================================
-# FIX 4: TOOL RESOLUTION MAPPING [DONE ✅]
+# FIX 4: TOOL RESOLUTION MAPPING [DONE ✅ → SUPERSEDED by direct executors]
 # ============================================================================
 #
-# Files changed:
-#   [x] app/services/tools_registry.py
-#       - Added TOOL_RESOLUTION dict: 120+ granular tool IDs → 13 parent executors
-#         agents_create → agent_architect
-#         code_visualizer_scan → code_visualizer
-#         sp_state → state_physics
-#         create_rabbit_post → rabbit_post
-#         news_search → web_search
-#         generate_audio → image_generation
-#         gmail_send → google_drive
-#         ... (full mapping for all 120+ sub-tools)
-#       - Updated get_tool(): now tries exact match first, then resolution fallback
+# ORIGINAL: Added TOOL_RESOLUTION dict mapping 120+ granular tool IDs → 13 parents.
 #
-#   [x] app/routers/resonant_chat.py (STEP 7.9)
-#       - After classifier predicts tool_id, resolve to effective parent
-#       - If parent is web_search → route to pipeline search (not tool executor)
-#       - If parent is image_generation → route to image gen pipeline
-#       - If parent is code_visualizer → set code_visualizer_intent flag
-#       - Otherwise → tools_registry.get_tool() with resolution fallback
-#
-# How resolution works now:
-#   1. Classifier predicts "news_search" with high confidence
-#   2. resolved_parent = TOOL_RESOLUTION["news_search"] → "web_search"
-#   3. effective_id = "web_search"
-#   4. web_search_needed = True → enters search pipeline
-#   5. Search pipeline handles the query
-#
-# vs OLD behavior:
-#   1. Classifier predicts "news_search"
-#   2. tools_registry.get_tool("news_search") → None
-#   3. detected_tool = None → falls through to agent
-#   4. Agent gives generic chat response instead of searching
+# SUPERSEDED (Apr 20-21): All 198 tools now have DIRECT executors via 12 new
+# modular files in app/services/tools/. TOOL_RESOLUTION has been DELETED entirely
+# from tools_registry.py. See: PLAN_195_tool_executors.sh for full details.
 #
 # ============================================================================
-# CURRENT STATE (after all fixes)
+# FIX 5: COMPLETE TOOL RESOLUTION COVERAGE [DONE ✅ → SUPERSEDED]
 # ============================================================================
 #
-# Component                  | Method                  | Status
-# ---------------------------|-------------------------|--------
-# Tool selection             | Neural MLP (208 labels) | ✅ Working
-# Agent selection            | Neural MLP (24 labels)  | ✅ NEW — replaces keywords
-# Agent Architect            | Tool classifier + executor | ✅ Restored
-# Tool resolution            | Granular → parent map   | ✅ NEW — 120+ sub-tools resolve
-# agent_router.py            | Deleted                 | ✅ Dead code removed
-# self_improving_agent       | Uses agent_type directly | ✅ Fixed (was gated behind None)
-# user_feedback              | Local storage + DB      | ✅ Cleaned (removed dead sync)
-# Active learning (tools)    | Predictions → PostgreSQL | ✅ Existing
-# Active learning (agents)   | Predictions → PostgreSQL | ✅ NEW
+# ORIGINAL: Extended TOOL_RESOLUTION to cover all 208 tools.
 #
-# ============================================================================
-# FIX 5: COMPLETE TOOL RESOLUTION COVERAGE [DONE ✅]
-# ============================================================================
-#
-# PROBLEM: Only 120 of 208 tools had resolution mappings. Missing:
-#   weather, stock_crypto, get_current_time → predicted but unresolvable
-#   file_read, file_write, grep_search → predicted but no executor
-#   notion, discord, asana, etc. → OAuth tools with no resolution
-#
-# FIX: Added 90+ more entries to TOOL_RESOLUTION in tools_registry.py:
-#   weather, stock_crypto, stock_market_data, get_current_time → web_search
-#   execute_code, http_request, dev_tool → code_visualizer
-#   file_*, grep_search, find_by_name, run_command → ide_workspace
-#   git_*, github_* → ide_workspace
-#   create_tool, list_tools, auto_build_tool → agent_architect
-#   notion, discord, asana, clickup, etc. → google_drive (integration executor)
-#   configure_smtp, delete_smtp → google_drive
-#   visualize, generate_chart → code_visualizer
-#   create_presentation → google_drive
-#
-# Now ALL 208 tools resolve to one of the 13 parent executors.
+# SUPERSEDED: TOOL_RESOLUTION no longer exists. Every tool has its own direct
+# executor registered in tool_executor.py._executors (199 entries total).
 #
 # ============================================================================
 # FIX 6: WEB SEARCH TRAINING DATA GAPS [DONE ✅]
@@ -276,7 +220,10 @@
 # ============================================================================
 #
 # HIGH PRIORITY:
-#   [ ] Deploy to production and verify all 7 fixes
+#   [x] Deploy to production and verify all 7 fixes — DONE (Apr 20)
+#   [x] All 198 tools now have DIRECT executors — DONE (Apr 20-21)
+#   [x] TOOL_RESOLUTION removed entirely — DONE (Apr 20)
+#   [x] 1,098 lines dead Agents OS code nuked — DONE (Apr 21)
 #   [ ] Monitor logs: [Neural] and [AgentClassifier] entries
 #   [ ] Test /autonomous/classifiers/test endpoint with various messages
 #   [ ] Verify agent_architect triggers on "create an agent" messages
@@ -312,7 +259,7 @@
 #   app/services/tool_classifier.py       — agent_architect added to ALL_TOOLS (Fix 1)
 #   app/services/tool_training_data.py    — 44 agent_architect + 28 web_search samples (Fix 1,6)
 #   app/services/agent_engine.py          — Neural should_spawn_agent_async() (Fix 2)
-#   app/services/tools_registry.py        — TOOL_RESOLUTION 208 tools → 13 executors (Fix 4,5)
+#   app/services/tools_registry.py        — TOOL_RESOLUTION DELETED (Fix 4,5 → superseded)
 #   app/services/__init__.py              — Updated imports/exports (Fix 2,3)
 #   app/services/user_feedback.py         — Removed agent_router references (Fix 3)
 #   app/domain/agent/facade.py            — Switched to async neural agent selection (Fix 2)
@@ -325,4 +272,4 @@
 #
 # ============================================================================
 echo "This is a plan/analysis file. Read it, don't run it."
-echo "All 7 fixes are IMPLEMENTED. Deploy to production to activate."
+echo "All 7 fixes DEPLOYED. Fix 4+5 superseded by 199 direct executors (see PLAN_195_tool_executors.sh)."
