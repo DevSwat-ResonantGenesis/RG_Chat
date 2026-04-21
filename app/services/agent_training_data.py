@@ -197,6 +197,8 @@ def get_agent_training_data() -> List[TrainingSample]:
 
     # ------------------------------------------------------------------
     # ARCHITECTURE — system design, scalability, high-level design
+    # NOTE: "agent" + management verbs must NOT land here. Those go to
+    #       agent_architect TOOL via the ToolClassifier, not this agent.
     # ------------------------------------------------------------------
     samples += [
         ("design a scalable notification system", "architecture"),
@@ -209,6 +211,26 @@ def get_agent_training_data() -> List[TrainingSample]:
         ("what design patterns should I use for this system", "architecture"),
         ("architect a CDN for global content delivery", "architecture"),
         ("design a distributed caching layer", "architecture"),
+    ]
+
+    # Anti-collision: agent management queries must NOT map to architecture.
+    # These should be handled by agent_architect TOOL. If the tool classifier
+    # misses them and they land here, route to "reasoning" (safe default).
+    samples += [
+        ("create an agent for me", "reasoning"),
+        ("build me an agent", "reasoning"),
+        ("list my agents", "reasoning"),
+        ("show my agents", "reasoning"),
+        ("how many agents do I have", "reasoning"),
+        ("run my agent", "reasoning"),
+        ("stop the agent", "reasoning"),
+        ("delete my agent", "reasoning"),
+        ("configure my agent", "reasoning"),
+        ("agent status", "reasoning"),
+        ("check my agents", "reasoning"),
+        ("design an agent for web scraping", "reasoning"),
+        ("architect an agent system", "reasoning"),
+        ("help me design my agent", "reasoning"),
     ]
 
     # ------------------------------------------------------------------

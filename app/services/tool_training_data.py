@@ -1564,4 +1564,24 @@ def get_training_data() -> List[TrainingSample]:
         ], _architect),
     ]
 
+    # Anti-collision with "architecture" agent type — these contain "architect"
+    # or "design" but are about AGENT MANAGEMENT, not system design.
+    samples += [
+        ("architect an agent for me", [], _architect),
+        ("design an agent for data processing", [], _architect),
+        ("help me design my agent", [], _architect),
+        ("I need to architect an agent system", [], _architect),
+        ("design an AI agent that automates reports", [], _architect),
+        ("help me set up an agent", [], _architect),
+        ("I want to design a new agent", [], _architect),
+        ("architect a monitoring agent", [], _architect),
+        ("can you design an agent for customer support", [], _architect),
+        ("design me a scraping agent", [], _architect),
+        ("agent architect", [], _architect),
+        ("open agent architect", [], _architect),
+        ("use the agent architect", [], _architect),
+        ("go to agent architect", [], _architect),
+        ("launch agent architect", [], _architect),
+    ]
+
     return samples
