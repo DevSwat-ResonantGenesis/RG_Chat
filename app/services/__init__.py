@@ -25,8 +25,8 @@ from .causal_reasoning import CausalReasoner, causal_reasoner
 from .neural_gravity_engine import NeuralGravityEngine, neural_gravity_engine
 from .hybrid_memory_ranker import compute_score, rank_memories
 from .user_api_keys import UserApiKeyService, user_api_key_service
-# Autonomous Services (L3-L5)
-from .agent_router import AgentRouter, agent_router, route_message, RoutingDecision
+# Autonomous Services
+from .agent_classifier import AgentClassifier, agent_classifier
 from .response_cache import ResponseCache, response_cache, get_cached_response, cache_response
 from .self_improving_agent import SelfImprovingAgent, self_improving_agent, FeedbackType
 from .autonomous_planner import AutonomousPlanner, autonomous_planner, create_task_plan
@@ -100,11 +100,9 @@ __all__ = [
     # User API Keys
     "UserApiKeyService",
     "user_api_key_service",
-    # Autonomous Services (L3-L5)
-    "AgentRouter",
-    "agent_router",
-    "route_message",
-    "RoutingDecision",
+    # Autonomous Services
+    "AgentClassifier",
+    "agent_classifier",
     "ResponseCache",
     "response_cache",
     "get_cached_response",

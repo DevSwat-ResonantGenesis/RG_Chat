@@ -91,6 +91,35 @@ def get_training_data() -> List[TrainingSample]:
         ("find reviews for the new iPhone", [], _web),
         ("what are today's top headlines", [], _web),
         ("search for best restaurants in downtown LA", [], _web),
+        # Weather follow-ups and location-based queries
+        ("yes San Francisco", [
+            {"role": "assistant", "content": "Would you like me to search for the weather in a specific location?"},
+        ], _web),
+        ("check the weather in New York", [], _web),
+        ("will it rain tomorrow in London", [], _web),
+        ("weather forecast for Tokyo this weekend", [], _web),
+        ("is it going to snow in Denver", [], _web),
+        ("current temperature in Berlin", [], _web),
+        ("what's the forecast for Miami", [], _web),
+        ("how's the weather today", [], _web),
+        # Events and real-time queries
+        ("what are the events today in San Francisco in tech industry", [], _web),
+        ("tech events happening in New York this week", [], _web),
+        ("upcoming AI conferences in 2026", [], _web),
+        ("what meetups are happening tonight", [], _web),
+        ("find tech events near me", [], _web),
+        ("what concerts are happening this weekend", [], _web),
+        ("search for hackathons in San Francisco", [], _web),
+        # General real-time info
+        ("what time is it in Tokyo", [], _web),
+        ("what is the current stock price of Apple", [], _web),
+        ("search for flight prices to London", [], _web),
+        ("what are the latest sports scores", [], _web),
+        ("find nearby pharmacies open now", [], _web),
+        ("search for the best hotels in Barcelona", [], _web),
+        ("what's on TV tonight", [], _web),
+        ("find the closest gas station", [], _web),
+        ("what are the movie showtimes near me", [], _web),
     ]
 
     # ------------------------------------------------------------------
@@ -1463,6 +1492,76 @@ def get_training_data() -> List[TrainingSample]:
         ("you're pretty smart", [], _none),
         ("lol that's funny", [], _none),
         ("I'm just testing you", [], _none),
+    ]
+
+    # ------------------------------------------------------------------
+    # AGENT_ARCHITECT — create, manage, run, diagnose agents
+    # ------------------------------------------------------------------
+    _architect = "agent_architect"
+
+    samples += [
+        ("create a new agent for monitoring my website", [], _architect),
+        ("build me an agent that scrapes news every morning", [], _architect),
+        ("I want to create an AI agent for email automation", [], _architect),
+        ("make an agent that watches my Google Drive for changes", [], _architect),
+        ("set up an agent to post to Slack when PRs are merged", [], _architect),
+        ("create an agent called DataCollector for web scraping", [], _architect),
+        ("build a Discord bot agent", [], _architect),
+        ("can you create an agent for me", [], _architect),
+        ("I need an agent that monitors stock prices", [], _architect),
+        ("design an agent that summarizes my emails daily", [], _architect),
+        ("list my agents", [], _architect),
+        ("show all my AI agents", [], _architect),
+        ("what agents do I have", [], _architect),
+        ("start the research agent", [], _architect),
+        ("stop the running agent", [], _architect),
+        ("delete my old scraper agent", [], _architect),
+        ("diagnose why my agent is failing", [], _architect),
+        ("run the data collection agent", [], _architect),
+        ("configure my agent to use GPT-4", [], _architect),
+        ("modify the monitoring agent to check every 5 minutes", [], _architect),
+        ("show me agent sessions and logs", [], _architect),
+        ("what tools does my agent have access to", [], _architect),
+        ("set a trigger for my agent to run at 9am", [], _architect),
+        ("how many agents do I have running", [], _architect),
+        ("review the last run of my research agent", [], _architect),
+    ]
+
+    # Short-form / casual phrasing (production misclassifications)
+    samples += [
+        ("how many agents I have", [], _architect),
+        ("how many agents do I have", [], _architect),
+        ("create agent for me", [], _architect),
+        ("create agent", [], _architect),
+        ("make me an agent", [], _architect),
+        ("build an agent", [], _architect),
+        ("yes please create it", [
+            {"role": "assistant", "content": "Would you like me to create an agent for you?"},
+        ], _architect),
+        ("yes please", [
+            {"role": "assistant", "content": "I can create that agent using the Agent Architect. Shall I proceed?"},
+        ], _architect),
+        ("check my agents", [], _architect),
+        ("show my agents", [], _architect),
+        ("agent list", [], _architect),
+        ("do I have any agents", [], _architect),
+        ("what are my agents", [], _architect),
+        ("how many agents are running", [], _architect),
+        ("count my agents", [], _architect),
+        ("agent status", [], _architect),
+    ]
+
+    # Architect follow-ups
+    samples += [
+        ("yes, build it with web search and email tools", [
+            {"role": "assistant", "content": "I can create that agent. What tools should it have?"},
+        ], _architect),
+        ("name it PriceTracker and run it hourly", [
+            {"role": "assistant", "content": "What should I name the agent and how often should it run?"},
+        ], _architect),
+        ("use groq llama model for it", [
+            {"role": "assistant", "content": "Which LLM model should the agent use?"},
+        ], _architect),
     ]
 
     return samples

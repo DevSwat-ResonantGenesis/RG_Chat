@@ -21,6 +21,7 @@ from typing import Dict, Any, Optional, List
 
 from .adaptive_agent_allocator import adaptive_agent_allocator
 from .agent_capability_registry import agent_capability_registry
+from .agent_classifier import agent_classifier
 from .autonomous_agent_executor import get_autonomous_executor
 
 logger = logging.getLogger(__name__)
@@ -556,14 +557,11 @@ Do NOT be verbose. Output well-structured documentation following industry stand
         return prompts.get(agent_type, prompts["reasoning"])
     
     def should_spawn_agent(self, message: str) -> Optional[str]:
-        """Determine if an agent should be spawned based on message content.
+        """Synchronous fallback — prefer should_spawn_agent_async() for neural classification.
         
-        ALWAYS returns an agent - never returns None to ensure quality responses.
-        
-        If adaptive allocation is enabled, uses intelligent scoring.
-        Otherwise, falls back to keyword matching.
+        Uses adaptive allocation (keyword + scoring) as sync fallback.
+        ALWAYS returns an agent type — never returns None.
         """
-        # Use adaptive allocation if enabled
         if self.use_adaptive_allocation and self.allocator:
             try:
                 agent_type, score = self.allocator.select_best_agent(message)
@@ -574,110 +572,29 @@ Do NOT be verbose. Output well-structured documentation following industry stand
                 )
                 return agent_type
             except Exception as e:
-                logger.warning(f"Adaptive allocation failed: {e}, falling back to keyword matching")
-                # Fall through to keyword matching
-        
-        # Keyword-based selection (original logic)
-        message_lower = message.lower()
-        
-        # Math agent - highest priority for calculations
-        if any(word in message_lower for word in ["calculate", "math", "equation", "solve", "formula", "derivative", "integral", "algebra", "geometry"]):
-            return "math"
-        
-        # Security agent - security-related queries
-        if any(word in message_lower for word in ["security", "vulnerability", "hack", "exploit", "injection", "xss", "csrf", "authentication", "authorization", "encrypt"]):
-            return "security"
-        
-        # Architecture agent - system design
-        if any(word in message_lower for word in ["architecture", "design pattern", "structure", "scalable", "microservice", "monolith", "database design", "api design"]):
-            return "architecture"
-        
-        # Test agent - testing related
-        if any(word in message_lower for word in ["test", "unit test", "coverage", "jest", "pytest", "mock", "assertion", "test case"]):
-            return "test"
-        
-        # Refactor agent - code refactoring (check before review)
-        if any(word in message_lower for word in ["refactor", "restructure", "clean up", "reorganize", "simplify code", "design pattern"]):
-            return "refactor"
-        
-        # Review agent - code review
-        if any(word in message_lower for word in ["review", "critique", "feedback", "improve", "code quality", "best practice"]):
-            return "review"
-        
-        # Explain agent - simplified explanations
-        if any(word in message_lower for word in ["eli5", "simple terms", "beginner", "explain like", "what is", "basics of", "introduction to"]):
-            return "explain"
-        
-        # Debug agent - fixing issues
-        if any(word in message_lower for word in ["fix", "debug", "error", "bug", "issue", "problem", "broken", "not working", "fails"]):
-            return "debug"
-        
-        # Code agent - code generation
-        if any(word in message_lower for word in ["write code", "generate code", "create function", "implement", "code for", "script", "program"]):
-            return "code"
-        
-        # Research agent - information gathering
-        if any(word in message_lower for word in ["research", "find information", "look up", "investigate", "compare", "difference between"]):
-            return "research"
-        
-        # Summary agent - condensing information
-        if any(word in message_lower for word in ["summarize", "summary", "brief overview", "tl;dr", "key points"]):
-            return "summary"
-        
-        # Planning agent - strategic planning
-        if any(word in message_lower for word in ["plan", "strategy", "roadmap", "steps to", "how to achieve", "project plan"]):
-            return "planning"
-        
-        # Optimization agent - performance
-        if any(word in message_lower for word in ["optimize", "performance", "speed up", "memory", "bottleneck", "slow", "faster", "efficient"]):
-            return "optimization"
-        
-        # Documentation agent - docs generation
-        if any(word in message_lower for word in ["document", "readme", "jsdoc", "docstring", "api doc", "documentation", "comments"]):
-            return "documentation"
-        
-        # Migration agent - upgrades and transitions
-        if any(word in message_lower for word in ["migrate", "upgrade", "convert", "port", "transition", "move to", "switch to"]):
-            return "migration"
-        
-        # API agent - API design
-        if any(word in message_lower for word in ["api", "endpoint", "rest", "graphql", "webhook", "route", "http"]):
-            return "api"
-        
-        # Database agent - database operations
-        if any(word in message_lower for word in ["database", "sql", "query", "schema", "table", "mongodb", "postgres", "mysql", "redis"]):
-            return "database"
-        
-        # DevOps agent - deployment and infrastructure
-        if any(word in message_lower for word in ["deploy", "ci/cd", "docker", "kubernetes", "k8s", "terraform", "aws", "cloud", "pipeline"]):
-            return "devops"
-        
-        # Accessibility agent - a11y compliance
-        if any(word in message_lower for word in ["accessibility", "a11y", "wcag", "aria", "screen reader", "keyboard navigation", "color contrast"]):
-            return "accessibility"
-        
-        # i18n agent - internationalization
-        if any(word in message_lower for word in ["translate", "i18n", "localize", "internationalization", "locale", "rtl", "language support"]):
-            return "i18n"
-        
-        # Regex agent - regular expressions
-        if any(word in message_lower for word in ["regex", "regular expression", "pattern match", "regexp", "match pattern"]):
-            return "regex"
-        
-        # Git agent - version control
-        if any(word in message_lower for word in ["git", "merge conflict", "rebase", "cherry-pick", "branch", "commit", "pull request"]):
-            return "git"
-        
-        # CSS agent - styling
-        if any(word in message_lower for word in ["css", "style", "flexbox", "grid layout", "responsive", "animation", "tailwind", "scss"]):
-            return "css"
-        
-        # Reasoning agent - analysis and deep thinking (default fallback)
-        if any(word in message_lower for word in ["analyze", "analysis", "explain why", "how does", "what causes", "reason", "think"]):
-            return "reasoning"
-        
-        # DEFAULT: Always use reasoning agent instead of direct LLM
+                logger.warning(f"Adaptive allocation failed: {e}")
         return "reasoning"
+
+    async def should_spawn_agent_async(self, message: str, user_id: str = None) -> str:
+        """Neural agent selection — the primary method.
+        
+        Uses sentence-transformer + MLP classifier (same architecture as ToolClassifier).
+        Falls back to adaptive allocator if neural classifier unavailable.
+        ALWAYS returns an agent type — never returns None.
+        """
+        try:
+            prediction = await agent_classifier.predict(message, user_id=user_id)
+            logger.info(
+                f"[Neural] Selected {prediction.agent_type} "
+                f"(conf={prediction.confidence:.3f}, method={prediction.method}, "
+                f"latency={prediction.latency_ms:.1f}ms)"
+            )
+            return prediction.agent_type
+        except Exception as e:
+            logger.warning(f"Neural agent classifier failed: {e}, falling back to adaptive")
+        
+        # Fallback to sync adaptive allocator
+        return self.should_spawn_agent(message)
 
 
 # Global instance (router will be set later)

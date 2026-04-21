@@ -9,7 +9,7 @@ Features:
 - Store feedback with context (PERSISTED TO DATABASE)
 - Adjust agent quality scores
 - Train agent preferences
-- Connect to agent_router for biased agent selection
+- Adjust agent quality scores for intelligent routing
 """
 from __future__ import annotations
 
@@ -58,7 +58,6 @@ class UserFeedbackEngine:
     
     Now with:
     - Database persistence (survives restarts)
-    - Connection to agent_router for biased selection
     - Automatic score propagation
     """
     
@@ -68,24 +67,6 @@ class UserFeedbackEngine:
         self.agent_scores: Dict[str, float] = {}  # agent_type -> quality score
         self._db_initialized = False
         self._db_stats = {}  # DB-backed fallback
-        self._agent_router = None  # Will be set lazily to avoid circular imports
-    
-    def _get_agent_router(self):
-        """Lazily get agent_router to avoid circular imports."""
-        if self._agent_router is None:
-            try:
-                from .agent_router import agent_router
-                self._agent_router = agent_router
-            except ImportError:
-                logger.warning("Could not import agent_router - feedback won't affect routing")
-        return self._agent_router
-    
-    def _sync_to_agent_router(self, agent_type: str, score: float):
-        """Sync agent score to agent_router for biased selection."""
-        router = self._get_agent_router()
-        if router:
-            router.update_performance(agent_type, score)
-            logger.info(f"📊 Synced {agent_type} score {score:.2f} to agent_router")
     
     def submit_feedback(
         self,
@@ -202,8 +183,7 @@ class UserFeedbackEngine:
             
             await session.commit()
             
-            # Sync to agent_router for biased selection
-            self._sync_to_agent_router(agent_type, perf_score.quality_score)
+            logger.debug(f"Loaded score for {agent_type}: {perf_score.quality_score:.2f}")
             
             logger.info(f"💾 Persisted feedback to database for {agent_type}")
             
@@ -232,8 +212,7 @@ class UserFeedbackEngine:
                     satisfaction_rate=float(score.satisfaction_rate or 0),
                     recent_trend="stable",
                 )
-                # Also sync to agent_router
-                self._sync_to_agent_router(score.agent_type, score.quality_score)
+                logger.debug(f"Loaded DB score for {score.agent_type}: {score.quality_score:.2f}")
             
             self._db_initialized = True
             logger.info(f"📥 Loaded {len(scores)} agent performance scores from database")
@@ -259,8 +238,7 @@ class UserFeedbackEngine:
         smoothed_rate = (positive + prior_positive) / (total + prior_total)
         self.agent_scores[agent_type] = smoothed_rate
         
-        # Sync to agent_router for biased selection
-        self._sync_to_agent_router(agent_type, smoothed_rate)
+        logger.debug(f"Updated {agent_type} quality score: {smoothed_rate:.3f}")
     
     def get_agent_stats(self, agent_type: str) -> Optional[AgentFeedbackStats]:
         """Get feedback statistics for an agent."""

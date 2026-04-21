@@ -102,7 +102,7 @@ async def maybe_spawn_agent(
     _init_engines()
     start_time = datetime.now()
     
-    use_agent = forced_agent_type or agent_engine.should_spawn_agent(message)
+    use_agent = forced_agent_type or await agent_engine.should_spawn_agent_async(message, user_id=user_id)
     if not use_agent:
         return None, None, None, None
 

@@ -35,13 +35,21 @@ async def lifespan(app: FastAPI):
                     table.create(sync_conn)
         await conn.run_sync(_create_missing)
     
-    # Pre-train/load the ML skill classifier so no user hits cold-start
+    # Pre-train/load the ML tool classifier so no user hits cold-start
     try:
         from .services.tool_classifier import preload_tool_classifier
         await preload_tool_classifier()
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Tool classifier preload failed (non-fatal): {e}")
+
+    # Pre-train/load the ML agent classifier (shares encoder with tool classifier)
+    try:
+        from .services.agent_classifier import preload_agent_classifier
+        await preload_agent_classifier()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Agent classifier preload failed (non-fatal): {e}")
 
     # Start the provider status monitor loop
     monitor_task = asyncio.create_task(status_manager.monitor_loop())

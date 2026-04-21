@@ -68,8 +68,7 @@ from ..services.autonomous_error_correction import error_correction
 from ..services.causal_reasoning import causal_reasoner
 from ..services.neural_gravity_engine import neural_gravity_engine
 from ..services.user_api_keys import user_api_key_service
-# New Autonomous Services (L3-L5)
-from ..services.agent_router import agent_router, route_message, RoutingDecision
+# Autonomous Services
 from ..services.response_cache import response_cache, get_cached_response, cache_response
 from ..services.self_improving_agent import self_improving_agent, FeedbackType
 from ..services.autonomous_planner import autonomous_planner, create_task_plan
@@ -831,12 +830,13 @@ You are DevSwat Chat, a specialized AI with persistent memory (Hash Sphere), web
 </identity>
 
 <capabilities>
-~200 tools auto-selected by neural classifier: web search, code analysis, integrations (Google Drive/Calendar/Gmail, Slack, Discord, Figma, Jira, Notion, etc.), Agent Architect, memory (Hash Sphere), media generation, data/DB tools, and more. Tool outputs appear as "TOOL OUTPUT (name):". If absent, the tool did NOT run — never fabricate. Cannot browse websites directly.
+You have access to **208 tools** auto-selected by a neural classifier. Categories include: web search, weather, news, code analysis (AST/SAST), Agent Architect (create/manage/run agents), memory (Hash Sphere read/write/search), media generation (image/audio/video), integrations (Google Drive/Calendar/Gmail, Slack, Discord, Figma, Jira, Notion, GitHub, GitLab, LinkedIn, Salesforce, HubSpot, Airtable, and 20+ more), state physics simulation, community/Rabbit posts, file operations, code execution, and more. When asked about your tools: you have 208 tools across 15+ categories. Tool outputs appear as "TOOL OUTPUT (name):". If absent, the tool did NOT run — never fabricate.
 </capabilities>
 
 <anti_hallucination>
-- If no "TOOL OUTPUT" section exists in your context for a tool, it did NOT run. Say so and offer to retry. Never fabricate scan results, statistics, endpoints, IDs, or analysis data.
+- If no "TOOL OUTPUT" section exists in your context for a tool, it did NOT run. Say so honestly and offer to retry. Never fabricate scan results, statistics, endpoints, IDs, or analysis data.
 - Never invent facts, sources, metrics, IDs, links, or tool results. Prefer "I don't know" over guessing.
+- When asked "how many tools/agents/capabilities do you have" — answer from your system prompt, not from conversation history.
 </anti_hallucination>
 
 <communication_style>
@@ -1284,38 +1284,6 @@ async def send_message(
     logger.info(f"🔑 User API keys retrieved: {list(user_api_keys.keys()) if user_api_keys else 'None'}")
     
     # ============================================
-    # STEP 7.5: AUTONOMOUS AGENT ROUTING (L3 Autonomy)
-    # ============================================
-    # Use Agent Router to automatically select best agent/team
-    routing_decision = None
-    try:
-        context_for_routing = [{"content": m.content, "role": m.role} for m in recent_messages[:-1]]
-        routing_decision = route_message(
-            message=safe_user_message,
-            context=context_for_routing,
-            preferred_agent=request_body.agent_hash
-        )
-        logger.info(f"🎯 Agent Router: decision={routing_decision.decision.value}, "
-                   f"agent={routing_decision.primary_agent}, "
-                   f"confidence={routing_decision.confidence:.2f}")
-        
-        # Add routing-based prompt adjustments from Self-Improving Agent (L4)
-        if routing_decision.primary_agent:
-            prompt_adjustments = self_improving_agent.get_prompt_adjustments(
-                routing_decision.primary_agent, 
-                safe_user_message
-            )
-            if prompt_adjustments:
-                adjustment_prompt = {
-                    "role": "system",
-                    "content": "LEARNING-BASED ADJUSTMENTS:\n" + "\n".join(prompt_adjustments)
-                }
-                context_messages.append(adjustment_prompt)
-                logger.info(f"🧠 Added {len(prompt_adjustments)} learning-based prompt adjustments")
-    except Exception as e:
-        logger.warning(f"Agent routing failed: {e}")
-    
-    # ============================================
     # STEP 7.6: CHECK RESPONSE CACHE
     # ============================================
     execute_mode = request_body.execute_mode or False
@@ -1367,16 +1335,18 @@ async def send_message(
 
             detected_tool_id = prediction.tool_id
             if detected_tool_id:
-                if detected_tool_id == "web_search":
+                # Resolve granular sub-tools to parent executor
+                resolved_parent = tools_registry.TOOL_RESOLUTION.get(detected_tool_id)
+                effective_id = resolved_parent or detected_tool_id
+
+                if effective_id == "web_search":
                     web_search_needed = True
-                elif detected_tool_id == "image_generation":
+                elif effective_id == "image_generation":
                     image_gen_needed = True
                 else:
                     detected_tool = tools_registry.get_tool(detected_tool_id)
-                code_visualizer_intent = (detected_tool_id == "code_visualizer")
+                code_visualizer_intent = (effective_id == "code_visualizer")
 
-            # agent_architect is an AGENT (like Reasoning, Code, Debug, etc.)
-            # — routed by maybe_spawn_agent(), not by the tool classifier.
             print(f"[TOOL-7.9] Classifier: tool={detected_tool_id or 'None'} "
                   f"conf={prediction.confidence:.3f} method={prediction.method} "
                   f"active={prediction.active_tool} latency={prediction.latency_ms:.1f}ms "
@@ -2098,10 +2068,10 @@ async def send_message(
             logger.warning(f"Response caching failed: {e}")
     
     # Record interaction for Self-Improving Agent learning
-    if routing_decision and routing_decision.primary_agent:
+    if agent_type:
         try:
             await self_improving_agent.record_feedback(
-                agent_id=routing_decision.primary_agent,
+                agent_id=agent_type,
                 message=safe_user_message,
                 response=response_text,
                 feedback_type=FeedbackType.AUTO_SUCCESS,
@@ -2109,7 +2079,7 @@ async def send_message(
                     "resonance_score": resonance_score
                 }
             )
-            logger.info(f"📝 Recorded interaction for agent learning")
+            logger.info(f"📝 Recorded interaction for agent learning: {agent_type}")
         except Exception as e:
             logger.warning(f"Learning record failed: {e}")
     
@@ -4604,7 +4574,7 @@ async def submit_user_feedback(
 ):
     """Submit thumbs up/down feedback for an agent response.
     
-    Now persists to database and syncs with agent_router for biased agent selection.
+    Persists to database for agent quality scoring.
     """
     try:
         from ..services.user_feedback import user_feedback
@@ -5123,59 +5093,12 @@ async def get_autonomous_stats(request: Request):
     try:
         return {
             "status": "ok",
-            "routing": agent_router.get_routing_stats(),
             "cache": response_cache.get_stats(),
             "learning": self_improving_agent.get_all_stats(),
             "planning": autonomous_planner.get_planning_stats()
         }
     except Exception as e:
         logger.error(f"Autonomous stats error: {e}")
-        return {"error": str(e)}
-
-
-@router.get("/autonomous/routing/stats")
-async def get_routing_stats(request: Request):
-    """Get Agent Router statistics."""
-    try:
-        return {
-            "status": "ok",
-            "stats": agent_router.get_routing_stats()
-        }
-    except Exception as e:
-        logger.error(f"Routing stats error: {e}")
-        return {"error": str(e)}
-
-
-@router.post("/autonomous/routing/test")
-async def test_routing(request: Request):
-    """
-    Test agent routing for a message without executing.
-    Returns the routing decision (intent, complexity, recommended agent/team).
-    """
-    try:
-        body = await request.json()
-        message = body.get("message", "")
-        context = body.get("context", [])
-        
-        if not message:
-            return {"error": "Message is required"}
-        
-        decision = route_message(message, context)
-        
-        return {
-            "status": "ok",
-            "decision": {
-                "intent": decision.intent.value,
-                "complexity": decision.complexity.value,
-                "confidence": decision.confidence,
-                "recommended_agent": decision.recommended_agent,
-                "recommended_team": decision.recommended_team,
-                "reasoning": decision.reasoning,
-                "metadata": decision.metadata
-            }
-        }
-    except Exception as e:
-        logger.error(f"Routing test error: {e}")
         return {"error": str(e)}
 
 
@@ -5282,6 +5205,74 @@ async def record_feedback(request: Request):
         return {"status": "ok", "message": "Feedback recorded"}
     except Exception as e:
         logger.error(f"Feedback recording error: {e}")
+        return {"error": str(e)}
+
+
+@router.get("/autonomous/classifiers/stats")
+async def get_classifier_stats(request: Request):
+    """Get statistics for both neural classifiers (tool + agent)."""
+    try:
+        from ..services.agent_classifier import agent_classifier
+        tool_stats = await tool_classifier.get_stats()
+        agent_stats = await agent_classifier.get_stats()
+        return {
+            "status": "ok",
+            "tool_classifier": tool_stats,
+            "agent_classifier": agent_stats,
+        }
+    except Exception as e:
+        logger.error(f"Classifier stats error: {e}")
+        return {"error": str(e)}
+
+
+@router.post("/autonomous/classifiers/retrain")
+async def retrain_classifiers(request: Request):
+    """Retrain both neural classifiers with accumulated active learning data."""
+    try:
+        from ..services.agent_classifier import agent_classifier
+        tool_stats = await tool_classifier.retrain()
+        agent_stats = await agent_classifier.retrain()
+        return {
+            "status": "ok",
+            "tool_classifier": tool_stats,
+            "agent_classifier": agent_stats,
+        }
+    except Exception as e:
+        logger.error(f"Classifier retrain error: {e}")
+        return {"error": str(e)}
+
+
+@router.post("/autonomous/classifiers/test")
+async def test_classifiers(request: Request):
+    """Test both classifiers on a message without executing."""
+    try:
+        body = await request.json()
+        message = body.get("message", "")
+        if not message:
+            return {"error": "Message is required"}
+        from ..services.agent_classifier import agent_classifier
+        from ..services.tool_classifier import ALL_TOOLS
+        enabled = {s for s in ALL_TOOLS if s is not None}
+        tool_pred = await tool_classifier.predict(message, enabled)
+        agent_pred = await agent_classifier.predict(message)
+        return {
+            "status": "ok",
+            "message": message,
+            "tool": {
+                "tool_id": tool_pred.tool_id,
+                "confidence": tool_pred.confidence,
+                "method": tool_pred.method,
+                "top_5": dict(sorted(tool_pred.probabilities.items(), key=lambda x: -x[1])[:5]),
+            },
+            "agent": {
+                "agent_type": agent_pred.agent_type,
+                "confidence": agent_pred.confidence,
+                "method": agent_pred.method,
+                "top_5": dict(sorted(agent_pred.probabilities.items(), key=lambda x: -x[1])[:5]),
+            },
+        }
+    except Exception as e:
+        logger.error(f"Classifier test error: {e}")
         return {"error": str(e)}
 
 

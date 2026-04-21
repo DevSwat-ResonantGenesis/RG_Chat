@@ -38,8 +38,6 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Tool labels (None = general chat)
-# NOTE: agent_architect is an AGENT system (chosen by user/autonomous daemon),
-#       NOT a tool. It must NOT be in this list.
 ALL_TOOLS = [
     None,  # index 0 = general chat / no tool
     # ── Original high-level routing tools (kept for backward compat) ──
@@ -48,6 +46,7 @@ ALL_TOOLS = [
     "image_generation",
     "memory_search",
     "memory_library",
+    "agent_architect",
     "google_drive",
     "google_calendar",
     "state_physics",
