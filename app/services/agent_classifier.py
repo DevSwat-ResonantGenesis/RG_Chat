@@ -114,7 +114,7 @@ async def _save_agent_model_to_db(classifier, stats: dict, n_samples: int, versi
                 text("""
                     INSERT INTO agent_classifier_models
                         (version, model_blob, n_samples, train_accuracy, cv_accuracy, stats_json, is_active)
-                    VALUES (:version, :blob, :n_samples, :train_acc, :cv_acc, :stats::jsonb, true)
+                    VALUES (:version, :blob, :n_samples, :train_acc, :cv_acc, CAST(:stats AS jsonb), true)
                 """),
                 {
                     "version": version,
@@ -145,7 +145,7 @@ async def _save_agent_active_samples(samples: List[Dict]):
                     text("""
                         INSERT INTO agent_active_samples
                             (user_message, predicted_agent, confidence, method, probabilities, user_id)
-                        VALUES (:msg, :predicted, :conf, :method, :probs::jsonb, :uid)
+                        VALUES (:msg, :predicted, :conf, :method, CAST(:probs AS jsonb), :uid)
                     """),
                     {
                         "msg": s["msg"][:500],
