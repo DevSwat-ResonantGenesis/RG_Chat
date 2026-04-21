@@ -224,10 +224,19 @@
 #   [x] All 198 tools now have DIRECT executors — DONE (Apr 20-21)
 #   [x] TOOL_RESOLUTION removed entirely — DONE (Apr 20)
 #   [x] 1,098 lines dead Agents OS code nuked — DONE (Apr 21)
+#   [x] Architecture Agent stealing agent_architect queries — FIXED (Apr 21)
+#       - Added 14 anti-collision samples to agent_training_data.py
+#       - Added 15 disambiguation samples to tool_training_data.py
+#       - Agent guard force-executes agent_architect when keywords match
+#   [x] delegate_to_pipeline broken (weather/news/reddit) — FIXED (Apr 21)
+#       - Tools returning delegate_to_pipeline=True now set web_search_needed=True
+#   [x] Stale DB model ignoring new training data — FIXED (Apr 21)
+#       - Both classifiers now check seed sample count vs DB model on startup
+#       - Auto-retrain triggered if seed has more samples than DB model
+#   [x] Frontend: Architecture Agent sticky default — FIXED (Apr 21)
+#       - ORG_Frontend: Stop auto-adopting backend agent_type as user selection
+#       - Only platform agent hashes (UUID len>30) are restored from conversation
 #   [ ] Monitor logs: [Neural] and [AgentClassifier] entries
-#   [ ] Test /autonomous/classifiers/test endpoint with various messages
-#   [ ] Verify agent_architect triggers on "create an agent" messages
-#   [ ] Verify web_search triggers on weather/events/location queries
 #   [ ] Verify LLM says "208 tools" when asked
 #
 # MEDIUM PRIORITY:
