@@ -94,7 +94,7 @@ async def _load_agent_model_from_db():
                 clf = pickle.loads(blob)
                 return clf, stats or {}, n_samples, version
     except Exception as e:
-        logger.warning(f"[AgentClassifier] DB load failed (table may not exist yet): {e}")
+        logger.warning(f"[AgentClassifier] DB load failed: {e}")
     return None, {}, 0, 0
 
 
@@ -105,20 +105,6 @@ async def _save_agent_model_to_db(classifier, stats: dict, n_samples: int, versi
     try:
         blob = pickle.dumps(classifier)
         async with async_session() as session:
-            # Ensure table exists
-            await session.execute(text("""
-                CREATE TABLE IF NOT EXISTS agent_classifier_models (
-                    id SERIAL PRIMARY KEY,
-                    version INTEGER NOT NULL,
-                    model_blob BYTEA NOT NULL,
-                    n_samples INTEGER DEFAULT 0,
-                    train_accuracy FLOAT DEFAULT 0,
-                    cv_accuracy FLOAT DEFAULT 0,
-                    stats_json JSONB DEFAULT '{}',
-                    is_active BOOLEAN DEFAULT true,
-                    created_at TIMESTAMPTZ DEFAULT now()
-                )
-            """))
             # Deactivate old models
             await session.execute(
                 text("UPDATE agent_classifier_models SET is_active = false WHERE is_active = true")
@@ -154,19 +140,6 @@ async def _save_agent_active_samples(samples: List[Dict]):
     from sqlalchemy import text
     try:
         async with async_session() as session:
-            # Ensure table exists
-            await session.execute(text("""
-                CREATE TABLE IF NOT EXISTS agent_active_samples (
-                    id SERIAL PRIMARY KEY,
-                    user_message TEXT NOT NULL,
-                    predicted_agent VARCHAR(50),
-                    confidence FLOAT DEFAULT 0,
-                    method VARCHAR(50),
-                    probabilities JSONB DEFAULT '{}',
-                    user_id VARCHAR(200),
-                    created_at TIMESTAMPTZ DEFAULT now()
-                )
-            """))
             for s in samples:
                 await session.execute(
                     text("""

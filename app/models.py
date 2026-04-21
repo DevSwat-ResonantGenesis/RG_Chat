@@ -204,3 +204,32 @@ class ToolActiveSample(Base):
     # Implicit feedback: did the user continue with this skill or switch?
     was_correct = Column(Boolean, nullable=True)  # set later by feedback loop
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AgentClassifierModel(Base):
+    """Persisted trained ML classifier for agent type routing."""
+    __tablename__ = "agent_classifier_models"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(Integer, nullable=False, default=1)
+    model_blob = Column(LargeBinary, nullable=False)
+    n_samples = Column(Integer, default=0)
+    train_accuracy = Column(Float, default=0.0)
+    cv_accuracy = Column(Float, default=0.0)
+    stats_json = Column(JSON, default={})
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AgentActiveSample(Base):
+    """Active learning sample for agent type predictions."""
+    __tablename__ = "agent_active_samples"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_message = Column(Text, nullable=False)
+    predicted_agent = Column(String(50), nullable=True)
+    confidence = Column(Float, nullable=False)
+    method = Column(String(50), nullable=False)
+    probabilities = Column(JSON, default={})
+    user_id = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

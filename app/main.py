@@ -19,7 +19,11 @@ async def lifespan(app: FastAPI):
     
     # Auto-create new tables (hallucination_settings, knowledge_base_entries)
     from .db import engine
-    from .models import Base, HallucinationSettings, KnowledgeBaseEntryDB, ToolClassifierModel, ToolActiveSample
+    from .models import (
+        Base, HallucinationSettings, KnowledgeBaseEntryDB,
+        ToolClassifierModel, ToolActiveSample,
+        AgentClassifierModel, AgentActiveSample,
+    )
     from sqlalchemy import inspect as sa_inspect
     async with engine.begin() as conn:
         def _create_missing(sync_conn):
@@ -30,6 +34,8 @@ async def lifespan(app: FastAPI):
                 KnowledgeBaseEntryDB.__table__,
                 ToolClassifierModel.__table__,
                 ToolActiveSample.__table__,
+                AgentClassifierModel.__table__,
+                AgentActiveSample.__table__,
             ]:
                 if table.name not in existing:
                     table.create(sync_conn)
