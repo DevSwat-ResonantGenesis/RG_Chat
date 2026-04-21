@@ -1465,7 +1465,14 @@ async def send_message(
                   f"error={tool_result.get('error', '')[:100] if tool_result else 'N/A'}", flush=True)
             if tool_result and tool_result.get("success"):
                 tool_summary = tool_result.get("summary", "")
-                if tool_summary and not tool_result.get("delegate_to_pipeline"):
+                if tool_result.get("delegate_to_pipeline"):
+                    # Tool wants to delegate to web search pipeline (weather, news, reddit, etc.)
+                    web_search_needed = True
+                    _search_prefix = tool_result.get("search_prefix", "")
+                    if _search_prefix:
+                        safe_user_message = f"{_search_prefix} {safe_user_message}"
+                    logger.info(f"🔄 Tool {detected_tool.id} delegated to search pipeline (prefix={_search_prefix!r})")
+                elif tool_summary:
                     context_messages.append({
                         "role": "system",
                         "content": f"TOOL OUTPUT ({detected_tool.name}):\n{tool_summary}\n\nUse this data to answer the user's question. Present the information clearly.",

@@ -230,21 +230,31 @@ class AgentClassifier:
                         n_model_classes = len(clf.classes_)
                     except Exception:
                         n_model_classes = -1
-                    if n_model_classes == len(ALL_AGENTS):
+
+                    # Check if seed training data has changed
+                    from .agent_training_data import get_agent_training_data
+                    _seed_count = len(get_agent_training_data())
+
+                    if n_model_classes != len(ALL_AGENTS):
+                        logger.warning(
+                            f"[AgentClassifier] DB model has {n_model_classes} classes "
+                            f"but ALL_AGENTS has {len(ALL_AGENTS)} — retraining..."
+                        )
+                    elif n_samples < _seed_count:
+                        logger.warning(
+                            f"[AgentClassifier] DB model trained on {n_samples} samples "
+                            f"but seed has {_seed_count} — retraining with new data..."
+                        )
+                    else:
                         self._classifier = clf
                         self._train_stats = stats
                         self._model_version = version
                         self._is_trained = True
                         logger.info(
                             f"[AgentClassifier] Loaded model v{version} from DB "
-                            f"({n_samples} samples, acc={stats.get('train_accuracy', '?')})"
+                            f"({n_samples} samples, seed={_seed_count}, acc={stats.get('train_accuracy', '?')})"
                         )
                         return True
-                    else:
-                        logger.warning(
-                            f"[AgentClassifier] DB model has {n_model_classes} classes "
-                            f"but ALL_AGENTS has {len(ALL_AGENTS)} — retraining..."
-                        )
 
                 logger.info("[AgentClassifier] No model in DB, training from seed...")
                 await self._train_and_save(source="seed")
