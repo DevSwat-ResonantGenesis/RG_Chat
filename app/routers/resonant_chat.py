@@ -1473,10 +1473,25 @@ async def send_message(
                         safe_user_message = f"{_search_prefix} {safe_user_message}"
                     logger.info(f"🔄 Tool {detected_tool.id} delegated to search pipeline (prefix={_search_prefix!r})")
                 elif tool_summary:
-                    context_messages.append({
-                        "role": "system",
-                        "content": f"TOOL OUTPUT ({detected_tool.name}):\n{tool_summary}\n\nUse this data to answer the user's question. Present the information clearly.",
-                    })
+                    if detected_tool.id in ("agent_architect", "agents_list", "agents_create",
+                                             "agents_start", "agents_stop", "agents_status",
+                                             "agents_delete", "agents_update", "run_agent"):
+                        # Grounded output for agent management tools — LLM must only report real actions
+                        context_messages.append({
+                            "role": "system",
+                            "content": (
+                                f"TOOL OUTPUT ({detected_tool.name}) — GROUNDED RESULTS:\n{tool_summary}\n\n"
+                                "CRITICAL: Report ONLY the actions and results shown above. "
+                                "Do NOT fabricate any data, tool names, agent names, or statuses. "
+                                "Show the action log verbatim so the user sees exactly what happened. "
+                                "If the output includes 'ACTIONS PERFORMED', present each action as a step."
+                            ),
+                        })
+                    else:
+                        context_messages.append({
+                            "role": "system",
+                            "content": f"TOOL OUTPUT ({detected_tool.name}):\n{tool_summary}\n\nUse this data to answer the user's question. Present the information clearly.",
+                        })
                     logger.info(f"\U0001f527 Tool output added to context: {len(tool_summary)} chars")
         except Exception as e:
             logger.warning(f"Tool execution failed: {e}")

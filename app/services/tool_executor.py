@@ -1530,7 +1530,11 @@ class ToolExecutor:
     async def _architect_delegate_to_services(
         self, svc_payload: Dict, headers: Dict[str, str], panel_url: str
     ) -> Dict[str, Any]:
-        """Call the architect service via SSE streaming with sync fallback."""
+        """Call the architect service via SSE streaming with sync fallback.
+
+        Captures every tool_call + tool_result into a grounded action log
+        so the LLM in resonant_chat can only report what actually happened.
+        """
         result: Dict[str, Any] = {
             "success": True,
             "action": "open_agents_panel",
@@ -1539,7 +1543,9 @@ class ToolExecutor:
         }
 
         accumulated_text = ""
+        action_log: List[str] = []  # human-readable grounded log
         actions_taken = []
+        _pending_tool: Optional[Dict] = None  # track tool_call → tool_result pairs
 
         # Try SSE streaming
         try:
@@ -1572,27 +1578,68 @@ class ToolExecutor:
                             continue
 
                         etype = event.get("type", "")
-                        # Architect puts fields at top-level (not nested under "data")
-                        # Support both: top-level and nested "data" for robustness
                         edata = event.get("data", event)
+
                         if etype == "text":
                             accumulated_text += edata.get("content", "")
+
                         elif etype == "tool_call":
+                            tool_name = edata.get("tool", edata.get("name", "?"))
+                            args_keys = edata.get("args_keys", [])
+                            progress_msg = edata.get("message", f"Calling {tool_name}...")
+                            action_log.append(f"▶ {progress_msg}")
+                            _pending_tool = {"tool": tool_name, "args_keys": args_keys}
                             actions_taken.append(edata)
+                            logger.info(f"🔧 Architect tool_call: {tool_name}({args_keys})")
+
                         elif etype == "tool_result":
-                            pass  # tracked via actions
+                            success = edata.get("success", True)
+                            preview = edata.get("preview", "")[:400]
+                            result_msg = edata.get("message", "")
+                            icon = "✅" if success else "❌"
+                            action_log.append(f"  {icon} {result_msg or preview}")
+                            if _pending_tool:
+                                _pending_tool["success"] = success
+                                _pending_tool["result_preview"] = preview
+                                _pending_tool = None
+                            logger.info(f"🔧 Architect tool_result: success={success} {result_msg[:80]}")
+
+                        elif etype == "thinking":
+                            msg = edata.get("message", "")
+                            if msg:
+                                action_log.append(f"💭 {msg}")
+
+                        elif etype == "warning":
+                            msg = edata.get("message", "")
+                            if msg:
+                                action_log.append(f"⚠️ {msg}")
+
+                        elif etype == "summarizing":
+                            action_log.append("📝 Generating summary...")
+
                         elif etype == "complete":
                             resp_data = edata.get("response", edata)
                             accumulated_text = resp_data.get("text", accumulated_text)
                             options_data = resp_data.get("options")
                             if options_data:
                                 result["present_options"] = self._map_architect_options(options_data)
+                            # Capture actions from complete event
+                            resp_actions = resp_data.get("actions", [])
+                            if resp_actions and not actions_taken:
+                                actions_taken = resp_actions
+
                         elif etype == "error":
                             err = edata.get("error", edata.get("message", "Unknown error"))
+                            action_log.append(f"❌ Error: {err}")
                             result["error"] = err
 
+            # Build grounded summary: action log + architect's own text
+            grounded_parts = []
+            if action_log:
+                grounded_parts.append("ACTIONS PERFORMED (real API calls):\n" + "\n".join(action_log))
             if accumulated_text:
-                result["summary"] = accumulated_text
+                grounded_parts.append("ARCHITECT RESPONSE:\n" + accumulated_text)
+            result["summary"] = "\n\n".join(grounded_parts) if grounded_parts else accumulated_text
             if actions_taken:
                 result["actions"] = actions_taken
             return result
@@ -1610,7 +1657,20 @@ class ToolExecutor:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    result["summary"] = data.get("text", data.get("response", ""))
+                    text = data.get("text", data.get("response", ""))
+                    sync_actions = data.get("actions", [])
+                    # Build grounded summary from sync response actions
+                    if sync_actions:
+                        log_lines = []
+                        for a in sync_actions:
+                            t = a.get("tool", "?")
+                            r = a.get("result", {})
+                            err = r.get("error", "") if isinstance(r, dict) else ""
+                            icon = "❌" if err else "✅"
+                            log_lines.append(f"  {icon} {t}: {str(r)[:200]}")
+                        result["summary"] = f"ACTIONS PERFORMED (real API calls):\n" + "\n".join(log_lines) + f"\n\nARCHITECT RESPONSE:\n{text}"
+                    else:
+                        result["summary"] = text
                     options_data = data.get("options")
                     if options_data:
                         result["present_options"] = self._map_architect_options(options_data)
