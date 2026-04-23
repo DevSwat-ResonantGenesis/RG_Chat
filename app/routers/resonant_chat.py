@@ -1314,12 +1314,35 @@ async def send_message(
     image_gen_needed = False
     code_visualizer_intent = False
 
+    # ── Architect pipeline continuity ──
+    # If the previous assistant message had present_options from the architect,
+    # force-route this message to the architect so the pipeline can continue.
+    _architect_pipeline_active = False
+    if recent_messages:
+        for _rmsg in reversed(recent_messages[-4:]):
+            _r_role = _rmsg.role if hasattr(_rmsg, "role") else _rmsg.get("role", "")
+            if _r_role != "assistant":
+                continue
+            _r_meta = _rmsg.meta_data if hasattr(_rmsg, "meta_data") else _rmsg.get("meta_data", None)
+            if _r_meta and isinstance(_r_meta, dict):
+                for _tr in _r_meta.get("toolResults", []):
+                    if isinstance(_tr, dict) and _tr.get("result", {}).get("present_options"):
+                        _architect_pipeline_active = True
+                        break
+            break  # only check the most recent assistant message
+
+    if _architect_pipeline_active:
+        detected_tool = tools_registry.get_tool("agent_architect")
+        print(f"[TOOL-7.9] PIPELINE CONTINUITY — forcing agent_architect (previous had present_options)", flush=True)
+
     # Always use full ALL_TOOLS for classifier — the old tools_registry only
     # knows 13 legacy skills but the neural classifier covers 199 tools.
     from ..services.tool_classifier import ALL_TOOLS
     enabled_tool_ids = {s for s in ALL_TOOLS if s is not None}
 
-    if request_body.teamId:
+    if _architect_pipeline_active:
+        pass  # Skip classifier — already forced to architect
+    elif request_body.teamId:
         print(f"[TOOL-7.9] BYPASSED — user selected team {request_body.teamId}", flush=True)
     else:
         try:

@@ -629,6 +629,10 @@ class ToolClassifier:
                         candidate = tn[6:]
                         if candidate in enabled_ids:
                             return candidate
+                    elif tn.startswith("tool_"):
+                        candidate = tn[5:]
+                        if candidate in enabled_ids:
+                            return candidate
         return None
 
     async def predict(
