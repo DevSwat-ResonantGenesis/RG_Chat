@@ -3389,6 +3389,39 @@ async def get_providers(
             "status": p.get("status", "unknown"),
         })
     
+    # Inject user BYOK providers NOT already in the status list
+    # This ensures user-connected providers (e.g. bedrock, chatgpt) always appear
+    existing_ids = {p["id"] for p in providers} | {p.get("provider_key") for p in providers}
+    BYOK_PROVIDER_META = {
+        "bedrock": {"name": "AWS Bedrock", "model": "anthropic.claude-3-5-sonnet-20241022-v2:0", "models": ["anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic.claude-3-haiku-20240307-v1:0", "amazon.nova-pro-v1:0", "amazon.nova-lite-v1:0"], "capabilities": ["chat", "coding", "vision"]},
+        "chatgpt": {"name": "ChatGPT (Direct)", "model": "chatgpt-4o-latest", "models": ["chatgpt-4o-latest", "gpt-4o-mini"], "capabilities": ["chat", "coding", "vision"]},
+        "replicate": {"name": "Replicate", "model": "meta/meta-llama-3-70b-instruct", "models": ["meta/meta-llama-3-70b-instruct"], "capabilities": ["chat"]},
+        "stability": {"name": "Stability AI", "model": "stable-diffusion-xl", "models": ["stable-diffusion-xl"], "capabilities": ["image"]},
+        "elevenlabs": {"name": "ElevenLabs", "model": "eleven_turbo_v2", "models": ["eleven_turbo_v2"], "capabilities": ["audio"]},
+        "kimi": {"name": "Kimi (Moonshot)", "model": "moonshot-v1-128k", "models": ["moonshot-v1-128k"], "capabilities": ["chat"]},
+        "meta": {"name": "Meta AI (Llama)", "model": "llama-3.2-90b", "models": ["llama-3.2-90b", "llama-3.2-11b"], "capabilities": ["chat", "coding"]},
+        "copilot": {"name": "Microsoft Copilot", "model": "gpt-4o", "models": ["gpt-4o", "gpt-4-turbo"], "capabilities": ["chat", "coding"]},
+        "glm": {"name": "GLM (Zhipu AI)", "model": "glm-4", "models": ["glm-4", "glm-4v", "glm-3-turbo"], "capabilities": ["chat"]},
+    }
+    for uk_provider, uk_key in (user_keys or {}).items():
+        if uk_provider not in existing_ids and uk_key:
+            meta = BYOK_PROVIDER_META.get(uk_provider, {})
+            real_models = llm_models_map.get(uk_provider, []) or meta.get("models", [])
+            providers.append({
+                "id": uk_provider,
+                "provider_key": uk_provider,
+                "name": meta.get("name", uk_provider.replace("_", " ").title()),
+                "available": True,
+                "has_user_key": True,
+                "uses_credits": False,
+                "model": meta.get("model", real_models[0] if real_models else ""),
+                "models": real_models,
+                "description": f"Connected via your API key",
+                "capabilities": meta.get("capabilities", ["chat"]),
+                "latency": None,
+                "status": "byok_connected",
+            })
+
     # Build fallback chain from available providers (excluding local for now)
     fallback_chain = [p["id"] for p in providers if p["available"] and p["id"] not in ["local", "codellama"]]
     
