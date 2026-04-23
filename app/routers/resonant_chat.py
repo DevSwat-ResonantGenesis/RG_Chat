@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
@@ -917,6 +917,322 @@ Format all responses with Markdown. The chat UI renders full Markdown with synta
 
 
 # ============================================
+# SSE STREAMING ENDPOINT
+# ============================================
+
+AGENT_ARCHITECT_URL = os.getenv("AGENT_ARCHITECT_URL", "http://agent_architect:8000")
+
+
+def _sse_event(data: dict) -> str:
+    """Format a dict as an SSE data line."""
+    return f"data: {json.dumps(data)}\n\n"
+
+
+@router.post("/message/stream")
+async def stream_message(
+    request_body: SendMessageRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    SSE streaming endpoint. Forwards architect SSE events live.
+    For non-architect messages, streams LLM chunks.
+    """
+    # ── Auth ──
+    if CRYPTO_IDENTITY_AVAILABLE:
+        identity = get_crypto_identity(request)
+        user_id = identity.user_id
+        org_id = identity.org_id or user_id
+    else:
+        user_id = request.headers.get("x-user-id")
+        org_id = request.headers.get("x-org-id") or user_id
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User ID required")
+
+    user_role = request.headers.get("x-user-role", "user")
+    is_superuser = request.headers.get("x-is-superuser", "false").lower() == "true"
+    unlimited_credits = request.headers.get("x-unlimited-credits", "false").lower() == "true"
+    raw_message = request_body.message or ""
+    safe_message = _sanitize_sensitive_tokens(raw_message)
+
+    # ── Get or create chat ──
+    chat_id = request_body.chat_id
+    chat = None
+    if chat_id:
+        try:
+            result = await session.execute(select(ResonantChat).where(ResonantChat.id == UUID(chat_id)))
+            chat = result.scalar_one_or_none()
+        except ValueError:
+            pass
+    if not chat:
+        chat = ResonantChat(
+            user_id=user_id, org_id=org_id,
+            title=safe_message[:50] + ("..." if len(safe_message) > 50 else ""),
+            status="active", agent_hash=request_body.agent_hash,
+        )
+        session.add(chat)
+        await session.commit()
+        await session.refresh(chat)
+    chat_id = str(chat.id)
+
+    # ── Store user message ──
+    try:
+        hasher = ResonanceHasher()
+        user_hash = hasher.hash_text(safe_message)
+        user_xyz = hasher.hash_to_coords(user_hash)
+    except Exception:
+        user_hash = _simple_hash(safe_message)
+        user_xyz = _hash_to_xyz_simple(user_hash)
+
+    user_msg = ResonantChatMessage(
+        chat_id=UUID(chat_id), role="user", content=safe_message,
+        hash=user_hash, resonance_score=0.5,
+        xyz_x=user_xyz[0], xyz_y=user_xyz[1], xyz_z=user_xyz[2],
+        agent_hash=request_body.agent_hash,
+    )
+    session.add(user_msg)
+    await session.commit()
+    await session.refresh(user_msg)
+
+    # ── Deduct credits ──
+    try:
+        await deduct_credits(
+            user_id=user_id, action="chat_message",
+            description=f"Chat message in {chat_id[:8]}...",
+            user_role=user_role, is_superuser=is_superuser,
+            unlimited_credits=unlimited_credits,
+        )
+    except httpx.HTTPStatusError as e:
+        if e.response is not None and e.response.status_code == 402:
+            raise HTTPException(status_code=402, detail="Credits exhausted")
+        raise
+    except Exception:
+        pass
+
+    # ── Detect tool ──
+    result_msgs = await session.execute(
+        select(ResonantChatMessage).where(ResonantChatMessage.chat_id == UUID(chat_id))
+        .order_by(ResonantChatMessage.created_at.desc()).limit(50)
+    )
+    recent_messages = list(reversed(result_msgs.scalars().all()))
+
+    # Check architect pipeline continuity
+    _architect_active = False
+    for _rmsg in reversed(recent_messages[-4:]):
+        if (getattr(_rmsg, "role", "") or "") != "assistant":
+            continue
+        _r_meta = getattr(_rmsg, "meta_data", None)
+        if _r_meta and isinstance(_r_meta, dict):
+            for _tr in _r_meta.get("toolResults", []):
+                if isinstance(_tr, dict) and (_tr.get("result") or {}).get("present_options"):
+                    _architect_active = True
+                    break
+        break
+
+    use_architect = _architect_active
+    if not use_architect:
+        # Check classifier
+        try:
+            from ..services.tool_classifier import ALL_TOOLS
+            enabled_ids = {s for s in ALL_TOOLS if s is not None}
+            msg_intents = intent_engine.extract(safe_message)
+            prediction = await tool_classifier.predict(
+                message=safe_message, enabled_tool_ids=enabled_ids,
+                recent_messages=recent_messages[-6:] if recent_messages else None,
+                intents=msg_intents, user_id=user_id,
+            )
+            if prediction.tool_id == "agent_architect":
+                use_architect = True
+        except Exception:
+            pass
+
+    # Also check keyword guard
+    if not use_architect:
+        _agent_keywords = [
+            "create agent", "build agent", "make agent", "delete agent",
+            "run agent", "start agent", "stop agent", "list agent",
+            "my agent", "agent for", "build me", "create me",
+        ]
+        if any(kw in safe_message.lower() for kw in _agent_keywords):
+            use_architect = True
+
+    # ── Get user API keys ──
+    user_api_keys = await _get_user_api_keys(session, user_id)
+
+    async def _generate_events():
+        accumulated_text = ""
+        present_options_data = None
+
+        if use_architect:
+            # ── ARCHITECT SSE STREAMING ──
+            yield _sse_event({"event": "start", "chat_id": chat_id, "user_message_id": str(user_msg.id), "tool": "agent_architect"})
+
+            headers = {
+                "x-user-id": user_id,
+                "x-user-role": user_role,
+                "x-is-superuser": str(is_superuser).lower(),
+                "x-unlimited-credits": str(unlimited_credits).lower(),
+            }
+            svc_payload = {
+                "message": raw_message,
+                "workspace_id": user_id,
+                "user_id": user_id,
+                "context": "",
+                "conversation_history": [
+                    {"role": getattr(m, "role", ""), "content": (getattr(m, "content", "") or "")[:500]}
+                    for m in recent_messages[-8:]
+                ],
+                "user_api_keys": user_api_keys or {},
+            }
+
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    async with client.stream("POST", f"{AGENT_ARCHITECT_URL}/api/message/stream",
+                                             json=svc_payload, headers=headers) as resp:
+                        if resp.status_code != 200:
+                            yield _sse_event({"event": "error", "error": f"Architect returned {resp.status_code}"})
+                            return
+
+                        async for line in resp.aiter_lines():
+                            line = line.strip()
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                break
+
+                            try:
+                                event = json.loads(data_str)
+                            except Exception:
+                                continue
+
+                            etype = event.get("type", "")
+                            edata = event.get("data", event)
+
+                            if etype == "text":
+                                content = edata.get("content", "")
+                                accumulated_text = content  # orchestrator sends full text each time
+                                yield _sse_event({"event": "chunk", "content": content})
+
+                            elif etype == "options":
+                                present_options_data = tool_executor._map_architect_options(edata)
+                                yield _sse_event({"event": "options", "options": present_options_data})
+
+                            elif etype == "complete":
+                                resp_data = edata.get("response", edata)
+                                final_text = resp_data.get("text", "")
+                                if final_text:
+                                    accumulated_text = final_text
+                                opts = resp_data.get("options")
+                                if opts:
+                                    present_options_data = tool_executor._map_architect_options(opts)
+                                    yield _sse_event({"event": "options", "options": present_options_data})
+
+                            elif etype in ("tool_call", "tool_result", "thinking", "phase",
+                                           "build_progress", "build_step", "build_complete",
+                                           "test_step", "test_result", "verify_step",
+                                           "verify_complete", "prompt_step", "prompt_ready",
+                                           "research_complete", "plan_ready", "offers_ready",
+                                           "warning"):
+                                yield _sse_event({"event": "step", "step": etype, **edata})
+
+                            elif etype == "error":
+                                yield _sse_event({"event": "error", "error": edata.get("error", "Unknown")})
+
+            except Exception as e:
+                yield _sse_event({"event": "error", "error": str(e)})
+
+        else:
+            # ── REGULAR LLM STREAMING ──
+            yield _sse_event({"event": "start", "chat_id": chat_id, "user_message_id": str(user_msg.id)})
+
+            # Build context
+            memories = await _extract_memories(
+                user_id=user_id, org_id=org_id, message=safe_message,
+                agent_hash=request_body.agent_hash, team_id=request_body.teamId,
+            )
+            history_msgs = recent_messages[:-1]
+            context_messages = _build_context_messages(
+                recent_messages=history_msgs, memories=memories,
+                user_message=safe_message, user_role=user_role,
+                user_plan="unlimited" if is_superuser else "free",
+            )
+
+            try:
+                agent_response, agent_type, actual_provider, router_meta = await maybe_spawn_agent(
+                    message=safe_message, context_messages=context_messages,
+                    user_id=user_id, user_api_keys=user_api_keys,
+                    preferred_provider=request_body.preferred_provider,
+                    images=request_body.images,
+                )
+                if agent_response:
+                    accumulated_text = agent_response
+                    yield _sse_event({"event": "chunk", "content": agent_response})
+            except Exception as e:
+                accumulated_text = f"Error: {e}"
+                yield _sse_event({"event": "error", "error": str(e)})
+
+        # ── Strip present_options text from accumulated_text ──
+        clean_text = accumulated_text
+        clean_text = re.sub(r'Please choose one of the options:\s*present_options\([^)]*\)', '', clean_text).strip()
+        clean_text = re.sub(r'present_options\([^)]*\)', '', clean_text).strip()
+
+        # ── Store assistant message ──
+        try:
+            a_hash = hasher.hash_text(clean_text) if clean_text else _simple_hash("")
+            a_xyz = hasher.hash_to_coords(a_hash) if clean_text else _hash_to_xyz_simple(a_hash)
+        except Exception:
+            a_hash = _simple_hash(clean_text)
+            a_xyz = _hash_to_xyz_simple(a_hash)
+
+        tool_results_meta = []
+        if use_architect:
+            tool_results_meta.append({
+                "tool_name": "tool_agent_architect",
+                "success": True,
+                "result": {"summary": clean_text[:500]},
+            })
+            if present_options_data:
+                tool_results_meta.append({
+                    "tool_name": "present_options",
+                    "success": True,
+                    "result": present_options_data,
+                })
+
+        assistant_msg = ResonantChatMessage(
+            chat_id=UUID(chat_id), role="assistant", content=clean_text,
+            ai_provider="tool_agent_architect" if use_architect else "agent_reasoning",
+            hash=a_hash, resonance_score=0.5,
+            xyz_x=a_xyz[0], xyz_y=a_xyz[1], xyz_z=a_xyz[2],
+            meta_data={"toolResults": tool_results_meta} if tool_results_meta else {},
+        )
+        session.add(assistant_msg)
+        await session.commit()
+        await session.refresh(assistant_msg)
+
+        # ── Final done event ──
+        done_data: Dict[str, Any] = {
+            "event": "done",
+            "message_id": str(assistant_msg.id),
+            "chat_id": chat_id,
+            "content": clean_text,
+            "provider": "tool_agent_architect" if use_architect else "agent_reasoning",
+            "hash": a_hash,
+            "resonance_score": 0.5,
+            "total_length": len(clean_text),
+        }
+        if present_options_data:
+            done_data["present_options"] = present_options_data
+        yield _sse_event(done_data)
+
+    return StreamingResponse(
+        _generate_events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ============================================
 # MAIN ENDPOINTS
 # ============================================
 
@@ -1582,6 +1898,9 @@ async def send_message(
         operation = tool_result.get("operation", "")
         if tool_result.get("success"):
             tool_summary = (tool_result.get("summary") or "").strip()
+            # Strip raw present_options(...) calls from text — they render as buttons via toolResults
+            tool_summary = re.sub(r'Please choose one of the options:\s*present_options\([^)]*\)', '', tool_summary).strip()
+            tool_summary = re.sub(r'present_options\([^)]*\)', '', tool_summary).strip()
             response_text = tool_summary or "Agent Architect operation completed successfully."
             provider = "tool_agent_architect"
             agent_type = "agents"
@@ -2404,6 +2723,16 @@ async def send_message(
                 error=None if tool_success else str(tool_result.get("error") or "Tool execution failed"),
             )
         )
+        # Emit a separate present_options entry so the frontend can find it
+        if tool_result.get("present_options"):
+            tool_results.append(
+                ToolResultData(
+                    tool_name="present_options",
+                    success=True,
+                    result=tool_result["present_options"],
+                    error=None,
+                )
+            )
 
     current_meta = assistant_message.meta_data or {}
     if generated_images_data:
