@@ -2370,7 +2370,7 @@ async def send_message(
         }
         if "analysis_id" in tool_result:
             tool_payload["analysis_id"] = tool_result["analysis_id"]
-        for key in ["panel_url", "operation", "created_agent_id", "created_agent_name", "created_agent_public_hash"]:
+        for key in ["panel_url", "operation", "created_agent_id", "created_agent_name", "created_agent_public_hash", "present_options", "pipeline_plan"]:
             if key in tool_result and tool_result.get(key) is not None:
                 tool_payload[key] = tool_result.get(key)
         tool_results.append(

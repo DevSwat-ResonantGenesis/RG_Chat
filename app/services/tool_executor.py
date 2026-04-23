@@ -1617,13 +1617,91 @@ class ToolExecutor:
                         elif etype == "summarizing":
                             action_log.append("📝 Generating summary...")
 
+                        # ── Build Pipeline events ──
+                        elif etype == "phase":
+                            phase_name = edata.get("phase", "")
+                            msg = edata.get("message", f"Phase: {phase_name}")
+                            action_log.append(f"🔄 {msg}")
+
+                        elif etype == "research_complete":
+                            credits = edata.get("credits_remaining", "?")
+                            integrations = edata.get("integrations_connected", [])
+                            existing = edata.get("existing_agent_count", 0)
+                            warnings = edata.get("warnings", [])
+                            action_log.append(f"🔍 Research: credits={credits}, integrations={len(integrations)}, existing_agents={existing}")
+                            for w in warnings:
+                                action_log.append(f"  ⚠️ {w}")
+
+                        elif etype == "plan_ready":
+                            plan = edata.get("plan", {})
+                            msg = edata.get("message", "Build plan ready")
+                            action_log.append(f"📋 {msg}")
+                            result["pipeline_plan"] = plan
+
+                        elif etype == "verify_step":
+                            msg = edata.get("message", "")
+                            if msg:
+                                action_log.append(f"  {msg}")
+
+                        elif etype == "verify_complete":
+                            all_ok = edata.get("all_ok", False)
+                            warnings = edata.get("warnings", [])
+                            icon = "✅" if all_ok else "⚠️"
+                            action_log.append(f"{icon} Verification {'passed' if all_ok else 'has warnings'}")
+                            for w in warnings:
+                                action_log.append(f"  ⚠️ {w}")
+
+                        elif etype == "prompt_step":
+                            msg = edata.get("message", "")
+                            if msg:
+                                action_log.append(f"🧠 {msg}")
+
+                        elif etype == "prompt_ready":
+                            msg = edata.get("message", "")
+                            length = edata.get("prompt_length", 0)
+                            action_log.append(f"📝 Prompt generated ({length} chars)")
+
+                        elif etype == "build_progress":
+                            msg = edata.get("message", "")
+                            if msg:
+                                action_log.append(f"🔨 {msg}")
+
+                        elif etype == "build_step":
+                            msg = edata.get("message", "")
+                            if msg:
+                                action_log.append(f"  🔨 {msg}")
+
+                        elif etype == "build_complete":
+                            success = edata.get("success", False)
+                            name = edata.get("name", "")
+                            icon = "✅" if success else "❌"
+                            action_log.append(f"{icon} Build {'succeeded' if success else 'failed'}: {name}")
+
+                        elif etype == "test_step":
+                            msg = edata.get("message", "")
+                            if msg:
+                                action_log.append(f"  🧪 {msg}")
+
+                        elif etype == "test_result":
+                            status = edata.get("status", "?")
+                            msg = edata.get("message", f"Test: {status}")
+                            action_log.append(f"🧪 {msg}")
+
+                        elif etype == "offers_ready":
+                            offers = edata.get("offers", [])
+                            if offers:
+                                action_log.append(f"💡 {len(offers)} post-build suggestions available")
+
+                        elif etype == "options":
+                            options_data = edata
+                            result["present_options"] = self._map_architect_options(options_data)
+
                         elif etype == "complete":
                             resp_data = edata.get("response", edata)
                             accumulated_text = resp_data.get("text", accumulated_text)
                             options_data = resp_data.get("options")
                             if options_data:
                                 result["present_options"] = self._map_architect_options(options_data)
-                            # Capture actions from complete event
                             resp_actions = resp_data.get("actions", [])
                             if resp_actions and not actions_taken:
                                 actions_taken = resp_actions
@@ -1633,13 +1711,14 @@ class ToolExecutor:
                             action_log.append(f"❌ Error: {err}")
                             result["error"] = err
 
-            # Build grounded summary: action log + architect's own text
-            grounded_parts = []
-            if action_log:
-                grounded_parts.append("ACTIONS PERFORMED (real API calls):\n" + "\n".join(action_log))
+            # Build summary: prefer the formatted architect text (pipeline plan/response)
+            # Only fall back to action log when there's no accumulated text
             if accumulated_text:
-                grounded_parts.append("ARCHITECT RESPONSE:\n" + accumulated_text)
-            result["summary"] = "\n\n".join(grounded_parts) if grounded_parts else accumulated_text
+                result["summary"] = accumulated_text
+            elif action_log:
+                result["summary"] = "\n".join(action_log)
+            else:
+                result["summary"] = ""
             if actions_taken:
                 result["actions"] = actions_taken
             return result
