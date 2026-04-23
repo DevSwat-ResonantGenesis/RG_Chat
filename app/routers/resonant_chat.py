@@ -922,6 +922,37 @@ Format all responses with Markdown. The chat UI renders full Markdown with synta
 
 AGENT_ARCHITECT_URL = os.getenv("AGENT_ARCHITECT_URL", "http://agent_architect:8000")
 
+_AGENT_INTENT_RE = re.compile(
+    r'\b(create|build|make|delete|remove|run|start|stop|list|show|manage|configure|modify'
+    r'|diagnose|update|edit|deploy|schedule|test|launch|setup|set\s*up)\b'
+    r'.{0,20}'
+    r'\b(agents?)\b',
+    re.IGNORECASE,
+)
+_AGENT_REVERSE_RE = re.compile(
+    r'\b(agents?)\b.{0,15}\b(create|build|make|delete|run|start|stop|list|manage|configure|modify)\b',
+    re.IGNORECASE,
+)
+_AGENT_WANT_RE = re.compile(
+    r'\b(i\s+want|i\s+need|i\s+wanna|give\s+me|help\s+me\s+with)\b.{0,20}\b(agents?)\b',
+    re.IGNORECASE,
+)
+_AGENT_NOUN_RE = re.compile(
+    r'\b(my\s+agents?|agents?\s+for\b|agents?\s+that\b|agents?\s+to\b|agents?\s+page)',
+    re.IGNORECASE,
+)
+
+def _is_agent_intent(text: str) -> bool:
+    """Detect whether user message is about agent management (architect territory)."""
+    if not text:
+        return False
+    return bool(
+        _AGENT_INTENT_RE.search(text)
+        or _AGENT_REVERSE_RE.search(text)
+        or _AGENT_WANT_RE.search(text)
+        or _AGENT_NOUN_RE.search(text)
+    )
+
 
 def _sse_event(data: dict) -> str:
     """Format a dict as an SSE data line."""
@@ -1046,15 +1077,9 @@ async def stream_message(
         except Exception:
             pass
 
-    # Also check keyword guard
-    if not use_architect:
-        _agent_keywords = [
-            "create agent", "build agent", "make agent", "delete agent",
-            "run agent", "start agent", "stop agent", "list agent",
-            "my agent", "agent for", "build me", "create me",
-        ]
-        if any(kw in safe_message.lower() for kw in _agent_keywords):
-            use_architect = True
+    # Also check keyword guard (regex-based, handles articles/prepositions)
+    if not use_architect and _is_agent_intent(safe_message):
+        use_architect = True
 
     # ── Get user API keys ──
     user_api_keys = await _get_user_api_keys(session, user_id)
@@ -2026,20 +2051,7 @@ async def send_message(
     # If the user asks about creating/building agents but the architect tool
     # didn't run, inject a guard so the LLM doesn't fabricate fake agent IDs,
     # webhook URLs, hashes, or endpoint URLs.
-    _agent_creation_keywords = [
-        "create agent", "create an agent", "build agent", "make agent",
-        "create now agent", "create me agent", "build me agent",
-        "how many agent", "show my agent", "list agent", "my agent",
-        "agent for my", "agent for google", "agent for discord",
-        "agent for slack", "agent for github", "agent that",
-        "webhook agent", "google drive agent", "gmail agent",
-        "calendar agent", "discord agent", "slack agent",
-        "run agent", "start agent", "stop agent", "delete agent",
-        "diagnose agent", "modify agent", "configure agent",
-    ]
-    _user_asking_agent_creation = any(
-        kw in (safe_user_message or "").lower() for kw in _agent_creation_keywords
-    )
+    _user_asking_agent_creation = _is_agent_intent(safe_user_message or "")
     _architect_tool_ran = (
         detected_tool and detected_tool.id == "agent_architect" and tool_result
     )
