@@ -1090,6 +1090,7 @@ async def stream_message(
 
         if use_architect:
             # ── ARCHITECT SSE STREAMING ──
+            print(f"[ARCHITECT-ROUTE] use_architect=True, user_api_keys={list(user_api_keys.keys()) if user_api_keys else 'None'}", flush=True)
             yield _sse_event({"event": "start", "chat_id": chat_id, "user_message_id": str(user_msg.id), "tool": "agent_architect"})
 
             headers = {
