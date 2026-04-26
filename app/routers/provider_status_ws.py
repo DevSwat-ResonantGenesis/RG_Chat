@@ -237,6 +237,16 @@ class ProviderStatusManager:
                            "mistralai/Mixtral-8x7B-Instruct-v0.1"],
                 "capabilities": ["chat", "coding"],
             },
+            {
+                "id": "tokenrouter", "name": "Claude Opus 4.6",
+                "env_keys": ["ANTHROPIC_API_KEY"],
+                "base_url": "https://api.tokenrouter.com/v1",
+                "test_model": "claude-opus-4-6",
+                "default_model": "claude-opus-4-6",
+                "models": ["claude-opus-4-6"],
+                "capabilities": ["chat", "coding", "vision", "tools", "thinking"],
+                "extra_headers": {"anthropic-version": "2023-06-01"},
+            },
         ]
         
         for bp in BYOK_PROVIDERS:
@@ -246,6 +256,11 @@ class ProviderStatusManager:
                 platform_key = os.getenv(ek)
                 if platform_key:
                     break
+            
+            # TokenRouter uses ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL
+            if bp.get("id") == "tokenrouter":
+                if os.getenv("ANTHROPIC_API_KEY") and os.getenv("LLM_ANTHROPIC_BASE_URL"):
+                    platform_key = os.getenv("ANTHROPIC_API_KEY")
             
             if platform_key and bp.get("test_model"):
                 status = await self._check_byok_provider_latency(
@@ -352,9 +367,11 @@ class ProviderStatusManager:
                         return {"available": False, "latency": latency, "status": "error", "error": response.text[:100]}
             
             elif provider == "anthropic":
+                base_url = os.getenv("LLM_ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+                base_url = base_url.rstrip("/") + "/v1/messages"
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
-                        "https://api.anthropic.com/v1/messages",
+                        base_url,
                         headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
                         json={"model": "claude-3-haiku-20240307", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
                         timeout=5.0
