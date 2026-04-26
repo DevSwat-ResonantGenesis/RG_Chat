@@ -192,6 +192,18 @@ DEFAULT_PROVIDERS: Dict[str, ProviderConfig] = {
         env_key_name="ANYSCALE_API_KEY",
         supports_vision=False,
     ),
+    "tokenrouter": ProviderConfig(
+        id="tokenrouter",
+        name="Claude Opus 4.6",
+        api_type=ProviderType.ANTHROPIC,
+        base_url="https://api.tokenrouter.com/v1",
+        default_model="claude-opus-4-6",
+        models=["claude-opus-4-6"],
+        env_key_name="ANTHROPIC_API_KEY",
+        supports_vision=True,
+        supports_streaming=True,
+        max_tokens=16384,
+    ),
 }
 
 
