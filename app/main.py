@@ -103,7 +103,6 @@ async def status():
 # Include all routers
 from .routers.resonant_chat import router as resonant_chat_router
 from .routers.analytics import router as analytics_router
-from .routers.streaming import router as streaming_router
 from .routers.websocket import router as websocket_router
 from .routers.provider_status_ws import router as provider_status_router
 from .routers.tools import router as tools_router
@@ -112,7 +111,6 @@ from .routers.ide_completions import router as ide_completions_router
 
 app.include_router(resonant_chat_router)
 app.include_router(analytics_router)
-app.include_router(streaming_router)
 app.include_router(websocket_router)
 app.include_router(provider_status_router)
 app.include_router(tools_router)
