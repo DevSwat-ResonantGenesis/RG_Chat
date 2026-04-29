@@ -21,7 +21,6 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 import asyncio
-from enum import Enum
 import re
 from zoneinfo import ZoneInfo
 
@@ -101,233 +100,27 @@ from ..services.enhanced_metrics import enhanced_metrics_calculator, EnhancedMet
 from ..services.tools_registry import tools_registry
 from ..services.tool_executor import tool_executor
 from ..services.tool_classifier import tool_classifier
+# Extracted modules (Phase A decomposition)
+from ..infrastructure.service_client import service_client, ServiceClient, CircuitBreaker, ServiceState
+from .chat_models import (
+    SendMessageRequest, MessageData, GeneratedImageData, WebSearchResultData,
+    ToolResultData, ResonantChatResponse, ConversationMessageRequest,
+    SaveAgenticRequest, CreateChatRequest, CreateChatResponse,
+    HallucinationSettingsRequest, KnowledgeBaseAddRequest,
+    InternalRouteQueryRequest, FeedbackRequest, CreateChainRequest,
+    ExecuteChainRequest, ExecuteCodeRequest, AnalyzeRequest,
+    ValidateRequest, VotingRequest, ProjectContextRequest,
+    ChunkingInfoRequest, ProcessChunkedRequest,
+)
+from ..services.navigation import (
+    extract_navigation_tool_results,
+    extract_current_time_tool_results,
+    is_time_only_query,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/resonant-chat", tags=["resonant-chat"])
-
-logger = logging.getLogger(__name__)
-
-# ============================================
-# PRODUCTION SERVICE CLIENT WITH CIRCUIT BREAKER
-# ============================================
-
-class ServiceState(Enum):
-    HEALTHY = "healthy"
-    DEGRADED = "degraded"
-    FAILED = "failed"
-
-class CircuitBreaker:
-    def __init__(self, failure_threshold: int = 3, timeout: int = 60):
-        self.failure_threshold = failure_threshold
-        self.timeout = timeout
-        self.failure_count = 0
-        self.last_failure_time = None
-        self.state = ServiceState.HEALTHY
-    
-    def call_allowed(self) -> bool:
-        current_time = asyncio.get_event_loop().time()
-        if self.state == ServiceState.FAILED:
-            # Auto-reset after timeout
-            if current_time - self.last_failure_time > self.timeout:
-                self.state = ServiceState.DEGRADED
-                self.failure_count = 0
-                logger.info(f"🔄 Circuit breaker auto-reset for service")
-                return True
-            return False
-        return True
-    
-    def record_success(self):
-        self.failure_count = 0
-        if self.state != ServiceState.HEALTHY:
-            self.state = ServiceState.HEALTHY
-            logger.info(f"✅ Circuit breaker restored to healthy")
-    
-    def record_failure(self):
-        self.failure_count += 1
-        self.last_failure_time = asyncio.get_event_loop().time()
-        if self.failure_count >= self.failure_threshold:
-            self.state = ServiceState.FAILED
-            logger.warning(f"🚨 Circuit breaker OPEN after {self.failure_count} failures")
-
-class ServiceClient:
-    def __init__(self):
-        self.circuit_breakers = {
-            "memory_service": CircuitBreaker(failure_threshold=3, timeout=60),
-            "billing_service": CircuitBreaker(failure_threshold=2, timeout=30),
-            "auth_service": CircuitBreaker(failure_threshold=2, timeout=30),
-        }
-        self.session = None
-    
-    async def get_session(self):
-        if self.session is None or self.session.is_closed:
-            self.session = httpx.AsyncClient(
-                timeout=httpx.Timeout(10.0, connect=3.0),
-                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
-            )
-        return self.session
-    
-    async def call_service(
-        self, 
-        service_name: str, 
-        method: str, 
-        url: str, 
-        **kwargs
-    ) -> Optional[Dict]:
-        circuit_breaker = self.circuit_breakers.get(service_name)
-        if not circuit_breaker or not circuit_breaker.call_allowed():
-            print(f"[SVC] Circuit breaker OPEN for {service_name}", flush=True)
-            return None
-        
-        session = await self.get_session()
-        max_retries = 2
-        base_delay = 0.1
-        
-        for attempt in range(max_retries + 1):
-            try:
-                if method.upper() == "GET":
-                    response = await session.get(url, **kwargs)
-                elif method.upper() == "POST":
-                    response = await session.post(url, **kwargs)
-                else:
-                    return None
-                
-                # Handle different response statuses
-                if response.status_code < 400:
-                    circuit_breaker.record_success()
-                    return response.json() if response.content else None
-                elif response.status_code == 404:
-                    logger.warning(f"❌ Endpoint not found for {service_name}: {url}")
-                    circuit_breaker.record_failure()
-                    return None
-                elif response.status_code >= 500:
-                    logger.warning(f"🔥 Server error for {service_name}: {response.status_code}")
-                    if attempt < max_retries:
-                        await asyncio.sleep(base_delay * (2 ** attempt))
-                        continue
-                    else:
-                        circuit_breaker.record_failure()
-                        return None
-                else:
-                    logger.warning(f"⚠️ Client error for {service_name}: {response.status_code}")
-                    return None
-                    
-            except (httpx.RequestError, httpx.TimeoutException) as e:
-                print(f"[SVC] Network error for {service_name} (attempt {attempt + 1}): {e}", flush=True)
-                if attempt < max_retries:
-                    await asyncio.sleep(base_delay * (2 ** attempt))
-                    continue
-                break
-        
-        circuit_breaker.record_failure()
-        return None
-
-# Global service client instance
-service_client = ServiceClient()
-
-# ============================================
-# REQUEST/RESPONSE MODELS
-# ============================================
-
-class SendMessageRequest(BaseModel):
-    message: str
-    chat_id: Optional[str] = None
-    preferred_provider: Optional[str] = None
-    agent_hash: Optional[str] = None
-    teamId: Optional[str] = None
-    attached_files: Optional[List[Dict[str, Any]]] = None
-    images: Optional[List[Dict[str, Any]]] = None  # Base64 images for vision models: [{type, data, name}]
-    code_selection: Optional[Dict[str, Any]] = None
-    isolate_anchors: Optional[bool] = False
-    enabled_tool_ids: Optional[List[str]] = None  # Frontend tool toggles — overrides server defaults when provided
-    # IDE Chat Integration
-    execute_mode: Optional[bool] = False  # When True: skip explanations, return structured code changes
-    project_context: Optional[Dict[str, Any]] = None  # IDE project context (files, structure)
-
-
-class MessageData(BaseModel):
-    id: str
-    role: str
-    content: str
-    timestamp: str
-    aiProvider: Optional[str] = None
-    llmProvider: Optional[str] = None
-    model: Optional[str] = None
-    preferredProvider: Optional[str] = None
-    wasFallback: Optional[bool] = None
-    fallbackChain: Optional[List[Dict[str, Any]]] = None
-    tokenUsage: Optional[Dict[str, Any]] = None
-    hash: Optional[str] = None
-    resonanceScore: Optional[float] = None
-    xyz: Optional[List[float]] = None
-
-
-class GeneratedImageData(BaseModel):
-    """Generated image data for response."""
-    url: Optional[str] = None
-    base64_data: Optional[str] = None
-    revised_prompt: Optional[str] = None
-    model: str = "dall-e-3"
-    size: str = "1024x1024"
-
-
-class WebSearchResultData(BaseModel):
-    """Web search result data for response."""
-    title: str
-    url: str
-    snippet: str
-    source: str = "unknown"
-
-
-class ToolResultData(BaseModel):
-    tool_name: str
-    success: bool
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-
-
-class ResonantChatResponse(BaseModel):
-    message: MessageData
-    anchors: List[str] = []
-    hash: Optional[str] = None
-    resonanceScore: float = 0.5
-    aiProvider: str = "unknown"
-    llmProvider: Optional[str] = None
-    memoryUpdated: bool = False
-    chatId: str
-    evidenceGraph: Optional[Dict[str, Any]] = None
-    generatedImages: Optional[List[GeneratedImageData]] = None
-    webSearchResults: Optional[List[WebSearchResultData]] = None
-    toolResults: Optional[List[ToolResultData]] = None
-
-
-class ConversationMessageRequest(BaseModel):
-    """Compatibility request model for adding a message to a conversation."""
-    role: str
-    content: str
-
-
-class SaveAgenticRequest(BaseModel):
-    """Request model for saving agentic-chat messages into resonant pipeline."""
-    user_message: str
-    assistant_response: str
-    chat_id: Optional[str] = None  # Existing resonant chat ID, or null to create new
-    tool_results: Optional[List[Dict[str, Any]]] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
-    model: Optional[str] = None
-    tokens_used: Optional[int] = 0
-    loops: Optional[int] = 0
-
-
-class CreateChatRequest(BaseModel):
-    title: Optional[str] = None
-    agent_hash: Optional[str] = None
-
-
-class CreateChatResponse(BaseModel):
-    chatId: str
-    title: str
-
 
 # ============================================
 # HELPER FUNCTIONS
@@ -348,136 +141,6 @@ def _hash_to_xyz_simple(hash_str: str) -> tuple:
         return (x, y, z)
     except:
         return (0.5, 0.5, 0.5)
-
-
-def _extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
-    msg = (user_message or "").strip()
-    if not msg:
-        return []
-
-    msg_lower = msg.lower()
-    if not any(k in msg_lower for k in ["open ", "go to ", "navigate ", "navigate to ", "visit "]):
-        return []
-
-    url_match = re.search(r"(https?://[^\s\)\]>'\"]+)", msg)
-    if url_match:
-        url = url_match.group(1).rstrip(".,;!?")
-        return [ToolResultData(tool_name="navigation", success=True, result={"action": "navigate", "url": url})]
-
-    path_match = re.search(r"(^|\s)(/[A-Za-z0-9\-_/]+)", msg)
-    if path_match:
-        path = path_match.group(2).rstrip(".,;!?")
-        return [ToolResultData(tool_name="navigation", success=True, result={"action": "navigate", "url": path})]
-
-    # Common internal page navigation
-    page_routes: List[tuple[str, str, str]] = [
-        (r"\bagents?\s+(?:os|page|panel)\b", "/agents", "agents"),
-        (r"\bagents?\b", "/agents", "agents"),
-        (r"\bagent\s+teams?\b", "/agent-teams", "agent-teams"),
-        (r"\bteam\s+dashboard\b", "/agent-teams", "agent-teams"),
-        (r"\bresonant\s+chat\b", "/resonant-chat-next", "resonant-chat"),
-        (r"\bdashboard\b", "/dashboard", "dashboard"),
-        (r"\bpricing\b", "/pricing", "pricing"),
-        (r"\baccount\b", "/dashboard", "dashboard"),
-        (r"\bide\b", "/ide", "ide"),
-        (r"\bmarketplace\b", "/marketplace", "marketplace"),
-        (r"\bcode\s*visual", "/code-visualizer", "code-visualizer"),
-        (r"\bstate\s*physics\b", "/state-physics", "state-physics"),
-        (r"\bresonant\s+memory\b", "/resonant-memory", "resonant-memory"),
-        (r"\bmemory\s+(?:page|library|panel)\b", "/resonant-memory", "resonant-memory"),
-        (r"\brabbit\b", "/rabbit", "rabbit"),
-        (r"\bcommunity\b", "/rabbit", "rabbit"),
-        (r"\bprofile\b", "/profile", "profile"),
-        (r"\bsettings\b", "/profile", "profile"),
-        (r"\bconnect.?profiles?\b", "/connect-profiles", "connect-profiles"),
-        (r"\bintegrations?\b", "/connect-profiles", "connect-profiles"),
-        (r"\bapi\s*keys?\b", "/connect-profiles", "connect-profiles"),
-        (r"\bbuild\b", "/build", "build"),
-        (r"\bproject\s*builder\b", "/build", "build"),
-        (r"\bwallet\b", "/wallet", "wallet"),
-    ]
-
-    for pattern, path, page in page_routes:
-        if re.search(pattern, msg_lower):
-            return [
-                ToolResultData(
-                    tool_name="navigation",
-                    success=True,
-                    result={"action": "navigate", "url": path, "page": page},
-                )
-            ]
-
-    return []
-
-
-
-
-def _extract_current_time_tool_results(user_message: str) -> List[ToolResultData]:
-    msg = (user_message or "").strip()
-    if not msg:
-        return []
-
-    msg_lower = msg.lower()
-    time_trigger = bool(
-        re.search(r"\b(time\s+now|current\s+time|what\s+time|exact\s+time|time\s+in)\b", msg_lower)
-        or ("time" in msg_lower and "now" in msg_lower)
-        or ("time" in msg_lower and ("san francisco" in msg_lower or re.search(r"\bsf\b", msg_lower)))
-    )
-    if not time_trigger:
-        return []
-
-    tz: Optional[str] = None
-    if "san francisco" in msg_lower or re.search(r"\bsf\b", msg_lower):
-        tz = "America/Los_Angeles"
-    elif "pacific" in msg_lower or "pst" in msg_lower or "pdt" in msg_lower:
-        tz = "America/Los_Angeles"
-
-    # Default to platform timezone if user asks for "current time" without specifying location
-    if not tz:
-        tz = "America/Los_Angeles"
-
-    now_local = datetime.now(ZoneInfo(tz))
-    now_utc = datetime.utcnow()
-
-    return [
-        ToolResultData(
-            tool_name="time",
-            success=True,
-            result={
-                "action": "current_time",
-                "timezone": tz,
-                "iso": now_local.isoformat(),
-                "local": now_local.strftime("%Y-%m-%d %H:%M:%S %Z"),
-                "utc": now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
-            },
-        )
-    ]
-
-
-def _is_time_only_query(user_message: str) -> bool:
-    msg = (user_message or "").strip().lower()
-    if not msg:
-        return False
-    if not re.search(r"\b(time\s+now|current\s+time|what\s+time|exact\s+time)\b", msg):
-        return False
-
-    # If user is also asking for other time-sensitive info (events/weather/etc), don't short-circuit
-    blockers = [
-        "events", "weather", "restaurants", "things to do",
-        "news", "price", "stock", "crypto", "bitcoin", "ethereum",
-        # Business hours — "what time does X open/close"
-        "open", "opens", "close", "closes", "closing", "opening",
-        "store", "shop", "mall", "pharmacy", "target", "walmart",
-        "costco", "safeway", "walgreens", "starbucks", "mcdonalds",
-        # Transport schedules
-        "flight", "train", "bus", "ferry", "departure", "arrival",
-        "game", "match", "show", "concert", "movie",
-    ]
-    if any(b in msg for b in blockers):
-        return any(msg == p for p in ["time now", "current time", "what time", "exact time"])
-    return True
-
-
 
 
 def _extract_github_token_from_user_keys(user_api_keys: Optional[Dict[str, str]]) -> Optional[str]:
@@ -1631,7 +1294,7 @@ async def send_message(
     execute_mode = request_body.execute_mode or False
     _prev_assistant_agent_content = ""
 
-    time_tool_results = _extract_current_time_tool_results(safe_user_message)
+    time_tool_results = extract_current_time_tool_results(safe_user_message)
     if time_tool_results:
         tr = time_tool_results[0].result or {}
         local_str = tr.get("local") or tr.get("iso")
@@ -1952,7 +1615,7 @@ async def send_message(
         provider = f"tool_{detected_tool.id}_error"
         agent_type = "integration"
         logger.info(f"Integration tool {detected_tool.id} failed, returning error directly: {error_detail[:120]}")
-    if not execute_mode and response_text is None and time_tool_results and _is_time_only_query(safe_user_message):
+    if not execute_mode and response_text is None and time_tool_results and is_time_only_query(safe_user_message):
         tr = time_tool_results[0].result or {}
         local_str = tr.get("local") or tr.get("iso")
         tz = tr.get("timezone") or "America/Los_Angeles"
@@ -2713,7 +2376,7 @@ async def send_message(
         ]
 
     tool_results: List[ToolResultData] = []
-    tool_results.extend(_extract_navigation_tool_results(safe_user_message))
+    tool_results.extend(extract_navigation_tool_results(safe_user_message))
     tool_results.extend(time_tool_results)
     # Add skill results (success and failure) for frontend-grounded behavior.
     if tool_result:
@@ -4485,13 +4148,6 @@ def _calculate_hallucination_score(content: str) -> float:
 # HALLUCINATION DETECTION SETTINGS & KNOWLEDGE BASE
 # ============================================
 
-class HallucinationSettingsRequest(BaseModel):
-    """Request to update hallucination detection settings."""
-    system_prompt_grounding: Optional[bool] = None
-    llm_as_judge: Optional[bool] = None
-    knowledge_base_check: Optional[bool] = None
-
-
 @router.get("/hallucination-settings")
 async def get_hallucination_settings(
     request: Request,
@@ -4595,13 +4251,6 @@ async def update_hallucination_settings(
             "knowledge_base_check": kbc,
         },
     }
-
-
-class KnowledgeBaseAddRequest(BaseModel):
-    """Request to add a knowledge base entry."""
-    title: str
-    content: str
-    entry_type: str = "fact"  # 'fact', 'document', 'data', 'book_excerpt'
 
 
 @router.post("/knowledge-base")
@@ -4760,14 +4409,6 @@ async def health():
 # ============================================
 # INTERNAL ROUTE-QUERY ENDPOINT (for Agent Engine)
 # ============================================
-
-class InternalRouteQueryRequest(BaseModel):
-    """Request for internal route-query endpoint."""
-    message: str
-    context: Optional[List[Dict[str, Any]]] = None
-    preferred_provider: Optional[str] = None
-    user_api_keys: Optional[Dict[str, str]] = None
-
 
 @router.post("/internal/route-query")
 async def internal_route_query(request_body: InternalRouteQueryRequest, request: Request):
@@ -5021,16 +4662,6 @@ async def list_available_agents():
 # PHASE 5 ENDPOINTS
 # ============================================
 
-class FeedbackRequest(BaseModel):
-    message_id: str
-    is_positive: bool
-    agent_type: str = ""
-    agent_hash: Optional[str] = None  # Custom agent hash ID for custom agents
-    task: str = ""
-    response: str = ""
-    comment: Optional[str] = None
-
-
 @router.post("/feedback")
 async def submit_user_feedback(
     request: Request,
@@ -5155,12 +4786,6 @@ async def list_agent_chains(user_id: Optional[str] = None):
         return {"status": "error", "error": str(e)}
 
 
-class CreateChainRequest(BaseModel):
-    name: str
-    description: str
-    steps: List[Dict[str, Any]]
-
-
 @router.post("/chains")
 async def create_agent_chain(
     request: Request,
@@ -5183,12 +4808,6 @@ async def create_agent_chain(
         return {"status": "error", "error": str(e)}
 
 
-class ExecuteChainRequest(BaseModel):
-    chain_id: str
-    task: str
-    context: List[Dict[str, Any]] = []
-
-
 @router.post("/chains/execute")
 async def execute_agent_chain(body: ExecuteChainRequest):
     """Execute an agent chain."""
@@ -5205,12 +4824,6 @@ async def execute_agent_chain(body: ExecuteChainRequest):
         return {"status": "error", "error": str(e)}
 
 
-class ExecuteCodeRequest(BaseModel):
-    code: str
-    language: Optional[str] = None
-    test_input: str = ""
-
-
 @router.post("/sandbox/execute")
 async def execute_code_sandbox(body: ExecuteCodeRequest):
     """Execute code in sandbox environment."""
@@ -5225,12 +4838,6 @@ async def execute_code_sandbox(body: ExecuteCodeRequest):
     except Exception as e:
         logger.error(f"Code execution failed: {e}")
         return {"status": "error", "error": str(e)}
-
-
-class AnalyzeRequest(BaseModel):
-    response: str
-    task: str = ""
-    agent_type: str = ""
 
 
 @router.post("/analyze/confidence")
@@ -5269,13 +4876,6 @@ async def add_response_citations(body: AnalyzeRequest):
         return {"status": "error", "error": str(e)}
 
 
-class ValidateRequest(BaseModel):
-    response: str
-    task: str
-    agent_type: str
-    context: List[Dict[str, Any]] = []
-
-
 @router.post("/validate")
 async def cross_validate_response(body: ValidateRequest):
     """Cross-validate an agent response with another agent."""
@@ -5293,13 +4893,6 @@ async def cross_validate_response(body: ValidateRequest):
         return {"status": "error", "error": str(e)}
 
 
-class VotingRequest(BaseModel):
-    task: str
-    context: List[Dict[str, Any]] = []
-    candidate_agents: Optional[List[str]] = None
-    voter_agents: Optional[List[str]] = None
-
-
 @router.post("/voting")
 async def run_agent_voting(body: VotingRequest):
     """Run agent voting on a task."""
@@ -5315,19 +4908,6 @@ async def run_agent_voting(body: VotingRequest):
     except Exception as e:
         logger.error(f"Voting failed: {e}")
         return {"status": "error", "error": str(e)}
-
-
-class ProjectContextRequest(BaseModel):
-    project_name: str
-
-
-class ChunkingInfoRequest(BaseModel):
-    text: str
-
-
-class ProcessChunkedRequest(BaseModel):
-    text: str
-    task_prompt: str = "Process and summarize this content"
 
 
 @router.post("/chunking/info")
