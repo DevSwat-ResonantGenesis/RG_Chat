@@ -42,6 +42,7 @@ class MultiAIRouter:
         """Get list of available providers based on configured keys."""
         providers = []
         for name, env_var in [
+            ("tokenrouter", "TOKENROUTER_API_KEY"),
             ("openai", "OPENAI_API_KEY"),
             ("anthropic", "ANTHROPIC_API_KEY"),
             ("google", "GOOGLE_API_KEY"),

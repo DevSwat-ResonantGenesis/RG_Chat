@@ -1,4 +1,4 @@
-#!/bin/bash
+ay #!/bin/bash
 # ============================================================================
 # RESONANT CHAT + TOOL SYSTEM RESTRUCTURE PLAN
 # Generated: 2026-04-27 | Status: PLANNING

@@ -238,14 +238,19 @@ class ProviderStatusManager:
                 "capabilities": ["chat", "coding"],
             },
             {
-                "id": "tokenrouter", "name": "Claude Opus 4.6",
-                "env_keys": ["ANTHROPIC_API_KEY"],
+                "id": "tokenrouter", "name": "TokenRouter (All Models)",
+                "env_keys": ["TOKENROUTER_API_KEY"],
                 "base_url": "https://api.tokenrouter.com/v1",
-                "test_model": "claude-opus-4-6",
-                "default_model": "claude-opus-4-6",
-                "models": ["claude-opus-4-6"],
-                "capabilities": ["chat", "coding", "vision", "tools", "thinking"],
-                "extra_headers": {"anthropic-version": "2023-06-01"},
+                "test_model": "openai/gpt-5.5",
+                "default_model": "anthropic/claude-opus-4.7",
+                "models": [
+                    "anthropic/claude-opus-4.7",
+                    "openai/gpt-5.5",
+                    "google/gemini-3.1-pro-preview",
+                    "z-ai/glm-5.1",
+                    "qwen/qwen3.6-plus",
+                ],
+                "capabilities": ["chat", "coding", "vision", "tools"],
             },
         ]
         
@@ -256,11 +261,6 @@ class ProviderStatusManager:
                 platform_key = os.getenv(ek)
                 if platform_key:
                     break
-            
-            # TokenRouter uses ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL
-            if bp.get("id") == "tokenrouter":
-                if os.getenv("ANTHROPIC_API_KEY") and os.getenv("LLM_ANTHROPIC_BASE_URL"):
-                    platform_key = os.getenv("ANTHROPIC_API_KEY")
             
             if platform_key and bp.get("test_model"):
                 status = await self._check_byok_provider_latency(

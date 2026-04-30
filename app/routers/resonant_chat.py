@@ -3081,6 +3081,7 @@ async def get_providers(
         "meta": {"name": "Meta AI (Llama)", "model": "llama-3.2-90b", "models": ["llama-3.2-90b", "llama-3.2-11b"], "capabilities": ["chat", "coding"]},
         "copilot": {"name": "Microsoft Copilot", "model": "gpt-4o", "models": ["gpt-4o", "gpt-4-turbo"], "capabilities": ["chat", "coding"]},
         "glm": {"name": "GLM (Zhipu AI)", "model": "glm-4", "models": ["glm-4", "glm-4v", "glm-3-turbo"], "capabilities": ["chat"]},
+        "tokenrouter": {"name": "TokenRouter (All Models)", "model": "anthropic/claude-opus-4.7", "models": ["anthropic/claude-opus-4.7", "openai/gpt-5.5", "google/gemini-3.1-pro-preview", "z-ai/glm-5.1", "qwen/qwen3.6-plus"], "capabilities": ["chat", "coding", "vision", "tools"]},
     }
     for uk_provider, uk_key in (user_keys or {}).items():
         if uk_provider not in existing_ids and uk_key:
