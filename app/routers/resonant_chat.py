@@ -3805,7 +3805,7 @@ async def get_message_metrics(
             "was_fallback": was_fallback,
             "fallback_chain": fallback_chain,
             "token_usage": token_usage,
-            "agent_id": agent_type_from_meta or agent_type,
+            "agent_id": agent_type_from_meta,
             "team_id": team_id,
             "hash": message.hash,
             "xyz": [message.xyz_x, message.xyz_y, message.xyz_z] if message.xyz_x else None,
