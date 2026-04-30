@@ -847,6 +847,9 @@ async def stream_message(
                 user_plan="unlimited" if is_superuser else "free",
             )
 
+            agent_type = None
+            actual_provider = None
+            router_meta = None
             try:
                 agent_response, agent_type, actual_provider, router_meta = await maybe_spawn_agent(
                     message=safe_message, context_messages=context_messages,
@@ -888,12 +891,26 @@ async def stream_message(
                     "result": present_options_data,
                 })
 
+        # Build meta_data with router info
+        msg_meta: Dict[str, Any] = {}
+        if tool_results_meta:
+            msg_meta["toolResults"] = tool_results_meta
+        if actual_provider:
+            msg_meta["actual_llm_provider"] = actual_provider
+        if router_meta:
+            msg_meta["model"] = router_meta.get("model")
+            msg_meta["fallback_chain"] = router_meta.get("fallback_chain")
+            msg_meta["was_fallback"] = router_meta.get("was_fallback", False)
+            msg_meta["usage"] = router_meta.get("usage")
+        if agent_type:
+            msg_meta["agent_type"] = agent_type
+
         assistant_msg = ResonantChatMessage(
             chat_id=UUID(chat_id), role="assistant", content=clean_text,
-            ai_provider="tool_agent_architect" if use_architect else "agent_reasoning",
+            ai_provider=actual_provider or ("tool_agent_architect" if use_architect else "agent_reasoning"),
             hash=a_hash, resonance_score=0.5,
             xyz_x=a_xyz[0], xyz_y=a_xyz[1], xyz_z=a_xyz[2],
-            meta_data={"toolResults": tool_results_meta} if tool_results_meta else {},
+            meta_data=msg_meta or {},
         )
         session.add(assistant_msg)
         await session.commit()
@@ -905,7 +922,9 @@ async def stream_message(
             "message_id": str(assistant_msg.id),
             "chat_id": chat_id,
             "content": clean_text,
-            "provider": "tool_agent_architect" if use_architect else "agent_reasoning",
+            "provider": actual_provider or ("tool_agent_architect" if use_architect else "agent_reasoning"),
+            "model": router_meta.get("model") if router_meta else None,
+            "agent_type": agent_type,
             "hash": a_hash,
             "resonance_score": 0.5,
             "total_length": len(clean_text),
