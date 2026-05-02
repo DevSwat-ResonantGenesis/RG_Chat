@@ -717,10 +717,17 @@ class ToolClassifier:
                 best_skill = tid
 
         # --- Continuity boost ---
+        # Boost the active tool's score so multi-turn tool usage sticks.
+        # EXCEPTION: agent_architect is a "meta" tool — it has its own
+        # continuity mechanism (present_options pipeline check in the
+        # streaming endpoint).  Without this exclusion, any message after
+        # an architect response gets boosted to 99% architect, even
+        # unrelated requests like "add to my calendar".
         CONTINUITY_BOOST = 0.30
         CONTINUITY_MIN = 0.10
+        _NO_CONTINUITY_TOOLS = {"agent_architect"}
 
-        if active_tool and active_tool in prob_dict:
+        if active_tool and active_tool in prob_dict and active_tool not in _NO_CONTINUITY_TOOLS:
             active_prob = prob_dict[active_tool]
             if active_prob >= CONTINUITY_MIN:
                 boosted = min(active_prob + CONTINUITY_BOOST, 0.99)
