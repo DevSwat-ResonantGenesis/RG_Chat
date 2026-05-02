@@ -755,6 +755,10 @@ async def stream_message(
         accumulated_text = ""
         present_options_data = None
 
+        actual_provider = None
+        router_meta = None
+        agent_type = None
+
         if use_architect:
             # ── ARCHITECT SSE STREAMING ──
             print(f"[ARCHITECT-ROUTE] use_architect=True, user_api_keys={list(user_api_keys.keys()) if user_api_keys else 'None'}", flush=True)
