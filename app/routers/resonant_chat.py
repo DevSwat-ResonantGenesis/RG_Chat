@@ -601,7 +601,7 @@ _AGENT_WANT_RE = re.compile(
     re.IGNORECASE,
 )
 _AGENT_NOUN_RE = re.compile(
-    r'\b(my\s+agents?|agents?\s+for\b|agents?\s+that\b|agents?\s+to\b|agents?\s+page)',
+    r'\b(my\s+agents?|agents?\s+for\b|agents?\s+that\b|agents?\s+to\b|agents?\s+page|how\s+many\s+agents?|agents?\s+(?:do\s+)?i\s+have)',
     re.IGNORECASE,
 )
 
@@ -735,14 +735,18 @@ async def stream_message(
                 recent_messages=recent_messages[-6:] if recent_messages else None,
                 intents=msg_intents, user_id=user_id,
             )
+            print(f"[STREAM-DETECT] classifier: tool={prediction.tool_id} conf={prediction.confidence:.3f} method={prediction.method} msg={safe_message[:60]!r}", flush=True)
             if prediction.tool_id == "agent_architect":
                 use_architect = True
-        except Exception:
-            pass
+        except Exception as _clf_err:
+            print(f"[STREAM-DETECT] classifier ERROR: {_clf_err}", flush=True)
 
     # Also check keyword guard (regex-based, handles articles/prepositions)
     if not use_architect and _is_agent_intent(safe_message):
         use_architect = True
+        print(f"[STREAM-DETECT] regex guard triggered for msg={safe_message[:60]!r}", flush=True)
+
+    print(f"[STREAM-DETECT] FINAL: use_architect={use_architect} continuity={_architect_active} msg={safe_message[:60]!r}", flush=True)
 
     # ── Get user API keys ──
     user_api_keys = await _get_user_api_keys(session, user_id)
