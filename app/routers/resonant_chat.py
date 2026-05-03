@@ -604,6 +604,10 @@ _AGENT_NOUN_RE = re.compile(
     r'\b(my\s+agents?|agents?\s+for\b|agents?\s+that\b|agents?\s+to\b|agents?\s+page|how\s+many\s+agents?|agents?\s+(?:do\s+)?i\s+have)',
     re.IGNORECASE,
 )
+_AGENT_DELETE_RE = re.compile(
+    r'\b(delete|remove)\b.{0,20}\b(duplicates?|the\s+\d|all\s+\d|them\s+all)\b',
+    re.IGNORECASE,
+)
 
 def _is_agent_intent(text: str) -> bool:
     """Detect whether user message is about agent management (architect territory)."""
@@ -614,6 +618,7 @@ def _is_agent_intent(text: str) -> bool:
         or _AGENT_REVERSE_RE.search(text)
         or _AGENT_WANT_RE.search(text)
         or _AGENT_NOUN_RE.search(text)
+        or _AGENT_DELETE_RE.search(text)
     )
 
 
@@ -729,6 +734,12 @@ async def stream_message(
     _stream_image_gen = False
     if _architect_active:
         detected_tool = tools_registry.get_tool("agent_architect")
+
+    # Messages from present_options buttons are prefixed with "Agent Architect: "
+    if not use_architect and safe_message.startswith("Agent Architect:"):
+        use_architect = True
+        detected_tool = tools_registry.get_tool("agent_architect")
+        print(f"[STREAM-DETECT] 'Agent Architect:' prefix detected — routing to architect", flush=True)
 
     if not use_architect:
         # Check classifier — full tool detection (not just architect)
@@ -1750,6 +1761,12 @@ async def send_message(
     if _architect_pipeline_active:
         detected_tool = tools_registry.get_tool("agent_architect")
         print(f"[TOOL-7.9] PIPELINE CONTINUITY — forcing agent_architect (previous had present_options)", flush=True)
+
+    # Messages from present_options buttons are prefixed with "Agent Architect: "
+    if not detected_tool and safe_user_message.startswith("Agent Architect:"):
+        detected_tool = tools_registry.get_tool("agent_architect")
+        _architect_pipeline_active = True
+        print(f"[TOOL-7.9] 'Agent Architect:' prefix detected — routing to architect", flush=True)
 
     # Always use full ALL_TOOLS for classifier — the old tools_registry only
     # knows 13 legacy skills but the neural classifier covers 199 tools.
