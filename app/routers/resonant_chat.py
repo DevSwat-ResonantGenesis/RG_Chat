@@ -44,7 +44,7 @@ except ImportError:
 
 from ..db import get_session
 from ..models import ResonantChat, ResonantChatMessage
-from ..domain.provider import route_query
+from ..domain.provider import route_query, route_query_stream, route_query_with_tools
 from ..domain.agent import maybe_run_debate, maybe_spawn_agent
 from ..services.resonance_hashing import ResonanceHasher
 from ..services.rag_engine import rag_engine
@@ -724,8 +724,14 @@ async def stream_message(
         break
 
     use_architect = _architect_active
+    detected_tool = None
+    _stream_web_search = False
+    _stream_image_gen = False
+    if _architect_active:
+        detected_tool = tools_registry.get_tool("agent_architect")
+
     if not use_architect:
-        # Check classifier
+        # Check classifier — full tool detection (not just architect)
         try:
             from ..services.tool_classifier import ALL_TOOLS
             enabled_ids = {s for s in ALL_TOOLS if s is not None}
@@ -738,6 +744,17 @@ async def stream_message(
             print(f"[STREAM-DETECT] classifier: tool={prediction.tool_id} conf={prediction.confidence:.3f} method={prediction.method} msg={safe_message[:60]!r}", flush=True)
             if prediction.tool_id == "agent_architect":
                 use_architect = True
+                detected_tool = tools_registry.get_tool("agent_architect")
+            elif prediction.tool_id:
+                effective_id = prediction.tool_id
+                if effective_id == "web_search":
+                    _stream_web_search = True
+                elif effective_id == "image_generation":
+                    _stream_image_gen = True
+                else:
+                    detected_tool = tools_registry.get_tool(effective_id)
+                    if detected_tool:
+                        print(f"[STREAM-DETECT] tool resolved: {detected_tool.id} ({detected_tool.name})", flush=True)
         except Exception as _clf_err:
             print(f"[STREAM-DETECT] classifier ERROR: {_clf_err}", flush=True)
 
@@ -746,7 +763,7 @@ async def stream_message(
         use_architect = True
         print(f"[STREAM-DETECT] regex guard triggered for msg={safe_message[:60]!r}", flush=True)
 
-    print(f"[STREAM-DETECT] FINAL: use_architect={use_architect} continuity={_architect_active} msg={safe_message[:60]!r}", flush=True)
+    print(f"[STREAM-DETECT] FINAL: use_architect={use_architect} detected_tool={detected_tool.id if detected_tool else None} continuity={_architect_active} msg={safe_message[:60]!r}", flush=True)
 
     # ── Get user API keys ──
     user_api_keys = await _get_user_api_keys(session, user_id)
@@ -754,10 +771,13 @@ async def stream_message(
     async def _generate_events():
         accumulated_text = ""
         present_options_data = None
+        _stream_tool_result = None
 
         actual_provider = None
         router_meta = None
         agent_type = None
+        memories = []
+        context_messages = []
 
         if use_architect:
             # ── ARCHITECT SSE STREAMING ──
@@ -840,10 +860,10 @@ async def stream_message(
                 yield _sse_event({"event": "error", "error": str(e)})
 
         else:
-            # ── REGULAR LLM STREAMING ──
-            yield _sse_event({"event": "start", "chat_id": chat_id, "user_message_id": str(user_msg.id)})
+            # ── FULL PIPELINE STREAMING ──
+            yield _sse_event({"event": "start", "chat_id": chat_id, "user_message_id": str(user_msg.id), "streaming": True})
 
-            # Build context
+            # ── Memory extraction ──
             memories = await _extract_memories(
                 user_id=user_id, org_id=org_id, message=safe_message,
                 agent_hash=request_body.agent_hash, team_id=request_body.teamId,
@@ -855,27 +875,295 @@ async def stream_message(
                 user_plan="unlimited" if is_superuser else "free",
             )
 
-            agent_type = None
-            actual_provider = None
-            router_meta = None
-            try:
-                agent_response, agent_type, actual_provider, router_meta = await maybe_spawn_agent(
-                    message=safe_message, context_messages=context_messages,
-                    user_id=user_id, user_api_keys=user_api_keys,
-                    preferred_provider=request_body.preferred_provider,
-                    images=request_body.images,
-                )
-                if agent_response:
-                    accumulated_text = agent_response
-                    yield _sse_event({"event": "chunk", "content": agent_response})
-            except Exception as e:
-                accumulated_text = f"Error: {e}"
-                yield _sse_event({"event": "error", "error": str(e)})
+            response_text = None
+            _tool_web_search = _stream_web_search
+            _effective_msg = safe_message
+
+            # ── Tool execution ──
+            if detected_tool:
+                yield _sse_event({"event": "step", "step": "tool_detection", "tool": detected_tool.id, "name": detected_tool.name})
+                try:
+                    _tool_ctx = {
+                        "chat_id": chat_id,
+                        "unlimited_credits": unlimited_credits,
+                        "org_id": org_id,
+                        "user_role": user_role,
+                        "is_superuser": is_superuser,
+                        "user_api_keys": user_api_keys or {},
+                    }
+                    github_token = _extract_github_token_from_user_keys(user_api_keys)
+                    if github_token:
+                        _tool_ctx["github_token"] = github_token
+                    _stream_tool_result = await tool_executor.execute(
+                        tool=detected_tool, message=raw_message,
+                        user_id=user_id, user_role=user_role,
+                        is_superuser=is_superuser, context=_tool_ctx,
+                    )
+                    print(f"[STREAM-TOOL] {detected_tool.id}: success={_stream_tool_result.get('success') if _stream_tool_result else None}", flush=True)
+
+                    _integration_ids = {"figma", "google_drive", "google_calendar", "sigma"}
+                    if _stream_tool_result:
+                        if detected_tool.id in _integration_ids:
+                            if _stream_tool_result.get("success"):
+                                response_text = _stream_tool_result.get("summary", "") or f"{detected_tool.name} completed."
+                                actual_provider = f"tool_{detected_tool.id}"
+                                agent_type = "integration"
+                            else:
+                                _err = (_stream_tool_result.get("error") or f"{detected_tool.name} failed.").strip()
+                                response_text = f"{detected_tool.name} error: {_err}"
+                                actual_provider = f"tool_{detected_tool.id}_error"
+                                agent_type = "integration"
+                        elif _stream_tool_result.get("success"):
+                            _summary = _stream_tool_result.get("summary", "")
+                            if _stream_tool_result.get("delegate_to_pipeline"):
+                                _tool_web_search = True
+                                _pfx = _stream_tool_result.get("search_prefix", "")
+                                if _pfx:
+                                    _effective_msg = f"{_pfx} {_effective_msg}"
+                            elif _summary:
+                                context_messages.append({
+                                    "role": "system",
+                                    "content": f"TOOL OUTPUT ({detected_tool.name}):\n{_summary}\n\nUse this data to answer the user's question.",
+                                })
+                    yield _sse_event({"event": "step", "step": "tool_result", "tool": detected_tool.id,
+                                      "success": bool(_stream_tool_result and _stream_tool_result.get("success"))})
+                except Exception as _te:
+                    print(f"[STREAM-TOOL] {detected_tool.id} FAILED: {_te}", flush=True)
+
+            # ── Web search ──
+            if WEB_SEARCH_AVAILABLE and web_search and _tool_web_search and not response_text:
+                try:
+                    if user_api_keys:
+                        web_search.set_api_keys(tavily_key=user_api_keys.get("tavily"), serp_key=user_api_keys.get("serpapi"))
+                    yield _sse_event({"event": "step", "step": "web_search", "query": _effective_msg[:60]})
+                    _ws_results = await web_search.search(query=_effective_msg, max_results=5)
+                    if _ws_results:
+                        _ws_ctx = web_search.format_results_for_context(_ws_results)
+                        context_messages.append({"role": "system", "content": _ws_ctx + "\n\nIMPORTANT: Use these web search results as the primary source of truth."})
+                except Exception as _we:
+                    print(f"[STREAM-WEBSEARCH] FAILED: {_we}", flush=True)
+
+            # ── Image generation ──
+            if IMAGE_GENERATION_AVAILABLE and image_generation and _stream_image_gen and not response_text:
+                try:
+                    if user_api_keys and user_api_keys.get("openai"):
+                        image_generation.set_api_key(openai_key=user_api_keys.get("openai"))
+                    _img_prompt = image_generation.extract_image_prompt(_effective_msg)
+                    _gen_images = await image_generation.generate(prompt=_img_prompt, model="dall-e-3", size="1024x1024", quality="standard")
+                    if _gen_images:
+                        _img_ctx = f"Image generated successfully for prompt: {_img_prompt}"
+                        context_messages.append({"role": "system", "content": _img_ctx})
+                        yield _sse_event({"event": "step", "step": "image_generated", "count": len(_gen_images)})
+                except Exception as _ie:
+                    print(f"[STREAM-IMAGEGEN] FAILED: {_ie}", flush=True)
+
+            # ── Teams ──
+            if not response_text:
+                try:
+                    from ..domain.agent import maybe_run_team
+                    _team_resp, _team_name, _team_used = await maybe_run_team(
+                        message=_effective_msg, context_messages=context_messages,
+                        preferred_provider=request_body.preferred_provider,
+                        user_id=user_id, user_api_keys=user_api_keys,
+                        images=request_body.images,
+                    )
+                    if _team_used and _team_resp:
+                        response_text = _team_resp
+                        actual_provider = f"team_{_team_name.lower().replace(' ', '_')}" if _team_name else "team"
+                        agent_type = "team"
+                except Exception:
+                    pass
+
+            # ── Debate ──
+            if not response_text:
+                try:
+                    _debate_resp, _debate_used = await maybe_run_debate(
+                        message=_effective_msg, context_messages=context_messages,
+                        preferred_provider=request_body.preferred_provider,
+                        images=request_body.images,
+                    )
+                    if _debate_used and _debate_resp:
+                        response_text = _debate_resp
+                        actual_provider = "debate_engine"
+                        agent_type = "debate"
+                except Exception:
+                    pass
+
+            # ── Agent spawn ──
+            if not response_text:
+                try:
+                    _ag_resp, agent_type, actual_provider, router_meta = await maybe_spawn_agent(
+                        message=_effective_msg, context_messages=context_messages,
+                        user_id=user_id, user_api_keys=user_api_keys,
+                        preferred_provider=request_body.preferred_provider,
+                        images=request_body.images,
+                    )
+                    if _ag_resp:
+                        response_text = _ag_resp
+                except Exception as _ae:
+                    print(f"[STREAM-AGENT] spawn failed: {_ae}", flush=True)
+
+            # ── Forced reasoning fallback ──
+            if not response_text:
+                try:
+                    from ..services.agent_engine import agent_engine
+                    from ..domain.provider import get_router_for_internal_use
+                    _r = get_router_for_internal_use()
+                    if user_api_keys:
+                        _r.set_user_api_keys(user_api_keys)
+                    agent_engine.set_router(_r)
+                    _fb = await agent_engine.spawn(
+                        task=_effective_msg, context=context_messages,
+                        agent_type="reasoning", model=request_body.preferred_provider,
+                        images=request_body.images,
+                    )
+                    response_text = _fb.get("content", "")
+                    actual_provider = _fb.get("provider", "agent_reasoning")
+                    agent_type = "reasoning"
+                    router_meta = {"model": _fb.get("model"), "was_fallback": _fb.get("was_fallback", False)}
+                except Exception:
+                    pass
+
+            # ── Real token-by-token streaming (W2) with native function calling (W8) ──
+            if response_text:
+                # Agent/team/debate/tool already produced a complete response — emit it
+                accumulated_text = response_text
+                yield _sse_event({"event": "chunk", "content": accumulated_text})
+            else:
+                # No pre-computed response — try native function calling first, then stream
+                yield _sse_event({"event": "step", "step": "routing", "message": "Streaming response..."})
+                accumulated_text = ""
+                try:
+                    from ..services.native_tool_definitions import get_tool_definitions
+                    _native_tools = get_tool_definitions()
+                except Exception:
+                    _native_tools = None
+
+                _used_native_tools = False
+                if _native_tools:
+                    try:
+                        async for stream_evt in route_query_with_tools(
+                            message=_effective_msg, context=context_messages,
+                            preferred_provider=request_body.preferred_provider,
+                            user_api_keys=user_api_keys,
+                            tools=_native_tools,
+                        ):
+                            evt_type = stream_evt.get("type", "")
+                            if evt_type == "tool_calls":
+                                # LLM wants to call tools natively
+                                _used_native_tools = True
+                                _native_tc = stream_evt.get("tool_calls", [])
+                                _llm_text = stream_evt.get("content", "")
+                                for _tc in _native_tc:
+                                    _tc_name = _tc.get("name", "")
+                                    yield _sse_event({"event": "step", "step": "tool_detection", "tool": _tc_name, "name": _tc_name, "message": f"LLM tool call: {_tc_name}"})
+
+                                    # Execute the tool
+                                    _tc_result = ""
+                                    try:
+                                        _tc_tool = tools_registry.get_tool(_tc_name)
+                                        if _tc_tool:
+                                            _tc_ctx = {
+                                                "chat_id": chat_id, "unlimited_credits": unlimited_credits,
+                                                "org_id": org_id, "user_role": user_role,
+                                                "is_superuser": is_superuser, "user_api_keys": user_api_keys or {},
+                                            }
+                                            _tc_exec_result = await tool_executor.execute(
+                                                tool=_tc_tool, message=raw_message,
+                                                user_id=user_id, user_role=user_role,
+                                                is_superuser=is_superuser, context=_tc_ctx,
+                                            )
+                                            _tc_result = json.dumps(_tc_exec_result or {"error": "Tool returned empty"})
+                                            yield _sse_event({"event": "step", "step": "tool_result", "tool": _tc_name,
+                                                              "success": bool(_tc_exec_result and _tc_exec_result.get("success"))})
+                                        else:
+                                            _tc_result = json.dumps({"error": f"Tool '{_tc_name}' not found in registry"})
+                                    except Exception as _tc_err:
+                                        _tc_result = json.dumps({"error": str(_tc_err)})
+                                        logger.warning(f"[SSE] Native tool exec {_tc_name} failed: {_tc_err}")
+
+                                    # Add tool call + result to context for the follow-up LLM call
+                                    context_messages.append({
+                                        "role": "assistant",
+                                        "content": _llm_text or "",
+                                        "tool_calls": [{"id": _tc.get("id", "call_0"), "type": "function", "function": {"name": _tc_name, "arguments": _tc.get("arguments", "{}")}}],
+                                    })
+                                    context_messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": _tc.get("id", "call_0"),
+                                        "name": _tc_name,
+                                        "content": _tc_result,
+                                    })
+
+                                # Stream the follow-up response with tool results
+                                async for follow_evt in route_query_stream(
+                                    message=_effective_msg, context=context_messages,
+                                    preferred_provider=request_body.preferred_provider,
+                                    user_api_keys=user_api_keys,
+                                ):
+                                    f_type = follow_evt.get("type", "")
+                                    if f_type == "chunk":
+                                        token = follow_evt.get("content", "")
+                                        accumulated_text += token
+                                        yield _sse_event({"event": "chunk", "content": token})
+                                    elif f_type == "provider":
+                                        actual_provider = follow_evt.get("provider", "unknown")
+                                    elif f_type == "error":
+                                        yield _sse_event({"event": "error", "error": follow_evt.get("error", "Tool follow-up error")})
+                                        break
+                                break  # Done with the tool_calls flow
+
+                            elif evt_type == "chunk":
+                                token = stream_evt.get("content", "")
+                                accumulated_text += token
+                                yield _sse_event({"event": "chunk", "content": token})
+                            elif evt_type == "provider":
+                                actual_provider = stream_evt.get("provider", "unknown")
+                            elif evt_type == "error":
+                                yield _sse_event({"event": "error", "error": stream_evt.get("error", "Streaming error")})
+                                accumulated_text = accumulated_text or "I apologize, but I couldn't generate a response. Please try again."
+                                break
+                    except Exception as _tools_err:
+                        logger.warning(f"[SSE] Native tool calling failed, falling back to plain streaming: {_tools_err}")
+                        _native_tools = None  # Force fallback below
+
+                # Plain streaming fallback (no native tools or tools failed)
+                if not _native_tools and not accumulated_text:
+                    try:
+                        async for stream_evt in route_query_stream(
+                            message=_effective_msg, context=context_messages,
+                            preferred_provider=request_body.preferred_provider,
+                            user_api_keys=user_api_keys,
+                        ):
+                            evt_type = stream_evt.get("type", "")
+                            if evt_type == "chunk":
+                                token = stream_evt.get("content", "")
+                                accumulated_text += token
+                                yield _sse_event({"event": "chunk", "content": token})
+                            elif evt_type == "provider":
+                                actual_provider = stream_evt.get("provider", "unknown")
+                            elif evt_type == "error":
+                                yield _sse_event({"event": "error", "error": stream_evt.get("error", "Streaming error")})
+                                accumulated_text = accumulated_text or "I apologize, but I couldn't generate a response. Please try again."
+                                break
+                    except Exception as _stream_err:
+                        logger.warning(f"[SSE] Token streaming failed: {_stream_err}")
+                        accumulated_text = accumulated_text or "I apologize, but I couldn't generate a response. Please try again."
+                        yield _sse_event({"event": "chunk", "content": accumulated_text})
+
+                if not actual_provider:
+                    actual_provider = "streaming_llm"
+                yield _sse_event({"event": "step", "step": "generating_done", "message": "Generation complete"})
 
         # ── Strip present_options text from accumulated_text ──
         clean_text = accumulated_text
         clean_text = re.sub(r'Please choose one of the options:\s*present_options\([^)]*\)', '', clean_text).strip()
         clean_text = re.sub(r'present_options\([^)]*\)', '', clean_text).strip()
+
+        # ── W1: Sanitize response (remove agent prompt leakage) ──
+        is_error = clean_text.startswith("Error calling") if clean_text else True
+        if clean_text and not is_error:
+            clean_text = _sanitize_agent_response(clean_text)
 
         # ── Store assistant message ──
         try:
@@ -884,6 +1172,14 @@ async def stream_message(
         except Exception:
             a_hash = _simple_hash(clean_text)
             a_xyz = _hash_to_xyz_simple(a_hash)
+
+        # ── W1: Calculate real resonance score ──
+        resonance_score = 0.0 if is_error else _calculate_resonance_score(
+            response_text=clean_text,
+            user_message=safe_message,
+            memories=memories if not use_architect else [],
+            context_messages=context_messages if not use_architect else [],
+        )
 
         tool_results_meta = []
         if use_architect:
@@ -898,6 +1194,15 @@ async def stream_message(
                     "success": True,
                     "result": present_options_data,
                 })
+        elif detected_tool and _stream_tool_result:
+            tool_results_meta.append({
+                "tool_name": f"tool_{detected_tool.id}",
+                "success": _stream_tool_result.get("success", False),
+                "result": {
+                    "summary": clean_text[:500],
+                    "action": _stream_tool_result.get("action"),
+                },
+            })
 
         # Build meta_data with router info
         msg_meta: Dict[str, Any] = {}
@@ -912,11 +1217,14 @@ async def stream_message(
             msg_meta["usage"] = router_meta.get("usage")
         if agent_type:
             msg_meta["agent_type"] = agent_type
+        if not use_architect and memories:
+            msg_meta["memory_count"] = len(memories)
 
+        _effective_provider = actual_provider or ("tool_agent_architect" if use_architect else "agent_reasoning")
         assistant_msg = ResonantChatMessage(
             chat_id=UUID(chat_id), role="assistant", content=clean_text,
-            ai_provider=actual_provider or ("tool_agent_architect" if use_architect else "agent_reasoning"),
-            hash=a_hash, resonance_score=0.5,
+            ai_provider=_effective_provider,
+            hash=a_hash, resonance_score=resonance_score,
             xyz_x=a_xyz[0], xyz_y=a_xyz[1], xyz_z=a_xyz[2],
             meta_data=msg_meta or {},
         )
@@ -924,17 +1232,93 @@ async def stream_message(
         await session.commit()
         await session.refresh(assistant_msg)
 
+        # ── W1: DSID creation (message lineage tracking) ──
+        try:
+            _parent_id = str(recent_messages[-2].id) if len(recent_messages) >= 2 else None
+            user_dsid = create_message_dsid(
+                message_id=str(user_msg.id), content=safe_message,
+                role="user", chat_id=chat_id, user_id=user_id,
+                parent_message_id=_parent_id,
+                metadata={"hash": user_hash, "xyz": list(user_xyz)},
+            )
+            assistant_dsid = create_message_dsid(
+                message_id=str(assistant_msg.id), content=clean_text,
+                role="assistant", chat_id=chat_id, user_id=user_id,
+                parent_message_id=str(user_msg.id),
+                metadata={"hash": a_hash, "xyz": list(a_xyz), "provider": _effective_provider, "resonance_score": resonance_score},
+            )
+            _dsid_meta = msg_meta.copy()
+            _dsid_meta["dsid"] = {
+                "dsid_id": assistant_dsid.dsid,
+                "content_hash": assistant_dsid.content_hash,
+                "parent_dsid": assistant_dsid.parent_dsid,
+                "root_dsid": assistant_dsid.root_dsid,
+                "lineage_depth": assistant_dsid.lineage_depth,
+            }
+            assistant_msg.meta_data = _dsid_meta
+            flag_modified(assistant_msg, "meta_data")
+            await session.commit()
+            yield _sse_event({"event": "step", "step": "post_processing", "message": "Lineage tracked"})
+        except Exception as _dsid_err:
+            logger.warning(f"[SSE] DSID creation failed (non-critical): {_dsid_err}")
+
+        # ── W1: Memory ingestion (fire-and-forget) ──
+        try:
+            await service_client.call_service(
+                "memory_service", "POST", "http://memory_service:8000/memory/ingest",
+                json={"user_id": user_id, "org_id": org_id, "chat_id": chat_id,
+                      "source": "resonant-chat", "content": safe_message,
+                      "metadata": {"role": "user", "hash": user_hash, "xyz": list(user_xyz)}},
+            )
+            await service_client.call_service(
+                "memory_service", "POST", "http://memory_service:8000/memory/ingest",
+                json={"user_id": user_id, "org_id": org_id, "chat_id": chat_id,
+                      "source": "resonant-chat", "content": clean_text,
+                      "metadata": {"role": "assistant", "hash": a_hash, "xyz": list(a_xyz)}},
+            )
+            yield _sse_event({"event": "step", "step": "memory_ingest", "message": "Stored to memory"})
+        except Exception as _mem_err:
+            logger.warning(f"[SSE] Memory ingestion failed (non-critical): {_mem_err}")
+
+        # ── W1: PMI blockchain events ──
+        try:
+            pmi_manager.create_memory_event(
+                user_id=user_id, org_id=org_id, chat_id=chat_id,
+                session_id=chat_id, message_text=safe_message,
+                event_type=pmi_manager.EVENT_PROMPT,
+            )
+            pmi_manager.create_memory_event(
+                user_id=user_id, org_id=org_id, chat_id=chat_id,
+                session_id=chat_id, message_text=clean_text,
+                event_type=pmi_manager.EVENT_RESPONSE,
+            )
+        except Exception as _pmi_err:
+            logger.warning(f"[SSE] PMI events failed (non-critical): {_pmi_err}")
+
+        # ── W1: Response caching ──
+        if not is_error and clean_text:
+            try:
+                _ctx_summary = " ".join([(getattr(m, "content", "") or "")[:50] for m in recent_messages[-3:-1]])
+                await cache_response(
+                    message=safe_message, response=clean_text,
+                    provider=_effective_provider,
+                    model=(router_meta or {}).get("model", "unknown"),
+                    context_summary=_ctx_summary, quality_score=resonance_score,
+                )
+            except Exception as _cache_err:
+                logger.warning(f"[SSE] Response caching failed (non-critical): {_cache_err}")
+
         # ── Final done event ──
         done_data: Dict[str, Any] = {
             "event": "done",
             "message_id": str(assistant_msg.id),
             "chat_id": chat_id,
             "content": clean_text,
-            "provider": actual_provider or ("tool_agent_architect" if use_architect else "agent_reasoning"),
+            "provider": _effective_provider,
             "model": router_meta.get("model") if router_meta else None,
             "agent_type": agent_type,
             "hash": a_hash,
-            "resonance_score": 0.5,
+            "resonance_score": resonance_score,
             "total_length": len(clean_text),
         }
         if present_options_data:

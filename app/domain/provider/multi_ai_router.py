@@ -58,6 +58,7 @@ class MultiAIRouter:
         context: Optional[List[Dict]] = None,
         preferred_provider: Optional[str] = None,
         images: Optional[List[Dict]] = None,
+        user_keys: Optional[Dict[str, str]] = None,
     ) -> Dict:
         """Route query to an LLM provider with automatic fallback.
 
@@ -97,6 +98,9 @@ class MultiAIRouter:
             f"msgs={len(messages)} images={len(images) if images else 0}"
         )
 
+        # Merge: explicit user_keys param takes priority over instance-level keys
+        effective_keys = user_keys or self._user_api_keys or None
+
         try:
             request = LLMRequest(
                 messages=messages,
@@ -104,7 +108,7 @@ class MultiAIRouter:
                 temperature=0.7,
                 max_tokens=16384,
             )
-            response = await _llm_client.complete(request, user_keys=self._user_api_keys or None)
+            response = await _llm_client.complete(request, user_keys=effective_keys)
 
             provider_name = response.provider or norm or "unknown"
             logger.info(f"[MultiAIRouter] Success via {provider_name}/{response.model}")

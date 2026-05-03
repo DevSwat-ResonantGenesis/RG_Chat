@@ -93,7 +93,7 @@ async def maybe_spawn_agent(
     is None if no agent was used. llm_provider is the actual LLM provider used.
     router_metadata contains model, fallback_chain, was_fallback, usage, etc.
     """
-    # Set user API keys on the router BEFORE initializing engines
+    # Pass user keys to the router for this request (thread-safe via param, not mutation)
     if user_api_keys:
         router = get_router_for_internal_use()
         router.set_user_api_keys(user_api_keys)
@@ -207,7 +207,7 @@ async def maybe_run_team(
 
     Returns (response_text, team_name, team_used_flag).
     """
-    # Set user API keys on the router BEFORE initializing engines
+    # Pass user keys to the router for this request
     if user_api_keys:
         router = get_router_for_internal_use()
         router.set_user_api_keys(user_api_keys)

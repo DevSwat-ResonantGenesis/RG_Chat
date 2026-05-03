@@ -10,7 +10,9 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from rg_llm import UnifiedLLMClient, LLMRequest, LLMStreamEvent, StreamEventType
+import json
+
+from rg_llm import UnifiedLLMClient, LLMRequest, LLMStreamEvent, StreamEventType, ToolCall
 
 from .multi_ai_router import MultiAIRouter
 
@@ -26,16 +28,6 @@ _ALIASES = {
 }
 
 
-def set_user_api_keys(keys: Dict[str, str]) -> None:
-    """Configure BYOK keys on the router."""
-    _internal_router.set_user_api_keys(keys)
-
-
-def clear_user_api_keys() -> None:
-    """Clear user-specific API keys on the router."""
-    _internal_router.set_user_api_keys({})
-
-
 async def route_query(
     message: str,
     context: Optional[List[Dict]] = None,
@@ -44,21 +36,15 @@ async def route_query(
     images: Optional[List[Dict]] = None,
 ) -> Dict:
     """Route a chat/agent query to an LLM provider (non-streaming)."""
-    user_keys = {k: v for k, v in (user_api_keys or {}).items() if not k.startswith("__")}
+    user_keys = {k: v for k, v in (user_api_keys or {}).items() if not k.startswith("__")} or None
 
-    if user_keys:
-        _internal_router.set_user_api_keys(user_keys)
-    try:
-        result = await _internal_router.route_query(
-            message=message,
-            context=context,
-            preferred_provider=preferred_provider,
-            images=images,
-        )
-        return result
-    finally:
-        if user_keys:
-            _internal_router.set_user_api_keys({})
+    return await _internal_router.route_query(
+        message=message,
+        context=context,
+        preferred_provider=preferred_provider,
+        images=images,
+        user_keys=user_keys,
+    )
 
 
 def get_router_for_internal_use() -> MultiAIRouter:
@@ -75,8 +61,11 @@ async def route_query_stream(
     """Stream a query response from LLM provider.
 
     Yields:
-        Dict with 'type' ('chunk', 'provider', 'error', 'done') and content
+        Dict with 'type' ('chunk', 'provider', 'error', 'done') and content.
+        'provider_info' event includes resolved provider/model for metadata.
     """
+    user_keys = {k: v for k, v in (user_api_keys or {}).items() if not k.startswith("__")} or None
+
     # Handle local provider separately — doesn't need an API key
     if preferred_provider and preferred_provider.lower() in ("local", "codellama"):
         provider = preferred_provider.lower()
@@ -94,7 +83,6 @@ async def route_query_stream(
 
     # Stream via UnifiedLLMClient
     messages = _build_messages(context, message)
-    user_keys = {k: v for k, v in (user_api_keys or {}).items() if not k.startswith("__")}
 
     norm = _ALIASES.get(
         (preferred_provider or "").lower(), (preferred_provider or "").lower()
@@ -109,7 +97,7 @@ async def route_query_stream(
             max_tokens=16384,
             stream=True,
         )
-        async for event in _llm_client.stream(request, user_keys=user_keys or None):
+        async for event in _llm_client.stream(request, user_keys=user_keys):
             if event.event == StreamEventType.CHUNK and event.content:
                 yield {"type": "chunk", "content": event.content}
             elif event.event == StreamEventType.ERROR:
@@ -134,6 +122,74 @@ def _build_messages(context: Optional[List[Dict]], message: str) -> List[Dict]:
         messages = [{"role": "system", "content": system_content.strip()}] + messages
     messages.append({"role": "user", "content": message})
     return messages
+
+
+async def route_query_with_tools(
+    message: str,
+    context: Optional[List[Dict]] = None,
+    preferred_provider: Optional[str] = None,
+    user_api_keys: Optional[Dict[str, str]] = None,
+    tools: Optional[List[Dict]] = None,
+):
+    """Stream with native function calling.
+
+    Phase 1: Non-streaming LLM call with tool definitions.
+    If the LLM returns tool_calls, yields tool_call events (caller must execute).
+    Phase 2: Caller sends tool results back via the context, then we stream the final response.
+
+    Yields:
+        {"type": "provider", "provider": ...}
+        {"type": "tool_calls", "tool_calls": [...]}  — if LLM wants to call tools
+        {"type": "chunk", "content": ...}  — streamed tokens
+        {"type": "done"} or {"type": "error", ...}
+    """
+    user_keys = {k: v for k, v in (user_api_keys or {}).items() if not k.startswith("__")} or None
+
+    if preferred_provider and preferred_provider.lower() in ("local", "codellama"):
+        # Local providers don't support tools — fall through to plain streaming
+        async for evt in route_query_stream(message, context, preferred_provider, user_api_keys):
+            yield evt
+        return
+
+    norm = _ALIASES.get(
+        (preferred_provider or "").lower(), (preferred_provider or "").lower()
+    ) or None
+
+    messages = _build_messages(context, message)
+
+    try:
+        # Phase 1: Non-streaming call with tools to let LLM decide
+        request = LLMRequest(
+            messages=messages,
+            provider=norm,
+            temperature=0.7,
+            max_tokens=16384,
+            tools=tools,
+            tool_choice="auto",
+        )
+        response = await _llm_client.complete(request, user_keys=user_keys)
+        yield {"type": "provider", "provider": response.provider or preferred_provider or "auto"}
+
+        if response.tool_calls:
+            # LLM wants to call tools — yield them for the caller to execute
+            yield {
+                "type": "tool_calls",
+                "tool_calls": [
+                    {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                    for tc in response.tool_calls
+                ],
+                "content": response.content,
+            }
+            return  # Caller will execute tools and re-invoke with results
+
+        # No tool calls — LLM responded directly. Stream it as one chunk.
+        if response.content:
+            yield {"type": "chunk", "content": response.content}
+        yield {"type": "done"}
+
+    except Exception as e:
+        logger.error(f"[route_query_with_tools] Failed: {e}")
+        yield {"type": "error", "error": str(e)}
 
 
 async def _stream_local(messages: list, model: str, user_id: str):

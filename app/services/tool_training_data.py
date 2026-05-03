@@ -68,6 +68,16 @@ def get_training_data() -> List[TrainingSample]:
         ("do I have anything scheduled for Wednesday", [], _gcal),
         ("cancel my 10am meeting tomorrow", [], _gcal),
         ("move the design review to Thursday", [], _gcal),
+        ("add to my calendar appointment today at 6pm", [], _gcal),
+        ("can u add to my calendar", [], _gcal),
+        ("put this on my calendar", [], _gcal),
+        ("add event to my google calendar", [], _gcal),
+        ("create an appointment on my calendar for 3pm", [], _gcal),
+        ("add all these events to my calendar", [], _gcal),
+        ("schedule dinner on my calendar at 7pm", [], _gcal),
+        ("add to calendar south beach sunset", [], _gcal),
+        ("put a meeting on my calendar tomorrow at 10am", [], _gcal),
+        ("book an appointment for next Tuesday at 2pm", [], _gcal),
     ]
 
     # ------------------------------------------------------------------

@@ -755,10 +755,9 @@ class HallucinationDetector:
         
         try:
             judge_response = await router.route_query(
-                    message=judge_prompt,
-                    context=[],
-                    preferred_provider="groq",  # Use fast/cheap provider for judging
-                )
+                message=judge_prompt,
+                context=[],
+            )
             
             judge_text = judge_response.get("response", "")
             

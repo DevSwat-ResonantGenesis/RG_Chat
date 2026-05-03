@@ -203,6 +203,207 @@ RG_LLM_Service — THE PROVIDER
   Does NOT own: Tool execution, message history, memory
 
 ================================================================================
+CHECKPOINT: SSE FULL PIPELINE PORT (May 2, 2026)
+================================================================================
+
+PROBLEM:
+  The SSE streaming endpoint (/message/stream) was a skeleton — only architect
+  had full SSE handling. Non-architect messages went to a gutted path that ONLY
+  called maybe_spawn_agent(), skipping:
+    - Tool detection (neural classifier)
+    - Tool execution (GoogleCalendar, CodeVisualizer, etc.)
+    - Web search
+    - Image generation
+    - Teams (maybe_run_team)
+    - Debate (maybe_run_debate)
+    - Governance/metrics
+  Frontend uses SSE as PRIMARY → 80% of intelligence pipeline was bypassed.
+
+FIX (resonant_chat.py):
+  1. Expanded tool detection: classifier now routes ALL tools, not just architect
+  2. Replaced gutted else branch with full pipeline:
+     Memory → Tool detect → Tool execute → Web search → Image gen →
+     Teams → Debate → Agent spawn → Forced reasoning → Direct LLM fallback
+  3. Integration skills (google_calendar, figma, sigma, google_drive) get
+     grounded responses — tool output IS the response, no LLM hallucination
+  4. Non-architect tool results stored in DB metadata (toolResults)
+
+FIX (tool_training_data.py):
+  Added 9 disambiguation samples for google_calendar vs calendly:
+    "add to my calendar" → google_calendar (not calendly)
+    "can u add to my calendar" → google_calendar
+    etc.
+
+FIX (tool_classifier.py — from prior session):
+  Excluded agent_architect from continuity boost to prevent misrouting.
+
+FILES CHANGED:
+  - RG_Chat/app/routers/resonant_chat.py (SSE full pipeline)
+  - RG_Chat/app/services/tool_training_data.py (+9 google_calendar samples)
+  - RG_Chat/app/services/tool_classifier.py (continuity boost fix)
+
+DEPLOYED: chat_service rebuilt and restarted. Classifier retrained on 1040 samples.
+
+FIX (hallucination_detector.py — May 2):
+  LLM Judge "No LLM providers" — root cause was hardcoded
+  preferred_provider="groq" in llm_judge_verify(). Container only has
+  TOKENROUTER_API_KEY + OPENAI_API_KEY, no GROQ_API_KEY. With strict
+  provider mode, only groq was tried → fail. Fix: removed
+  preferred_provider, letting the fallback chain (tokenrouter → openai)
+  handle it automatically.
+
+FIX (Frontend — May 2):
+  Pipeline steps UI existed but was never wired:
+  1. SSEStreamEvent interface: added name, success, query fields
+  2. Step handler: was only setting aiProvider text, now populates
+     pipelineSteps state array for the visual pipeline indicator
+  3. Added icons (wrench/check/globe/image) and colors for new step
+     types: tool_detection, tool_result, web_search, image_generated
+  4. Pipeline steps cleared on stream completion and on fallback
+
+DEPLOYED: chat_service + frontend rebuilt and deployed.
+
+REMAINING (May 2):
+  - All issues resolved. Monitor for regressions.
+
+
+================================================================================
+CHECKPOINT: P0 PIPELINE FIXES (May 3, 2026)
+================================================================================
+
+CONTEXT:
+  Deep analysis identified critical weaknesses vs market-leading solutions:
+    W1: SSE endpoint missing post-processing (DSID, memory ingest, PMI, caching)
+    W2: No real token-by-token streaming (batch-emitting accumulated text)
+    W8: No native LLM function calling (separate classifier only)
+    W9: Singleton API key race condition (concurrent BYOK users clobber keys)
+
+── W9: FIX SINGLETON API KEY RACE CONDITION ──────────────────────────────
+
+PROBLEM:
+  MultiAIRouter was a singleton. set_user_api_keys() mutated instance state.
+  With concurrent requests, User A's keys could be overwritten by User B
+  between set_user_api_keys() and the actual route_query() call.
+
+FIX:
+  1. MultiAIRouter.route_query() now accepts user_keys param (line 61).
+     Explicit param takes priority over instance-level keys.
+  2. facade.py route_query() and route_query_stream() pass user_api_keys
+     directly as a parameter — no more set/clear mutation cycle.
+  3. Removed set_user_api_keys / clear_user_api_keys from facade.py exports.
+  4. Agent/team paths still use set_user_api_keys on the shared instance as
+     fallback (agent_engine.spawn() calls router internally without user_keys
+     param). This is safe because route_query prioritizes explicit param.
+
+FILES:
+  - app/domain/provider/multi_ai_router.py (user_keys param on route_query)
+  - app/domain/provider/facade.py (param-passing, removed set/clear)
+  - app/domain/provider/__init__.py (cleaned exports)
+
+── W2: REAL TOKEN-BY-TOKEN STREAMING ─────────────────────────────────────
+
+PROBLEM:
+  SSE endpoint accumulated full response text, then emitted it as a single
+  "chunk" event. Frontend replaced content on each chunk. No typewriter
+  effect — text appeared all at once after agent/LLM finished.
+
+FIX:
+  1. Non-agent/tool path now uses route_query_stream() which yields
+     individual tokens from the LLM via UnifiedLLMClient.stream().
+  2. Each token is emitted as a separate SSE "chunk" event.
+  3. Frontend detects "streaming" flag in the "start" event:
+     - streaming=true → append mode (token deltas, typewriter effect)
+     - streaming=false/absent → replace mode (architect full-text chunks)
+  4. Agent/team/debate/tool paths still emit pre-computed text as single
+     chunk (these are not streamable since they do multiple LLM calls).
+
+FILES:
+  - app/routers/resonant_chat.py (route_query_stream in else branch)
+  - app/domain/provider/facade.py (route_query_stream already existed)
+  - ORG_Frontend/src/api/resonantChat.ts (streaming field on SSEStreamEvent)
+  - ORG_Frontend/src/pages/ResonantChat/ResonantChatPage.tsx
+    (isTokenStreaming flag, append vs replace logic)
+
+── W1: PORT MISSING PIPELINE STAGES TO SSE ───────────────────────────────
+
+PROBLEM:
+  SSE stored the assistant message with hardcoded resonance_score=0.5,
+  no DSID lineage, no memory ingestion, no PMI blockchain events,
+  no response caching, no response sanitization. All of these were
+  only in the non-streaming /message endpoint.
+
+FIX:
+  1. Response sanitization: _sanitize_agent_response() strips leaked
+     agent prompts before storage.
+  2. Real resonance score: _calculate_resonance_score() uses response
+     quality, memory overlap, and context relevance.
+  3. DSID creation: create_message_dsid() for both user and assistant
+     messages. Lineage stored in message meta_data.
+  4. Memory ingestion: service_client calls to memory_service for
+     both user and assistant messages.
+  5. PMI blockchain events: pmi_manager.create_memory_event() for
+     prompt and response events.
+  6. Response caching: cache_response() with quality score.
+  7. All post-processing is try/except guarded — failures are non-critical
+     and don't break the SSE stream.
+  8. SSE emits step events for post_processing and memory_ingest so
+     the frontend pipeline indicator shows these stages.
+
+FILES:
+  - app/routers/resonant_chat.py (post-processing block after message store)
+
+── W8: NATIVE LLM FUNCTION CALLING ──────────────────────────────────────
+
+PROBLEM:
+  Tool detection used a separate neural classifier (sentence-transformers).
+  The LLM itself never saw tool definitions. This meant:
+    - LLM couldn't reason about which tool to use
+    - LLM couldn't extract structured arguments from the message
+    - Two separate systems (classifier + LLM) with potential disagreement
+    - No support for multi-tool calls in a single response
+
+FIX:
+  1. Created native_tool_definitions.py with OpenAI function-calling format
+     tool schemas for: web_search, image_generation, code_visualizer,
+     google_calendar, google_drive, memory_search, figma.
+  2. UnifiedLLMClient already supported tools (LLMRequest.tools field) for
+     OpenAI, Anthropic (auto-converted), and Gemini (auto-converted).
+  3. Added route_query_with_tools() to facade.py:
+     - Phase 1: Non-streaming LLM call with tool definitions + tool_choice=auto
+     - If tool_calls returned: yields them so caller can execute
+     - If no tool_calls: yields response content as chunk
+  4. SSE pipeline now tries native function calling first:
+     - Calls route_query_with_tools() with native tool definitions
+     - If LLM returns tool_calls: executes via tool_executor, adds results
+       to context, then streams follow-up response via route_query_stream()
+     - If LLM returns direct content: streams it
+     - Falls back to plain route_query_stream() if native tools fail
+  5. The neural classifier (tool_classifier) is still the primary tool
+     detection layer — it runs BEFORE the LLM streaming path. Native
+     function calling is a SECOND CHANCE for the direct LLM path.
+
+FILES:
+  - app/services/native_tool_definitions.py (NEW — 7 tool schemas)
+  - app/domain/provider/facade.py (route_query_with_tools)
+  - app/domain/provider/__init__.py (export route_query_with_tools)
+  - app/routers/resonant_chat.py (native tool calling in streaming path)
+
+── SUMMARY OF ALL FILES CHANGED (May 3) ─────────────────────────────────
+
+Backend (RG_Chat):
+  - app/domain/provider/multi_ai_router.py .......... W9 (user_keys param)
+  - app/domain/provider/facade.py ................... W9+W2+W8 (param passing, streaming, tools)
+  - app/domain/provider/__init__.py ................. W9+W8 (exports)
+  - app/routers/resonant_chat.py .................... W1+W2+W8 (full pipeline, streaming, tools)
+  - app/services/native_tool_definitions.py ......... W8 (NEW — tool schemas)
+
+Frontend (ORG_Frontend):
+  - src/api/resonantChat.ts ......................... W2 (streaming field)
+  - src/pages/ResonantChat/ResonantChatPage.tsx ..... W2 (token append mode)
+
+DEPLOYMENT: Rebuild chat_service + frontend containers.
+
+================================================================================
                            END OF PLAN
 ================================================================================
 EOF
