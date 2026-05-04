@@ -753,9 +753,11 @@ async def stream_message(
                 intents=msg_intents, user_id=user_id,
             )
             print(f"[STREAM-DETECT] classifier: tool={prediction.tool_id} conf={prediction.confidence:.3f} method={prediction.method} msg={safe_message[:60]!r}", flush=True)
-            if prediction.tool_id == "agent_architect":
+            if prediction.tool_id == "agent_architect" or (prediction.tool_id and prediction.tool_id.startswith("agents_")):
                 use_architect = True
                 detected_tool = tools_registry.get_tool("agent_architect")
+                if prediction.tool_id != "agent_architect":
+                    print(f"[STREAM-DETECT] agents_* tool '{prediction.tool_id}' → routing to architect", flush=True)
             elif prediction.tool_id:
                 effective_id = prediction.tool_id
                 if effective_id == "web_search":
@@ -1793,7 +1795,13 @@ async def send_message(
             if detected_tool_id:
                 effective_id = detected_tool_id
 
-                if effective_id == "web_search":
+                # agents_* tool IDs (agents_delete, agents_create, etc.) → architect
+                if effective_id == "agent_architect" or effective_id.startswith("agents_"):
+                    detected_tool = tools_registry.get_tool("agent_architect")
+                    _architect_pipeline_active = True
+                    if effective_id != "agent_architect":
+                        print(f"[TOOL-7.9] agents_* tool '{effective_id}' → routing to architect", flush=True)
+                elif effective_id == "web_search":
                     web_search_needed = True
                 elif effective_id == "image_generation":
                     image_gen_needed = True
