@@ -715,17 +715,26 @@ async def stream_message(
     )
     recent_messages = list(reversed(result_msgs.scalars().all()))
 
-    # Check architect pipeline continuity
+    # Check architect pipeline continuity — route follow-ups to architect
+    # Triggers if ANY recent assistant message was from the architect
     _architect_active = False
     for _rmsg in reversed(recent_messages[-4:]):
         if (getattr(_rmsg, "role", "") or "") != "assistant":
             continue
+        # Check 1: ai_provider indicates architect handled it
+        _r_provider = getattr(_rmsg, "ai_provider", "") or ""
+        if "architect" in _r_provider.lower():
+            _architect_active = True
+            break
+        # Check 2: toolResults contain architect tool or present_options
         _r_meta = getattr(_rmsg, "meta_data", None)
         if _r_meta and isinstance(_r_meta, dict):
             for _tr in _r_meta.get("toolResults", []):
-                if isinstance(_tr, dict) and (_tr.get("result") or {}).get("present_options"):
-                    _architect_active = True
-                    break
+                if isinstance(_tr, dict):
+                    _tn = (_tr.get("tool_name") or "")
+                    if "architect" in _tn.lower() or (_tr.get("result") or {}).get("present_options"):
+                        _architect_active = True
+                        break
         break
 
     use_architect = _architect_active
@@ -1744,25 +1753,32 @@ async def send_message(
     code_visualizer_intent = False
 
     # ── Architect pipeline continuity ──
-    # If the previous assistant message had present_options from the architect,
-    # force-route this message to the architect so the pipeline can continue.
+    # Route follow-ups to architect if previous assistant message was architect-served
     _architect_pipeline_active = False
     if recent_messages:
         for _rmsg in reversed(recent_messages[-4:]):
             _r_role = _rmsg.role if hasattr(_rmsg, "role") else _rmsg.get("role", "")
             if _r_role != "assistant":
                 continue
+            # Check 1: ai_provider indicates architect
+            _r_provider = (_rmsg.ai_provider if hasattr(_rmsg, "ai_provider") else _rmsg.get("ai_provider", "")) or ""
+            if "architect" in _r_provider.lower():
+                _architect_pipeline_active = True
+                break
+            # Check 2: toolResults contain architect tool or present_options
             _r_meta = _rmsg.meta_data if hasattr(_rmsg, "meta_data") else _rmsg.get("meta_data", None)
             if _r_meta and isinstance(_r_meta, dict):
                 for _tr in _r_meta.get("toolResults", []):
-                    if isinstance(_tr, dict) and _tr.get("result", {}).get("present_options"):
-                        _architect_pipeline_active = True
-                        break
+                    if isinstance(_tr, dict):
+                        _tn = (_tr.get("tool_name") or "")
+                        if "architect" in _tn.lower() or (_tr.get("result") or {}).get("present_options"):
+                            _architect_pipeline_active = True
+                            break
             break  # only check the most recent assistant message
 
     if _architect_pipeline_active:
         detected_tool = tools_registry.get_tool("agent_architect")
-        print(f"[TOOL-7.9] PIPELINE CONTINUITY — forcing agent_architect (previous had present_options)", flush=True)
+        print(f"[TOOL-7.9] PIPELINE CONTINUITY — forcing agent_architect (previous was architect-served)", flush=True)
 
     # Messages from present_options buttons are prefixed with "Agent Architect: "
     if not detected_tool and safe_user_message.startswith("Agent Architect:"):
