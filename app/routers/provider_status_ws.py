@@ -61,6 +61,7 @@ class ProviderStatusManager:
         providers = []
         
         # Platform keys (handle comma-separated keys by taking the first one)
+        platform_tokenrouter = os.getenv("TOKENROUTER_API_KEY")
         raw_groq = os.getenv("GROQ_API_KEY") or os.getenv("CHAT_GROQ_API_KEY") or ""
         platform_groq = raw_groq.split(",")[0].strip() if raw_groq else None
         platform_openai = os.getenv("OPENAI_API_KEY") or os.getenv("CHAT_OPENAI_API_KEY")
@@ -68,6 +69,11 @@ class ProviderStatusManager:
         platform_anthropic = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CHAT_ANTHROPIC_API_KEY")
         
         # Comprehensive model lists per provider
+        TOKENROUTER_MODELS = [
+            "anthropic/claude-opus-4.7", "openai/gpt-5.5",
+            "google/gemini-3.1-pro-preview", "z-ai/glm-5.1",
+            "qwen/qwen3.6-plus",
+        ]
         OPENAI_MODELS = [
             "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4",
             "o1", "o1-mini", "o1-pro",
@@ -88,6 +94,19 @@ class ProviderStatusManager:
             "mixtral-8x7b-32768", "gemma2-9b-it",
         ]
 
+        # Check TokenRouter (Tier 0 — unified router)
+        tr_status = await self._check_provider_latency("tokenrouter", platform_tokenrouter)
+        providers.append({
+            "id": "tokenrouter",
+            "name": "Auto (Smart)",
+            "available": tr_status["available"],
+            "latency": tr_status["latency"],
+            "status": tr_status["status"],
+            "model": "anthropic/claude-opus-4.7",
+            "models": TOKENROUTER_MODELS,
+            "capabilities": ["chat", "coding", "vision", "tools"],
+        })
+        
         # Check Groq
         groq_status = await self._check_provider_latency("groq", platform_groq)
         providers.append({
@@ -237,21 +256,6 @@ class ProviderStatusManager:
                            "mistralai/Mixtral-8x7B-Instruct-v0.1"],
                 "capabilities": ["chat", "coding"],
             },
-            {
-                "id": "tokenrouter", "name": "TokenRouter (All Models)",
-                "env_keys": ["TOKENROUTER_API_KEY"],
-                "base_url": "https://api.tokenrouter.com/v1",
-                "test_model": "openai/gpt-5.5",
-                "default_model": "anthropic/claude-opus-4.7",
-                "models": [
-                    "anthropic/claude-opus-4.7",
-                    "openai/gpt-5.5",
-                    "google/gemini-3.1-pro-preview",
-                    "z-ai/glm-5.1",
-                    "qwen/qwen3.6-plus",
-                ],
-                "capabilities": ["chat", "coding", "vision", "tools"],
-            },
         ]
         
         for bp in BYOK_PROVIDERS:
@@ -382,6 +386,22 @@ class ProviderStatusManager:
                     elif response.status_code == 429 or response.status_code == 400:
                         # Anthropic returns 400 for credit balance issues
                         return {"available": False, "latency": latency, "status": "quota_exceeded", "error": "Credit balance too low or quota exceeded"}
+                    else:
+                        return {"available": False, "latency": latency, "status": "error", "error": response.text[:100]}
+            
+            elif provider == "tokenrouter":
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        "https://api.tokenrouter.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={"model": "openai/gpt-5.5", "messages": [{"role": "user", "content": "hi"}]},
+                        timeout=8.0
+                    )
+                    latency = int((time.time() - start_time) * 1000)
+                    if response.status_code == 200:
+                        return {"available": True, "latency": latency, "status": "online"}
+                    elif response.status_code == 429:
+                        return {"available": False, "latency": latency, "status": "quota_exceeded", "error": "Rate limit"}
                     else:
                         return {"available": False, "latency": latency, "status": "error", "error": response.text[:100]}
             
