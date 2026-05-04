@@ -737,38 +737,38 @@ async def stream_message(
                         break
         break
 
-    use_architect = _architect_active
+    use_architect = False
     detected_tool = None
     _stream_web_search = False
     _stream_image_gen = False
-    if _architect_active:
-        detected_tool = tools_registry.get_tool("agent_architect")
 
     # Messages from present_options buttons are prefixed with "Agent Architect: "
-    if not use_architect and safe_message.startswith("Agent Architect:"):
+    # This is a hard signal — always route to architect
+    if safe_message.startswith("Agent Architect:"):
         use_architect = True
         detected_tool = tools_registry.get_tool("agent_architect")
         print(f"[STREAM-DETECT] 'Agent Architect:' prefix detected — routing to architect", flush=True)
 
+    # Always run classifier for full tool detection
+    _clf_prediction = None
     if not use_architect:
-        # Check classifier — full tool detection (not just architect)
         try:
             from ..services.tool_classifier import ALL_TOOLS
             enabled_ids = {s for s in ALL_TOOLS if s is not None}
             msg_intents = intent_engine.extract(safe_message)
-            prediction = await tool_classifier.predict(
+            _clf_prediction = await tool_classifier.predict(
                 message=safe_message, enabled_tool_ids=enabled_ids,
                 recent_messages=recent_messages[-6:] if recent_messages else None,
                 intents=msg_intents, user_id=user_id,
             )
-            print(f"[STREAM-DETECT] classifier: tool={prediction.tool_id} conf={prediction.confidence:.3f} method={prediction.method} msg={safe_message[:60]!r}", flush=True)
-            if prediction.tool_id == "agent_architect" or (prediction.tool_id and prediction.tool_id.startswith("agents_")):
+            print(f"[STREAM-DETECT] classifier: tool={_clf_prediction.tool_id} conf={_clf_prediction.confidence:.3f} method={_clf_prediction.method} msg={safe_message[:60]!r}", flush=True)
+            if _clf_prediction.tool_id == "agent_architect" or (_clf_prediction.tool_id and _clf_prediction.tool_id.startswith("agents_")):
                 use_architect = True
                 detected_tool = tools_registry.get_tool("agent_architect")
-                if prediction.tool_id != "agent_architect":
-                    print(f"[STREAM-DETECT] agents_* tool '{prediction.tool_id}' → routing to architect", flush=True)
-            elif prediction.tool_id:
-                effective_id = prediction.tool_id
+                if _clf_prediction.tool_id != "agent_architect":
+                    print(f"[STREAM-DETECT] agents_* tool '{_clf_prediction.tool_id}' → routing to architect", flush=True)
+            elif _clf_prediction.tool_id:
+                effective_id = _clf_prediction.tool_id
                 if effective_id == "web_search":
                     _stream_web_search = True
                 elif effective_id == "image_generation":
@@ -779,6 +779,23 @@ async def stream_message(
                         print(f"[STREAM-DETECT] tool resolved: {detected_tool.id} ({detected_tool.name})", flush=True)
         except Exception as _clf_err:
             print(f"[STREAM-DETECT] classifier ERROR: {_clf_err}", flush=True)
+
+    # Soft continuity: if architect was active AND classifier didn't confidently
+    # pick a different tool, keep routing to architect for follow-ups
+    if not use_architect and _architect_active:
+        _clf_picked_other = (
+            _clf_prediction
+            and _clf_prediction.tool_id
+            and _clf_prediction.tool_id != "agent_architect"
+            and not (_clf_prediction.tool_id or "").startswith("agents_")
+            and _clf_prediction.confidence > 0.45
+        )
+        if _clf_picked_other:
+            print(f"[STREAM-DETECT] continuity BROKEN — classifier confidently picked '{_clf_prediction.tool_id}' ({_clf_prediction.confidence:.2f})", flush=True)
+        else:
+            use_architect = True
+            detected_tool = tools_registry.get_tool("agent_architect")
+            print(f"[STREAM-DETECT] continuity KEPT — previous was architect, classifier uncertain or no strong other tool", flush=True)
 
     # Also check keyword guard (regex-based, handles articles/prepositions)
     if not use_architect and _is_agent_intent(safe_message):
@@ -1776,12 +1793,8 @@ async def send_message(
                             break
             break  # only check the most recent assistant message
 
-    if _architect_pipeline_active:
-        detected_tool = tools_registry.get_tool("agent_architect")
-        print(f"[TOOL-7.9] PIPELINE CONTINUITY — forcing agent_architect (previous was architect-served)", flush=True)
-
-    # Messages from present_options buttons are prefixed with "Agent Architect: "
-    if not detected_tool and safe_user_message.startswith("Agent Architect:"):
+    # Messages from present_options buttons — hard signal, always architect
+    if safe_user_message.startswith("Agent Architect:"):
         detected_tool = tools_registry.get_tool("agent_architect")
         _architect_pipeline_active = True
         print(f"[TOOL-7.9] 'Agent Architect:' prefix detected — routing to architect", flush=True)
@@ -1791,15 +1804,16 @@ async def send_message(
     from ..services.tool_classifier import ALL_TOOLS
     enabled_tool_ids = {s for s in ALL_TOOLS if s is not None}
 
-    if _architect_pipeline_active:
-        pass  # Skip classifier — already forced to architect
+    _clf_prediction = None
+    if detected_tool:
+        pass  # Already resolved (prefix)
     elif request_body.teamId:
         print(f"[TOOL-7.9] BYPASSED — user selected team {request_body.teamId}", flush=True)
     else:
         try:
             msg_intents = intent_engine.extract(safe_user_message)
 
-            prediction = await tool_classifier.predict(
+            _clf_prediction = await tool_classifier.predict(
                 message=safe_user_message,
                 enabled_tool_ids=enabled_tool_ids,
                 recent_messages=recent_messages[-6:] if recent_messages else None,
@@ -1807,7 +1821,7 @@ async def send_message(
                 user_id=user_id,
             )
 
-            detected_tool_id = prediction.tool_id
+            detected_tool_id = _clf_prediction.tool_id
             if detected_tool_id:
                 effective_id = detected_tool_id
 
@@ -1826,12 +1840,29 @@ async def send_message(
                 code_visualizer_intent = (effective_id == "code_visualizer")
 
             print(f"[TOOL-7.9] Classifier: tool={detected_tool_id or 'None'} "
-                  f"conf={prediction.confidence:.3f} method={prediction.method} "
-                  f"active={prediction.active_tool} latency={prediction.latency_ms:.1f}ms "
-                  f"intents={msg_intents[:2]} probs={dict(list(prediction.probabilities.items())[:3])} "
+                  f"conf={_clf_prediction.confidence:.3f} method={_clf_prediction.method} "
+                  f"active={_clf_prediction.active_tool} latency={_clf_prediction.latency_ms:.1f}ms "
+                  f"intents={msg_intents[:2]} probs={dict(list(_clf_prediction.probabilities.items())[:3])} "
                   f"msg={safe_user_message[:60]!r}", flush=True)
         except Exception as e:
             logger.warning(f"Tool classifier failed: {e}", exc_info=True)
+
+    # Soft continuity: if architect was active AND classifier didn't confidently
+    # pick a different tool, keep routing to architect for follow-ups.
+    # If user asks random question (classifier picks web_search, image_gen, etc.), break continuity.
+    if not detected_tool and not web_search_needed and not image_gen_needed and _architect_pipeline_active:
+        _clf_picked_other = (
+            _clf_prediction
+            and _clf_prediction.tool_id
+            and _clf_prediction.tool_id != "agent_architect"
+            and not (_clf_prediction.tool_id or "").startswith("agents_")
+            and _clf_prediction.confidence > 0.45
+        )
+        if _clf_picked_other:
+            print(f"[TOOL-7.9] continuity BROKEN — classifier confidently picked '{_clf_prediction.tool_id}' ({_clf_prediction.confidence:.2f})", flush=True)
+        else:
+            detected_tool = tools_registry.get_tool("agent_architect")
+            print(f"[TOOL-7.9] continuity KEPT — previous was architect, classifier uncertain or no strong other tool", flush=True)
 
     # ============================================
     # STEP 7.6: CHECK RESPONSE CACHE
