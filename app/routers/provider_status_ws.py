@@ -390,7 +390,23 @@ class ProviderStatusManager:
                         return {"available": False, "latency": latency, "status": "quota_exceeded", "error": "Credit balance too low or quota exceeded"}
                     else:
                         return {"available": False, "latency": latency, "status": "error", "error": response.text[:100]}
-            
+
+            elif provider == "tokenrouter":
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        "https://api.tokenrouter.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={"model": "openai/gpt-5.5", "messages": [{"role": "user", "content": "hi"}]},
+                        timeout=8.0
+                    )
+                    latency = int((time.time() - start_time) * 1000)
+                    if response.status_code == 200:
+                        return {"available": True, "latency": latency, "status": "online"}
+                    elif response.status_code == 429:
+                        return {"available": False, "latency": latency, "status": "quota_exceeded", "error": "Rate limit or quota exceeded"}
+                    else:
+                        return {"available": False, "latency": latency, "status": "error", "error": response.text[:100]}
+
             else:
                 return {"available": False, "latency": None, "status": "offline", "error": "Unknown provider"}
         
