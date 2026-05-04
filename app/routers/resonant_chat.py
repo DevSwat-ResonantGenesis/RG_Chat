@@ -264,12 +264,24 @@ async def _get_user_api_keys(session: AsyncSession, user_id: str) -> Optional[Di
     return None
 
 
+_MEMORY_CACHE: Dict[str, tuple] = {}
+_MEMORY_CACHE_TTL = 60.0  # seconds
+_MEMORY_MIN_SCORE = float(os.getenv("MEMORY_MIN_SCORE", "0.35"))
+
+
+def _mem_cache_key(user_id: str, session_id: Optional[str], message: str) -> str:
+    import hashlib
+    h = hashlib.sha256(message.strip().lower().encode("utf-8")).hexdigest()[:16]
+    return f"{user_id}|{session_id or '-'}|{h}"
+
+
 async def _extract_memories(
     user_id: str,
     org_id: str,
     message: str,
     agent_hash: Optional[str] = None,
     team_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Extract memories from memory service (RAG + Hash Sphere).
     
@@ -305,6 +317,7 @@ async def _extract_memories(
     try:
         # Validate user_id is UUID format for memory service
         import uuid
+        import time as _time
         try:
             uuid.UUID(user_id)
             valid_user_id = user_id
@@ -312,7 +325,14 @@ async def _extract_memories(
             # Generate a UUID for testing if invalid
             valid_user_id = str(uuid.uuid4())
             logger.warning(f"Invalid user_id format, using generated UUID: {valid_user_id}")
-        
+
+        # PATCH C: 60s LRU cache keyed on (user, session, message-hash)
+        _cache_k = _mem_cache_key(valid_user_id, session_id, message)
+        _cached = _MEMORY_CACHE.get(_cache_k)
+        if _cached and (_time.time() - _cached[0]) < _MEMORY_CACHE_TTL:
+            logger.info(f"🧠 Memory cache HIT for {_cache_k[:40]}")
+            return _cached[1]
+
         # ============================================
         # FULL HASH SPHERE MEMORY EXTRACTION
         # Uses 9-Layer Architecture with multi-method retrieval
@@ -327,6 +347,8 @@ async def _extract_memories(
                 "user_id": valid_user_id,
                 "org_id": org_id,
                 "agent_hash": effective_agent_hash,
+                "session_id": session_id,           # PATCH B: conversation scope
+                "min_score": _MEMORY_MIN_SCORE,     # PATCH A: relevance floor
                 "limit": 25,
                 # Extraction methods in priority order
                 "use_anchors": True,       # Layer 4: Anchor-based lookup (PRIORITY 1)
@@ -405,7 +427,13 @@ async def _extract_memories(
                 print(f"⚠️ Failed to generate xyz for memory: {e}")
     
     logger.info(f"🧠 Memory extraction: RAG={len(rag_memories)}, Sphere={len(sphere_memories)}, Merged={len(merged_memories)}")
-    
+
+    # PATCH C: write result to cache
+    try:
+        _MEMORY_CACHE[_cache_k] = (_time.time(), merged_memories)
+    except Exception:
+        pass
+
     return merged_memories
 
 
@@ -906,6 +934,7 @@ async def stream_message(
             memories = await _extract_memories(
                 user_id=user_id, org_id=org_id, message=safe_message,
                 agent_hash=request_body.agent_hash, team_id=request_body.teamId,
+                session_id=chat_id,
             )
             history_msgs = recent_messages[:-1]
             context_messages = _build_context_messages(
@@ -1679,6 +1708,7 @@ async def send_message(
         message=safe_user_message,
         agent_hash=request_body.agent_hash,
         team_id=request_body.teamId,
+        session_id=chat_id,
     )
     print(f"[MEMORY] Retrieved {len(memories)} memories for user={user_id}", flush=True)
 
