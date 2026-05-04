@@ -61,13 +61,21 @@ class ProviderStatusManager:
         providers = []
         
         # Platform keys (handle comma-separated keys by taking the first one)
-        raw_groq = os.getenv("GROQ_API_KEY") or os.getenv("CHAT_GROQ_API_KEY") or ""
-        platform_groq = raw_groq.split(",")[0].strip() if raw_groq else None
+        platform_tokenrouter = os.getenv("TOKENROUTER_API_KEY")
         platform_openai = os.getenv("OPENAI_API_KEY") or os.getenv("CHAT_OPENAI_API_KEY")
         platform_gemini = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("CHAT_GOOGLE_API_KEY")
         platform_anthropic = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CHAT_ANTHROPIC_API_KEY")
-        
+        raw_groq = os.getenv("GROQ_API_KEY") or os.getenv("CHAT_GROQ_API_KEY") or ""
+        platform_groq = raw_groq.split(",")[0].strip() if raw_groq else None
+
         # Comprehensive model lists per provider
+        TOKENROUTER_MODELS = [
+            "anthropic/claude-opus-4.7",
+            "openai/gpt-5.5",
+            "google/gemini-3.1-pro-preview",
+            "z-ai/glm-5.1",
+            "qwen/qwen3.6-plus",
+        ]
         OPENAI_MODELS = [
             "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4",
             "o1", "o1-mini", "o1-pro",
@@ -88,19 +96,19 @@ class ProviderStatusManager:
             "mixtral-8x7b-32768", "gemma2-9b-it",
         ]
 
-        # Check Groq
-        groq_status = await self._check_provider_latency("groq", platform_groq)
+        # Check TokenRouter (primary platform provider)
+        tokenrouter_status = await self._check_provider_latency("tokenrouter", platform_tokenrouter)
         providers.append({
-            "id": "groq",
-            "name": "Groq",
-            "available": groq_status["available"],
-            "latency": groq_status["latency"],
-            "status": groq_status["status"],
-            "model": "llama-3.3-70b-versatile",
-            "models": GROQ_MODELS,
-            "capabilities": ["chat", "coding"],
+            "id": "tokenrouter",
+            "name": "TokenRouter (All Models)",
+            "available": tokenrouter_status["available"],
+            "latency": tokenrouter_status["latency"],
+            "status": tokenrouter_status["status"],
+            "model": "anthropic/claude-opus-4.7",
+            "models": TOKENROUTER_MODELS,
+            "capabilities": ["chat", "coding", "vision", "tools"],
         })
-        
+
         # Check OpenAI
         openai_status = await self._check_provider_latency("openai", platform_openai)
         providers.append({
@@ -113,7 +121,7 @@ class ProviderStatusManager:
             "models": OPENAI_MODELS,
             "capabilities": ["chat", "coding", "vision", "image"],
         })
-        
+
         # Check Gemini
         gemini_status = await self._check_provider_latency("gemini", platform_gemini)
         providers.append({
@@ -126,7 +134,7 @@ class ProviderStatusManager:
             "models": GEMINI_MODELS,
             "capabilities": ["chat", "coding", "vision"],
         })
-        
+
         # Check Anthropic
         anthropic_status = await self._check_provider_latency("anthropic", platform_anthropic)
         providers.append({
@@ -138,6 +146,19 @@ class ProviderStatusManager:
             "model": "claude-sonnet-4-20250514",
             "models": ANTHROPIC_MODELS,
             "capabilities": ["chat", "coding", "vision"],
+        })
+
+        # Check Groq
+        groq_status = await self._check_provider_latency("groq", platform_groq)
+        providers.append({
+            "id": "groq",
+            "name": "Groq",
+            "available": groq_status["available"],
+            "latency": groq_status["latency"],
+            "status": groq_status["status"],
+            "model": "llama-3.3-70b-versatile",
+            "models": GROQ_MODELS,
+            "capabilities": ["chat", "coding"],
         })
         
         
@@ -236,21 +257,6 @@ class ProviderStatusManager:
                 "models": ["meta-llama/Meta-Llama-3.1-70B-Instruct",
                            "mistralai/Mixtral-8x7B-Instruct-v0.1"],
                 "capabilities": ["chat", "coding"],
-            },
-            {
-                "id": "tokenrouter", "name": "TokenRouter (All Models)",
-                "env_keys": ["TOKENROUTER_API_KEY"],
-                "base_url": "https://api.tokenrouter.com/v1",
-                "test_model": "openai/gpt-5.5",
-                "default_model": "anthropic/claude-opus-4.7",
-                "models": [
-                    "anthropic/claude-opus-4.7",
-                    "openai/gpt-5.5",
-                    "google/gemini-3.1-pro-preview",
-                    "z-ai/glm-5.1",
-                    "qwen/qwen3.6-plus",
-                ],
-                "capabilities": ["chat", "coding", "vision", "tools"],
             },
         ]
         
