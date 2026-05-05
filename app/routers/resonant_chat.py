@@ -3563,8 +3563,13 @@ async def get_providers(
         live_available = p.get("available", False)
         can_use = has_user_key or (has_credits and live_available and not is_byok_only) or (is_local and live_available) or (is_byok_only and has_user_key)
         
-        # Get real model list from llm_service, fall back to status manager's list
-        real_models = llm_models_map.get(provider_key, []) or p.get("models", [])
+        # Use the LONGER model list — status manager has the full 72-model
+        # TokenRouter catalog, while llm_service may have a shorter subset
+        status_models = p.get("models", [])
+        llm_models = llm_models_map.get(provider_key, [])
+        real_models = status_models if len(status_models) >= len(llm_models) else llm_models
+        if not real_models:
+            real_models = llm_models or status_models
         
         providers.append({
             "id": provider_id,
