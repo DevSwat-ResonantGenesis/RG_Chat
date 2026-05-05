@@ -1027,6 +1027,7 @@ async def stream_message(
 
             # ── Teams ──
             if not response_text:
+                print(f"[STREAM-TEAM] Attempting team execution for: {_effective_msg[:60]!r}", flush=True)
                 try:
                     from ..domain.agent import maybe_run_team
                     _team_resp, _team_name, _team_used = await maybe_run_team(
@@ -1035,12 +1036,13 @@ async def stream_message(
                         user_id=user_id, user_api_keys=user_api_keys,
                         images=request_body.images,
                     )
+                    print(f"[STREAM-TEAM] team returned: used={_team_used}, has_response={bool(_team_resp)}", flush=True)
                     if _team_used and _team_resp:
                         response_text = _team_resp
                         actual_provider = f"team_{_team_name.lower().replace(' ', '_')}" if _team_name else "team"
                         agent_type = "team"
-                except Exception:
-                    pass
+                except Exception as _te:
+                    print(f"[STREAM-TEAM] team failed: {_te}", flush=True)
 
             # ── Debate ──
             if not response_text:
@@ -1059,6 +1061,7 @@ async def stream_message(
 
             # ── Agent spawn ──
             if not response_text:
+                print(f"[STREAM-AGENT] Attempting agent spawn for: {_effective_msg[:60]!r}", flush=True)
                 try:
                     _ag_resp, agent_type, actual_provider, router_meta = await maybe_spawn_agent(
                         message=_effective_msg, context_messages=context_messages,
@@ -1066,6 +1069,7 @@ async def stream_message(
                         preferred_provider=request_body.preferred_provider,
                         images=request_body.images,
                     )
+                    print(f"[STREAM-AGENT] spawn returned: agent_type={agent_type}, has_response={bool(_ag_resp)}", flush=True)
                     if _ag_resp:
                         response_text = _ag_resp
                 except Exception as _ae:

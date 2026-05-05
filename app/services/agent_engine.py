@@ -582,6 +582,7 @@ Do NOT be verbose. Output well-structured documentation following industry stand
         Falls back to adaptive allocator if neural classifier unavailable.
         ALWAYS returns an agent type — never returns None.
         """
+        logger.info(f"[AgentEngine] should_spawn_agent_async called: message={message[:60]!r}, user_id={user_id}")
         try:
             prediction = await agent_classifier.predict(message, user_id=user_id)
             logger.info(
@@ -594,6 +595,7 @@ Do NOT be verbose. Output well-structured documentation following industry stand
             logger.warning(f"Neural agent classifier failed: {e}, falling back to adaptive")
         
         # Fallback to sync adaptive allocator
+        logger.info(f"[AgentEngine] Falling back to adaptive allocator")
         return self.should_spawn_agent(message)
 
 
