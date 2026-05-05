@@ -146,3 +146,85 @@ class MultiAIRouter:
     ) -> Dict:
         """Alias for route_query (now natively async)."""
         return await self.route_query(message, context, preferred_provider)
+
+    async def smart_route(
+        self,
+        message: str,
+        context: Optional[List[Dict]] = None,
+        user_keys: Optional[Dict[str, str]] = None,
+        task_type: Optional[str] = None,
+    ) -> Dict:
+        """Smart routing — auto-selects best model based on task type.
+
+        Uses TokenRouter's 72 models with cost/quality optimization:
+        - Simple answers → cheapest model
+        - Coding → code specialist
+        - Images → image model
+        - Audio/Video → media models
+        """
+        messages: List[Dict] = []
+        if context:
+            for msg in context:
+                if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": str(message)})
+
+        effective_keys = user_keys or self._user_api_keys or None
+
+        try:
+            request = LLMRequest(
+                messages=messages,
+                temperature=0.7,
+                max_tokens=16384,
+            )
+            response = await _llm_client.smart_complete(
+                request, user_keys=effective_keys, task_type=task_type
+            )
+            return {
+                "provider": response.provider or "tokenrouter",
+                "response": response.content or "",
+                "metadata": {
+                    "model": response.model or "",
+                    "usage": response.usage or {},
+                    "task_type": task_type or _llm_client.classify_task(message),
+                    "smart_routed": True,
+                },
+            }
+        except Exception as e:
+            logger.error(f"[MultiAIRouter] Smart routing failed: {e}")
+            return await self.route_query(message, context, user_keys=user_keys)
+
+    async def parallel_route(
+        self,
+        tasks: List[Dict],
+        user_keys: Optional[Dict[str, str]] = None,
+    ) -> List[Dict]:
+        """Execute multiple LLM tasks in parallel.
+
+        Args:
+            tasks: List of {"message": str, "model": str, "provider": str (optional)}
+            user_keys: BYOK keys
+
+        Returns:
+            List of {"provider": str, "response": str, "model": str} in same order.
+        """
+        effective_keys = user_keys or self._user_api_keys or None
+        requests = []
+        for task in tasks:
+            requests.append(LLMRequest(
+                messages=[{"role": "user", "content": task.get("message", "")}],
+                model=task.get("model"),
+                provider=task.get("provider", "tokenrouter"),
+                max_tokens=task.get("max_tokens", 16384),
+            ))
+
+        responses = await _llm_client.parallel_complete(requests, user_keys=effective_keys)
+        return [
+            {
+                "provider": r.provider,
+                "response": r.content,
+                "model": r.model,
+                "usage": r.usage,
+            }
+            for r in responses
+        ]

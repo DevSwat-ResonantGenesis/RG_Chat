@@ -70,9 +70,34 @@ class ProviderStatusManager:
         
         # Comprehensive model lists per provider
         TOKENROUTER_MODELS = [
-            "anthropic/claude-opus-4.7", "openai/gpt-5.5",
-            "google/gemini-3.1-pro-preview", "z-ai/glm-5.1",
-            "qwen/qwen3.6-plus",
+            # Text
+            "anthropic/claude-opus-4.7", "anthropic/claude-opus-4.6", "anthropic/claude-opus-4.5",
+            "anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5", "anthropic/claude-sonnet-4",
+            "anthropic/claude-haiku-4.5", "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.2",
+            "openai/gpt-5-mini", "openai/gpt-4o-mini", "x-ai/grok-4.3", "x-ai/grok-4.20-beta",
+            "x-ai/grok-4.1-fast", "google/gemini-3.1-pro-preview", "google/gemini-3-flash-preview",
+            "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v3.2",
+            "z-ai/glm-5.1", "z-ai/glm-5", "z-ai/glm-5-turbo", "z-ai/glm-4.7", "z-ai/glm-4.6",
+            "z-ai/glm-4.6v", "z-ai/glm-4.5-air", "qwen/qwen3.6-plus", "qwen/qwen3.5-plus-02-15",
+            "qwen/qwen3.5-flash", "qwen/qwen3.5-397b-a17b", "qwen/qwen3.5-122b-a10b",
+            "qwen/qwen3.5-35b-a3b", "qwen/qwen3.5-9b", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.5",
+            "minimax/minimax-m2.7", "minimax/minimax-m2.7-highspeed", "minimax/minimax-m2.5",
+            "minimax/minimax-m2.1", "minimax/minimax-m2.1-highspeed", "minimax/minimax-m2-her",
+            "xiaomi/mimo-v2.5-pro", "xiaomi/mimo-v2.5", "xiaomi/mimo-v2-pro", "xiaomi/mimo-v2-omni",
+            "xiaomi/mimo-v2-flash", "stepfun/step-3.5-flash", "mistralai/devstral-2512",
+            "nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            # Coding
+            "openai/gpt-5.3-codex", "openai/gpt-5.2-codex", "openai/gpt-5.1-codex-max",
+            "openai/gpt-5.1-codex-mini", "qwen/qwen3-coder-next",
+            # Image
+            "openai/gpt-5.4-image-2", "openai/gpt-5-image", "openai/gpt-5-image-mini",
+            "google/gemini-3.1-flash-image-preview", "google/gemini-3-pro-image-preview",
+            "google/gemini-2.5-flash-image", "bytedance-seed/seedream-4.5",
+            # Video
+            "happyhorse-1.0-i2v", "happyhorse-1.0-t2v", "dreamina-seedance-2-0-260128",
+            "dreamina-seedance-2-0-fast-260128", "kling-v3", "kling-v2-6", "MiniMax-Hailuo-2.3",
+            # Audio
+            "openai/gpt-audio", "openai/gpt-audio-mini",
         ]
         OPENAI_MODELS = [
             "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4",
@@ -94,17 +119,27 @@ class ProviderStatusManager:
             "mixtral-8x7b-32768", "gemma2-9b-it",
         ]
 
-        # Check TokenRouter (Tier 0 — unified router)
+        # Check TokenRouter (Tier 0 — unified router, 72 models)
         tr_status = await self._check_provider_latency("tokenrouter", platform_tokenrouter)
         providers.append({
             "id": "tokenrouter",
-            "name": "Auto (Smart)",
+            "name": "TokenRouter (72 Models)",
             "available": tr_status["available"],
             "latency": tr_status["latency"],
             "status": tr_status["status"],
-            "model": "anthropic/claude-opus-4.7",
+            "model": "google/gemini-3-flash-preview",
             "models": TOKENROUTER_MODELS,
-            "capabilities": ["chat", "coding", "vision", "tools"],
+            "capabilities": ["chat", "coding", "vision", "tools", "image", "video", "audio"],
+            "model_categories": {
+                "text": [m for m in TOKENROUTER_MODELS if not any(t in m for t in ["image", "Image", "seedream", "happyhorse", "seedance", "kling", "Hailuo", "audio"])],
+                "image": ["openai/gpt-5.4-image-2", "openai/gpt-5-image", "openai/gpt-5-image-mini",
+                          "google/gemini-3.1-flash-image-preview", "google/gemini-3-pro-image-preview",
+                          "google/gemini-2.5-flash-image", "bytedance-seed/seedream-4.5"],
+                "video": ["happyhorse-1.0-i2v", "happyhorse-1.0-t2v", "dreamina-seedance-2-0-260128",
+                          "dreamina-seedance-2-0-fast-260128", "kling-v3", "kling-v2-6", "MiniMax-Hailuo-2.3"],
+                "audio": ["openai/gpt-audio", "openai/gpt-audio-mini"],
+            },
+            "supports_smart_routing": True,
         })
         
         # Check Groq
