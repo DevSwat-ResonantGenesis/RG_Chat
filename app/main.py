@@ -51,11 +51,14 @@ async def lifespan(app: FastAPI):
 
     # Pre-train/load the ML agent classifier (shares encoder with tool classifier)
     try:
+        print("[MAIN] Attempting to preload agent classifier...", flush=True)
         from .services.agent_classifier import preload_agent_classifier
         await preload_agent_classifier()
+        print("[MAIN] Agent classifier preload completed", flush=True)
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Agent classifier preload failed (non-fatal): {e}")
+        print(f"[MAIN] Agent classifier preload failed: {e}", flush=True)
 
     # Start the provider status monitor loop
     monitor_task = asyncio.create_task(status_manager.monitor_loop())
