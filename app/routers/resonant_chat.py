@@ -737,11 +737,30 @@ async def stream_message(
         pass
 
     # ── Detect tool ──
-    result_msgs = await session.execute(
+    # Fetch 5 full messages + 20 summarized messages for context
+    result_msgs_full = await session.execute(
         select(ResonantChatMessage).where(ResonantChatMessage.chat_id == UUID(chat_id))
-        .order_by(ResonantChatMessage.created_at.desc()).limit(50)
+        .order_by(ResonantChatMessage.created_at.desc()).limit(5)
     )
-    recent_messages = list(reversed(result_msgs.scalars().all()))
+    recent_messages_full = list(reversed(result_msgs_full.scalars().all()))
+
+    # Fetch additional messages for summarization (up to 20 more, skipping the 5 full ones)
+    result_msgs_summary = await session.execute(
+        select(ResonantChatMessage).where(ResonantChatMessage.chat_id == UUID(chat_id))
+        .order_by(ResonantChatMessage.created_at.desc()).offset(5).limit(20)
+    )
+    recent_messages_summary = list(reversed(result_msgs_summary.scalars().all()))
+
+    # Combine: 5 full messages + summarized older messages
+    recent_messages = recent_messages_full + [
+        ResonantChatMessage(
+            id=m.id, role=m.role, content=f"[SUMMARY] {m.content[:200]}...", 
+            hash=m.hash, resonance_score=m.resonance_score,
+            xyz_x=m.xyz_x, xyz_y=m.xyz_y, xyz_z=m.xyz_z,
+            created_at=m.created_at, meta_data=m.meta_data
+        )
+        for m in recent_messages_summary
+    ]
 
     # Check architect pipeline continuity — route follow-ups to architect
     # Triggers if ANY recent assistant message was from the architect
@@ -1661,13 +1680,34 @@ async def send_message(
     # STEP 3.5: GET RECENT MESSAGES FOR LINEAGE & CREATE DSID
     # ============================================
     # Query recent messages first for lineage tracking
-    result = await session.execute(
+    # Fetch 5 full messages + 20 summarized messages for context
+    result_full = await session.execute(
         select(ResonantChatMessage)
         .where(ResonantChatMessage.chat_id == UUID(chat_id))
         .order_by(ResonantChatMessage.created_at.desc())
-        .limit(50)
+        .limit(5)
     )
-    recent_messages = list(reversed(result.scalars().all()))
+    recent_messages_full = list(reversed(result_full.scalars().all()))
+
+    # Fetch additional messages for summarization (up to 20 more, skipping the 5 full ones)
+    result_summary = await session.execute(
+        select(ResonantChatMessage)
+        .where(ResonantChatMessage.chat_id == UUID(chat_id))
+        .order_by(ResonantChatMessage.created_at.desc())
+        .offset(5).limit(20)
+    )
+    recent_messages_summary = list(reversed(result_summary.scalars().all()))
+
+    # Combine: 5 full messages + summarized older messages
+    recent_messages = recent_messages_full + [
+        ResonantChatMessage(
+            id=m.id, role=m.role, content=f"[SUMMARY] {m.content[:200]}...", 
+            hash=m.hash, resonance_score=m.resonance_score,
+            xyz_x=m.xyz_x, xyz_y=m.xyz_y, xyz_z=m.xyz_z,
+            created_at=m.created_at, meta_data=m.meta_data
+        )
+        for m in recent_messages_summary
+    ]
     
     # Get previous message ID for lineage
     prev_message_id = None
