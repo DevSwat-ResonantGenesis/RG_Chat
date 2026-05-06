@@ -952,14 +952,17 @@ async def stream_message(
 
         else:
             # ── FULL PIPELINE STREAMING ──
+            print(f"[STREAM-FULL-PIPELINE] Entering full pipeline (not architect)", flush=True)
             yield _sse_event({"event": "start", "chat_id": chat_id, "user_message_id": str(user_msg.id), "streaming": True})
 
             # ── Memory extraction ──
+            print(f"[STREAM-MEMORY] Extracting memories...", flush=True)
             memories = await _extract_memories(
                 user_id=user_id, org_id=org_id, message=safe_message,
                 agent_hash=request_body.agent_hash, team_id=request_body.teamId,
                 session_id=chat_id,
             )
+            print(f"[STREAM-MEMORY] Extracted {len(memories)} memories", flush=True)
             history_msgs = recent_messages[:-1]
             context_messages = _build_context_messages(
                 recent_messages=history_msgs, memories=memories,
