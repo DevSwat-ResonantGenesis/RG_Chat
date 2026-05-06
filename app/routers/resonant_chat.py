@@ -1075,6 +1075,7 @@ async def stream_message(
                         response_text = _team_resp
                         actual_provider = f"team_{_team_name.lower().replace(' ', '_')}" if _team_name else "team"
                         agent_type = "team"
+                        yield _sse_event({"event": "step", "step": "agent_spawn", "agent_type": agent_type})
                 except Exception as _te:
                     print(f"[STREAM-TEAM] team failed: {_te}", flush=True)
 
@@ -1090,6 +1091,7 @@ async def stream_message(
                         response_text = _debate_resp
                         actual_provider = "debate_engine"
                         agent_type = "debate"
+                        yield _sse_event({"event": "step", "step": "agent_spawn", "agent_type": agent_type})
                 except Exception:
                     pass
 
@@ -1106,6 +1108,7 @@ async def stream_message(
                     print(f"[STREAM-AGENT] spawn returned: agent_type={agent_type}, has_response={bool(_ag_resp)}", flush=True)
                     if _ag_resp:
                         response_text = _ag_resp
+                        yield _sse_event({"event": "step", "step": "agent_spawn", "agent_type": agent_type})
                 except Exception as _ae:
                     print(f"[STREAM-AGENT] spawn failed: {_ae}", flush=True)
 
@@ -1127,6 +1130,7 @@ async def stream_message(
                     actual_provider = _fb.get("provider", "agent_reasoning")
                     agent_type = "reasoning"
                     router_meta = {"model": _fb.get("model"), "was_fallback": _fb.get("was_fallback", False)}
+                    yield _sse_event({"event": "step", "step": "agent_spawn", "agent_type": agent_type})
                 except Exception:
                     pass
 
@@ -1134,7 +1138,7 @@ async def stream_message(
             if response_text:
                 # Agent/team/debate/tool already produced a complete response — emit it
                 accumulated_text = response_text
-                yield _sse_event({"event": "chunk", "content": accumulated_text})
+                yield _sse_event({"event": "chunk", "content": accumulated_text, "agent_type": agent_type})
             else:
                 # No pre-computed response — try native function calling first, then stream
                 yield _sse_event({"event": "step", "step": "routing", "message": "Streaming response..."})
