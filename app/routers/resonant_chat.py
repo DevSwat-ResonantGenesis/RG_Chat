@@ -587,22 +587,27 @@ Format all responses with Markdown. The chat UI renders full Markdown with synta
     
     # Add memory context if available (increased from 5 to 20 for better memory retention)
     if memories:
+        print(f"[MEMORY-CONTEXT] Injecting {len(memories)} memories into context", flush=True)
         memory_context = "RELEVANT MEMORIES FROM USER'S HASH SPHERE:\n"
         mem_count = 0
         for mem in memories[:5]:
             content = mem.get("content", "") or mem.get("anchor_text", "")
             # Quality filter: skip very short, empty, or still-encrypted memories
             if not content or len(content.strip()) < 15 or content.startswith("ENC2:"):
+                print(f"[MEMORY-CONTEXT] Skipping memory: len={len(content)}, starts_with_ENC2={content.startswith('ENC2:') if content else False}", flush=True)
                 continue
             mem_count += 1
             score = mem.get("hybrid_score", 0)
             memory_context += f"{mem_count}. [{score:.2f}] {content[:300]}\n"
         
+        print(f"[MEMORY-CONTEXT] Added {mem_count} memories to context", flush=True)
         if mem_count > 0:
             context_messages.append({
                 "role": "system",
                 "content": memory_context
             })
+    else:
+        print(f"[MEMORY-CONTEXT] No memories to inject", flush=True)
     
     return context_messages
 
@@ -968,6 +973,7 @@ async def stream_message(
 
             # ── Tool execution ──
             if detected_tool:
+                print(f"[STREAM-TOOL] Detected tool: {detected_tool.id}", flush=True)
                 yield _sse_event({"event": "step", "step": "tool_detection", "tool": detected_tool.id, "name": detected_tool.name})
                 try:
                     _tool_ctx = {
