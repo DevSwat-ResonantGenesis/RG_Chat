@@ -814,11 +814,17 @@ async def stream_message(
                 intents=msg_intents, user_id=user_id,
             )
             print(f"[STREAM-DETECT] classifier: tool={_clf_prediction.tool_id} conf={_clf_prediction.confidence:.3f} method={_clf_prediction.method} msg={safe_message[:60]!r}", flush=True)
-            if _clf_prediction.tool_id == "agent_architect" or (_clf_prediction.tool_id and _clf_prediction.tool_id.startswith("agents_")):
+            if _clf_prediction.tool_id == "agent_architect":
                 use_architect = True
                 detected_tool = tools_registry.get_tool("agent_architect")
-                if _clf_prediction.tool_id != "agent_architect":
-                    print(f"[STREAM-DETECT] agents_* tool '{_clf_prediction.tool_id}' → routing to architect", flush=True)
+            elif _clf_prediction.tool_id and _clf_prediction.tool_id.startswith("agents_"):
+                # Only route to architect if confidence is high enough (avoid false positives)
+                if _clf_prediction.confidence > 0.4:
+                    use_architect = True
+                    detected_tool = tools_registry.get_tool("agent_architect")
+                    print(f"[STREAM-DETECT] agents_* tool '{_clf_prediction.tool_id}' (conf={_clf_prediction.confidence:.3f}) → routing to architect", flush=True)
+                else:
+                    print(f"[STREAM-DETECT] agents_* tool '{_clf_prediction.tool_id}' (conf={_clf_prediction.confidence:.3f}) → SKIPPED (too low)", flush=True)
             elif _clf_prediction.tool_id:
                 effective_id = _clf_prediction.tool_id
                 if effective_id == "web_search":
