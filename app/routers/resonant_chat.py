@@ -897,15 +897,23 @@ async def stream_message(
                 "x-is-superuser": str(is_superuser).lower(),
                 "x-unlimited-credits": str(unlimited_credits).lower(),
             }
+            # Build conversation history WITH timestamps so architect knows message order
+            _hist_msgs = []
+            for m in recent_messages[-20:]:
+                _entry = {
+                    "role": getattr(m, "role", ""),
+                    "content": (getattr(m, "content", "") or "")[:1000],
+                }
+                if hasattr(m, "created_at") and m.created_at:
+                    _entry["timestamp"] = m.created_at.isoformat()
+                _hist_msgs.append(_entry)
+
             svc_payload = {
                 "message": raw_message,
                 "workspace_id": user_id,
                 "user_id": user_id,
                 "context": "",
-                "conversation_history": [
-                    {"role": getattr(m, "role", ""), "content": (getattr(m, "content", "") or "")[:1000]}
-                    for m in recent_messages[-20:]
-                ],
+                "conversation_history": _hist_msgs,
                 "user_api_keys": user_api_keys or {},
             }
 
