@@ -31,7 +31,7 @@ class MemoryReadTool(BaseIntegrationSkill):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
-                    f"{MEMORY_SERVICE_URL}/api/v1/memory/rag/memories",
+                    f"{MEMORY_SERVICE_URL}/memory/rag/memories",
                     params={"user_id": user_id, "limit": 20},
                 )
                 resp.raise_for_status()
@@ -57,7 +57,7 @@ class MemoryWriteTool(BaseIntegrationSkill):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
-                    f"{MEMORY_SERVICE_URL}/api/v1/memory/ingest",
+                    f"{MEMORY_SERVICE_URL}/memory/ingest",
                     json={"text": message, "user_id": user_id, "source": "resonant_chat"},
                 )
                 resp.raise_for_status()
@@ -81,7 +81,7 @@ class MemoryStatsTool(BaseIntegrationSkill):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
-                    f"{MEMORY_SERVICE_URL}/api/v1/memory/stats",
+                    f"{MEMORY_SERVICE_URL}/memory/stats",
                     params={"user_id": user_id},
                 )
                 resp.raise_for_status()

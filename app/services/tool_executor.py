@@ -1292,7 +1292,7 @@ class ToolExecutor:
         try:
             async with httpx.AsyncClient(timeout=12.0) as client:
                 stats_resp = await client.get(
-                    f"{MEMORY_SERVICE_URL}/api/v1/memory/stats",
+                    f"{MEMORY_SERVICE_URL}/memory/stats",
                     params={"user_id": user_id},
                 )
                 stats_resp.raise_for_status()

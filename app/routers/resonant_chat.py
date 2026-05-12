@@ -576,9 +576,9 @@ Format all responses with Markdown. The chat UI renders full Markdown with synta
         "content": truthfulness_guardrail_prompt,
     })
 
-    # Add recent messages for context (capped at 10 to keep LLM focused)
-    logger.info(f"📝 Adding {len(recent_messages[-10:])} recent messages to context")
-    for msg in recent_messages[-10:]:
+    # Add recent messages for context (capped at 15 to keep LLM focused)
+    logger.info(f"📝 Adding {len(recent_messages[-15:])} recent messages to context")
+    for msg in recent_messages[-15:]:
         context_messages.append({
             "role": msg.role,
             "content": msg.content
@@ -865,6 +865,16 @@ async def stream_message(
     # ── Get user API keys ──
     user_api_keys = await _get_user_api_keys(session, user_id)
 
+    # ── Pre-warm memory extraction (runs concurrently with architect/pipeline setup) ──
+    import asyncio as _asyncio
+    _memory_task = None
+    if not use_architect:
+        _memory_task = _asyncio.create_task(_extract_memories(
+            user_id=user_id, org_id=org_id, message=safe_message,
+            agent_hash=request_body.agent_hash, team_id=request_body.teamId,
+            session_id=chat_id,
+        ))
+
     async def _generate_events():
         accumulated_text = ""
         present_options_data = None
@@ -893,8 +903,8 @@ async def stream_message(
                 "user_id": user_id,
                 "context": "",
                 "conversation_history": [
-                    {"role": getattr(m, "role", ""), "content": (getattr(m, "content", "") or "")[:500]}
-                    for m in recent_messages[-8:]
+                    {"role": getattr(m, "role", ""), "content": (getattr(m, "content", "") or "")[:1000]}
+                    for m in recent_messages[-20:]
                 ],
                 "user_api_keys": user_api_keys or {},
             }
@@ -942,12 +952,17 @@ async def stream_message(
                                     present_options_data = tool_executor._map_architect_options(opts)
                                     yield _sse_event({"event": "options", "options": present_options_data})
 
+                            elif etype == "stream_token":
+                                content = edata.get("content", "")
+                                if content:
+                                    yield _sse_event({"event": "chunk", "content": content})
+
                             elif etype in ("tool_call", "tool_result", "thinking", "phase",
                                            "build_progress", "build_step", "build_complete",
                                            "test_step", "test_result", "verify_step",
                                            "verify_complete", "prompt_step", "prompt_ready",
                                            "research_complete", "plan_ready", "offers_ready",
-                                           "warning"):
+                                           "self_heal", "warning"):
                                 yield _sse_event({"event": "step", "step": etype, **edata})
 
                             elif etype == "error":
@@ -961,13 +976,20 @@ async def stream_message(
             print(f"[STREAM-FULL-PIPELINE] Entering full pipeline (not architect)", flush=True)
             yield _sse_event({"event": "start", "chat_id": chat_id, "user_message_id": str(user_msg.id), "streaming": True})
 
-            # ── Memory extraction ──
-            print(f"[STREAM-MEMORY] Extracting memories...", flush=True)
-            memories = await _extract_memories(
-                user_id=user_id, org_id=org_id, message=safe_message,
-                agent_hash=request_body.agent_hash, team_id=request_body.teamId,
-                session_id=chat_id,
-            )
+            # ── Memory extraction (pre-warmed — started before _generate_events) ──
+            print(f"[STREAM-MEMORY] Awaiting pre-warmed memory task...", flush=True)
+            if _memory_task:
+                try:
+                    memories = await _memory_task
+                except Exception as _mem_err:
+                    print(f"[STREAM-MEMORY] Pre-warmed task failed: {_mem_err}", flush=True)
+                    memories = []
+            else:
+                memories = await _extract_memories(
+                    user_id=user_id, org_id=org_id, message=safe_message,
+                    agent_hash=request_body.agent_hash, team_id=request_body.teamId,
+                    session_id=chat_id,
+                )
             print(f"[STREAM-MEMORY] Extracted {len(memories)} memories", flush=True)
             history_msgs = recent_messages[:-1]
             context_messages = _build_context_messages(
@@ -2049,8 +2071,8 @@ async def send_message(
             if detected_tool.id == "agent_architect" and recent_messages:
                 tool_context["recent_messages"] = [
                     {"role": (m.role if hasattr(m, "role") else m.get("role", "")),
-                     "content": (m.content if hasattr(m, "content") else m.get("content", ""))[:500]}
-                    for m in recent_messages[-8:]
+                     "content": (m.content if hasattr(m, "content") else m.get("content", ""))[:1000]}
+                    for m in recent_messages[-20:]
                 ]
             github_token = _extract_github_token_from_user_keys(user_api_keys)
             if github_token:
@@ -2313,8 +2335,8 @@ async def send_message(
                 if recent_messages:
                     _forced_ctx["recent_messages"] = [
                         {"role": (m.role if hasattr(m, "role") else m.get("role", "")),
-                         "content": (m.content if hasattr(m, "content") else m.get("content", ""))[:500]}
-                        for m in recent_messages[-8:]
+                         "content": (m.content if hasattr(m, "content") else m.get("content", ""))[:1000]}
+                        for m in recent_messages[-20:]
                     ]
                 _forced_result = await tool_executor.execute(
                     tool=_forced_tool,
