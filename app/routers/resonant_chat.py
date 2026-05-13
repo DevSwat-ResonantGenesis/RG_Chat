@@ -712,6 +712,7 @@ async def stream_message(
     unlimited_credits = request.headers.get("x-unlimited-credits", "false").lower() == "true"
     raw_message = request_body.message or ""
     safe_message = _sanitize_sensitive_tokens(raw_message)
+    print(f"[STREAM-REQ] preferred_provider={request_body.preferred_provider!r} preferred_model={request_body.preferred_model!r} msg={safe_message[:60]!r}", flush=True)
 
     # ── Get or create chat ──
     chat_id = request_body.chat_id
@@ -938,6 +939,7 @@ async def stream_message(
         ))
 
     async def _generate_events():
+        nonlocal detected_tool
         accumulated_text = ""
         present_options_data = None
         _stream_tool_result = None
