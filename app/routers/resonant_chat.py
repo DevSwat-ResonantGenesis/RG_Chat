@@ -1083,6 +1083,7 @@ async def stream_message(
         agent_type = None
         memories = []
         context_messages = []
+        _sse_images = []  # populated by image generation for persistence
 
         if use_architect:
             # ── ARCHITECT SSE STREAMING (background-task pattern) ──
@@ -1334,18 +1335,46 @@ async def stream_message(
                         _img_revised = _first_img.revised_prompt or _img_prompt
                         print(f"[STREAM-IMAGEGEN] first_img: url={bool(_img_url)} b64={bool(_first_img.base64_data)} revised_prompt_len={len(_first_img.revised_prompt or '')} model={_img_model}", flush=True)
 
-                        # Build image list for SSE event
+                        # Upload base64 images to storage for persistence
+                        STORAGE_URL = os.getenv("STORAGE_SERVICE_URL", "http://storage_service:8000")
                         _sse_images = []
-                        for _gi in _gen_images:
+                        for _gi_idx, _gi in enumerate(_gen_images):
                             _img_entry: Dict[str, Any] = {"model": _gi.model, "size": _gi.size, "revised_prompt": _gi.revised_prompt or _img_prompt}
-                            if _gi.url:
+                            if _gi.url and not _gi.url.startswith("data:"):
                                 _img_entry["url"] = _gi.url
-                            elif _gi.base64_data:
-                                _img_entry["base64_data"] = _gi.base64_data
+                            elif _gi.base64_data or (_gi.url and _gi.url.startswith("data:")):
+                                # Upload to storage to get a persistent URL
+                                _b64 = _gi.base64_data or (_gi.url.split(",", 1)[1] if _gi.url and "," in _gi.url else "")
+                                if _b64:
+                                    try:
+                                        import base64 as _b64mod
+                                        _img_bytes = _b64mod.b64decode(_b64)
+                                        _storage_key = f"generated-images/{chat_id}/{uuid4().hex}.png"
+                                        async with httpx.AsyncClient(timeout=30.0) as _sc:
+                                            _upload_resp = await _sc.post(
+                                                f"{STORAGE_URL}/storage/upload",
+                                                files={"file": (_storage_key, _img_bytes, "image/png")},
+                                                params={"key": _storage_key},
+                                            )
+                                        if _upload_resp.status_code == 200:
+                                            _stored_url = f"/api/v1/storage/download/{_storage_key}"
+                                            _img_entry["url"] = _stored_url
+                                            # Also include base64 for immediate SSE rendering
+                                            _img_entry["base64_data"] = _b64
+                                            if _gi_idx == 0:
+                                                _first_img.url = _stored_url
+                                                _img_url = _stored_url
+                                            print(f"[STREAM-IMAGEGEN] Uploaded image to storage: {_storage_key}", flush=True)
+                                        else:
+                                            print(f"[STREAM-IMAGEGEN] Storage upload failed: {_upload_resp.status_code}", flush=True)
+                                            _img_entry["base64_data"] = _b64
+                                    except Exception as _upload_err:
+                                        print(f"[STREAM-IMAGEGEN] Storage upload error: {_upload_err}", flush=True)
+                                        _img_entry["base64_data"] = _b64
                             _sse_images.append(_img_entry)
 
                         if _img_url:
-                            response_text = f"Here is your generated image:\n\n![{_img_revised}]({_img_url})"
+                            response_text = f"Here is your generated image:"
                             actual_provider = f"image_{_img_model}"
                             agent_type = "image_generation"
                         elif _first_img.base64_data:
@@ -1644,6 +1673,15 @@ async def stream_message(
             msg_meta["agent_type"] = agent_type
         if not use_architect and memories:
             msg_meta["memory_count"] = len(memories)
+        # Persist generated image URLs in meta_data so they survive page reload
+        if agent_type == "image_generation" and _sse_images:
+            _persist_images = []
+            for _si in _sse_images:
+                _pi = {"url": _si.get("url"), "revised_prompt": _si.get("revised_prompt"), "model": _si.get("model"), "size": _si.get("size")}
+                if _pi["url"]:
+                    _persist_images.append(_pi)
+            if _persist_images:
+                msg_meta["generatedImages"] = _persist_images
 
         _effective_provider = actual_provider or ("tool_agent_architect" if use_architect else "agent_reasoning")
 
