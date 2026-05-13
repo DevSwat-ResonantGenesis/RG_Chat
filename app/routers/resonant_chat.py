@@ -868,8 +868,10 @@ async def stream_message(
     # pick a different tool, keep routing to architect for follow-ups.
     # EXCEPTION: if image_gen or web_search was detected, always break continuity.
     # EXCEPTION: if keyword guard detects clear image intent, break continuity.
+    # EXCEPTION: if classifier says "no tool needed" (None), break continuity.
     _image_intent_detected = _is_image_intent(safe_message) and IMAGE_GENERATION_AVAILABLE
     if not use_architect and _architect_active and not _stream_image_gen and not _stream_web_search and not _image_intent_detected:
+        # Check if classifier picked a specific other tool confidently
         _clf_picked_other = (
             _clf_prediction
             and _clf_prediction.tool_id
@@ -877,12 +879,26 @@ async def stream_message(
             and not (_clf_prediction.tool_id or "").startswith("agents_")
             and _clf_prediction.confidence > 0.45
         )
+        # Check if classifier said "no tool needed" (general chat) — also breaks continuity
+        _clf_said_none = (
+            _clf_prediction
+            and not _clf_prediction.tool_id
+            and _clf_prediction.confidence > 0.30
+        )
         if _clf_picked_other:
             print(f"[STREAM-DETECT] continuity BROKEN — classifier confidently picked '{_clf_prediction.tool_id}' ({_clf_prediction.confidence:.2f})", flush=True)
+        elif _clf_said_none:
+            print(f"[STREAM-DETECT] continuity BROKEN — classifier says NO TOOL needed (conf={_clf_prediction.confidence:.2f}), general chat", flush=True)
         else:
-            use_architect = True
-            detected_tool = tools_registry.get_tool("agent_architect")
-            print(f"[STREAM-DETECT] continuity KEPT — previous was architect, classifier uncertain or no strong other tool", flush=True)
+            # Only keep continuity if this looks like an architect follow-up
+            # (e.g., "yes", "do it", "the reports folder" — short affirmatives)
+            _is_short_followup = len(safe_message.split()) <= 6
+            if _is_short_followup:
+                use_architect = True
+                detected_tool = tools_registry.get_tool("agent_architect")
+                print(f"[STREAM-DETECT] continuity KEPT — short follow-up ({len(safe_message.split())} words)", flush=True)
+            else:
+                print(f"[STREAM-DETECT] continuity BROKEN — message too long/complex for follow-up ({len(safe_message.split())} words)", flush=True)
 
     # Also check keyword guard (regex-based, handles articles/prepositions)
     if not use_architect and _is_agent_intent(safe_message):
@@ -2074,11 +2090,22 @@ async def send_message(
             and not (_clf_prediction.tool_id or "").startswith("agents_")
             and _clf_prediction.confidence > 0.45
         )
+        _clf_said_none = (
+            _clf_prediction
+            and not _clf_prediction.tool_id
+            and _clf_prediction.confidence > 0.30
+        )
         if _clf_picked_other:
             print(f"[TOOL-7.9] continuity BROKEN — classifier confidently picked '{_clf_prediction.tool_id}' ({_clf_prediction.confidence:.2f})", flush=True)
+        elif _clf_said_none:
+            print(f"[TOOL-7.9] continuity BROKEN — classifier says NO TOOL needed (conf={_clf_prediction.confidence:.2f}), general chat", flush=True)
         else:
-            detected_tool = tools_registry.get_tool("agent_architect")
-            print(f"[TOOL-7.9] continuity KEPT — previous was architect, classifier uncertain or no strong other tool", flush=True)
+            _is_short_followup = len(safe_user_message.split()) <= 6
+            if _is_short_followup:
+                detected_tool = tools_registry.get_tool("agent_architect")
+                print(f"[TOOL-7.9] continuity KEPT — short follow-up ({len(safe_user_message.split())} words)", flush=True)
+            else:
+                print(f"[TOOL-7.9] continuity BROKEN — message too long/complex for follow-up ({len(safe_user_message.split())} words)", flush=True)
 
     # Image intent keyword guard — override architect/other tools when user clearly wants an image
     if _is_image_intent(safe_user_message) and IMAGE_GENERATION_AVAILABLE:
