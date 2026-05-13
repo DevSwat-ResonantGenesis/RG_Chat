@@ -1152,14 +1152,32 @@ async def stream_message(
                 try:
                     if user_api_keys and user_api_keys.get("openai"):
                         image_generation.set_api_key(openai_key=user_api_keys.get("openai"))
+                    image_generation.set_user_keys(user_api_keys)
                     _img_prompt = image_generation.extract_image_prompt(_effective_msg)
-                    _gen_images = await image_generation.generate(prompt=_img_prompt, model="dall-e-3", size="1024x1024", quality="standard")
+                    yield _sse_event({"event": "step", "step": "image_generating", "message": f"Generating image: {_img_prompt[:80]}"})
+                    _gen_images = await image_generation.generate(prompt=_img_prompt, model="auto", size="1024x1024", quality="standard")
                     if _gen_images:
-                        _img_ctx = f"Image generated successfully for prompt: {_img_prompt}"
-                        context_messages.append({"role": "system", "content": _img_ctx})
-                        yield _sse_event({"event": "step", "step": "image_generated", "count": len(_gen_images)})
+                        _first_img = _gen_images[0]
+                        _img_url = _first_img.url
+                        _img_model = _first_img.model
+                        _img_revised = _first_img.revised_prompt or _img_prompt
+                        if _img_url:
+                            response_text = f"![{_img_revised}]({_img_url})"
+                            actual_provider = f"image_{_img_model}"
+                            agent_type = "image_generation"
+                        elif _first_img.base64_data:
+                            response_text = f"![{_img_revised}](data:image/png;base64,{_first_img.base64_data})"
+                            actual_provider = f"image_{_img_model}"
+                            agent_type = "image_generation"
+                        elif _first_img.revised_prompt:
+                            # Model responded with text (description) instead of actual image
+                            response_text = _first_img.revised_prompt
+                            actual_provider = f"image_{_img_model}"
+                            agent_type = "image_generation"
+                        yield _sse_event({"event": "step", "step": "image_generated", "count": len(_gen_images), "model": _img_model})
                 except Exception as _ie:
                     print(f"[STREAM-IMAGEGEN] FAILED: {_ie}", flush=True)
+                    yield _sse_event({"event": "step", "step": "image_failed", "error": str(_ie)[:200]})
 
             # ── Teams ──
             if not response_text:
@@ -2117,24 +2135,25 @@ async def send_message(
             print(f"[WEB_SEARCH] FAILED: {e}", flush=True)
 
     # ============================================
-    # STEP 7.8: IMAGE GENERATION (DALL-E) — triggered by LLM decision
+    # STEP 7.8: IMAGE GENERATION (TokenRouter + DALL-E fallback)
     # ============================================
     generated_images = []
     if IMAGE_GENERATION_AVAILABLE and image_generation and image_gen_needed:
         try:
             if user_api_keys and user_api_keys.get("openai"):
                 image_generation.set_api_key(openai_key=user_api_keys.get("openai"))
+            image_generation.set_user_keys(user_api_keys)
             logger.info(f"\U0001f3a8 Image generation triggered for: {safe_user_message[:50]}...")
             image_prompt = image_generation.extract_image_prompt(safe_user_message)
             try:
                 generated_images = await image_generation.generate(
                     prompt=image_prompt,
-                    model="dall-e-3",
+                    model="auto",
                     size="1024x1024",
                     quality="standard",
                 )
                 if generated_images:
-                    logger.info(f"\U0001f3a8 Generated {len(generated_images)} image(s)")
+                    logger.info(f"\U0001f3a8 Generated {len(generated_images)} image(s) via {generated_images[0].model}")
             except ValueError as e:
                 logger.warning(f"Image generation skipped: {e}")
         except Exception as e:

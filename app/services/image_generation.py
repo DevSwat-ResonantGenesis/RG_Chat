@@ -1,11 +1,12 @@
 """Image Generation Service for Resonant Chat.
 
 Provides AI image generation capabilities using:
-- OpenAI DALL-E 3 (primary)
-- OpenAI DALL-E 2 (fallback)
-- Stability AI (future)
+- TokenRouter image models (primary): openai/gpt-5-image, openai/gpt-5-image-mini, google/gemini-3.1-flash-image-preview
+- OpenAI DALL-E 3 (fallback)
+- OpenAI DALL-E 2 (legacy fallback)
 """
 import os
+import re
 import logging
 import httpx
 import base64
@@ -13,7 +14,11 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
 
+from rg_llm import UnifiedLLMClient, LLMRequest, TOKENROUTER_IMAGE_MODELS
+
 logger = logging.getLogger(__name__)
+
+_llm_client = UnifiedLLMClient()
 
 
 class ImageSize(str, Enum):
@@ -67,13 +72,14 @@ class GeneratedImage:
 
 
 class ImageGenerationService:
-    """Image generation service using OpenAI DALL-E."""
+    """Image generation service using TokenRouter image models + DALL-E fallback."""
     
     def __init__(self):
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.stability_api_key = os.getenv("STABILITY_API_KEY")
         self.timeout = 60.0  # Image generation can take time
         self.base_url = "https://api.openai.com/v1"
+        self._user_keys: Optional[Dict[str, str]] = None
     
     def set_api_key(self, openai_key: Optional[str] = None, stability_key: Optional[str] = None):
         """Set API keys dynamically (for user-provided keys)."""
@@ -81,11 +87,15 @@ class ImageGenerationService:
             self.openai_api_key = openai_key
         if stability_key:
             self.stability_api_key = stability_key
+
+    def set_user_keys(self, keys: Optional[Dict[str, str]] = None):
+        """Set user BYOK keys for TokenRouter calls."""
+        self._user_keys = keys
     
     async def generate(
         self,
         prompt: str,
-        model: str = "dall-e-3",
+        model: str = "auto",
         size: str = "1024x1024",
         quality: str = "standard",
         style: str = "vivid",
@@ -93,11 +103,11 @@ class ImageGenerationService:
         response_format: str = "url",  # "url" or "b64_json"
     ) -> List[GeneratedImage]:
         """
-        Generate images using DALL-E.
+        Generate images using TokenRouter image models (primary) or DALL-E (fallback).
         
         Args:
             prompt: Text description of the image to generate
-            model: "dall-e-3" or "dall-e-2"
+            model: "auto" (smart route), specific TokenRouter model, or "dall-e-3"/"dall-e-2"
             size: Image size (1024x1024, 1792x1024, 1024x1792 for DALL-E 3)
             quality: "standard" or "hd" (DALL-E 3 only)
             style: "vivid" or "natural" (DALL-E 3 only)
@@ -107,8 +117,117 @@ class ImageGenerationService:
         Returns:
             List of GeneratedImage objects
         """
+        # Try TokenRouter image models first (unless user explicitly requests DALL-E)
+        _is_dalle = model.startswith("dall-e")
+        if not _is_dalle:
+            try:
+                result = await self._generate_via_tokenrouter(prompt, model)
+                if result:
+                    return result
+            except Exception as _tr_err:
+                logger.warning(f"TokenRouter image generation failed, falling back to DALL-E: {_tr_err}")
+        
+        # Fallback: DALL-E direct API
+        return await self._generate_via_dalle(prompt, model if _is_dalle else "dall-e-3", size, quality, style, n, response_format)
+
+    async def _generate_via_tokenrouter(
+        self,
+        prompt: str,
+        model: str = "auto",
+    ) -> Optional[List[GeneratedImage]]:
+        """Generate image via TokenRouter image models (chat completions with inline image output)."""
+        # Select model
+        if model == "auto" or model not in TOKENROUTER_IMAGE_MODELS:
+            selected_model = "openai/gpt-5-image"  # Best quality
+        else:
+            selected_model = model
+
+        logger.info(f"🎨 [TokenRouter] Generating image with {selected_model}: {prompt[:80]}")
+
+        request = LLMRequest(
+            messages=[
+                {"role": "system", "content": "You are an image generation assistant. Generate the requested image. Respond ONLY with the image — no text explanation needed unless the user asks."},
+                {"role": "user", "content": f"Generate an image: {prompt}"},
+            ],
+            model=selected_model,
+            provider="tokenrouter",
+            max_tokens=4096,
+        )
+
+        response = await _llm_client.complete(request, user_keys=self._user_keys)
+
+        if not response.content:
+            return None
+
+        # Parse response — TokenRouter image models return images as:
+        # 1. Markdown image URLs: ![description](https://...)
+        # 2. Raw URLs to generated images
+        # 3. Base64 inline data
+        images = self._parse_image_response(response.content, selected_model)
+        if images:
+            logger.info(f"🎨 [TokenRouter] Generated {len(images)} image(s) with {selected_model}")
+            return images
+
+        # If the model responded with text only (e.g. describing the image), return as-is
+        # with the content stored for the caller to display
+        return [GeneratedImage(
+            url=None,
+            base64_data=None,
+            revised_prompt=response.content,
+            model=selected_model,
+            size="1024x1024",
+        )]
+
+    def _parse_image_response(self, content: str, model: str) -> List[GeneratedImage]:
+        """Parse image URLs/data from TokenRouter model response."""
+        images = []
+
+        # Pattern 1: Markdown images ![alt](url)
+        md_imgs = re.findall(r'!\[([^\]]*)\]\(([^)]+)\)', content)
+        for alt, url in md_imgs:
+            if url.startswith(('http://', 'https://')):
+                images.append(GeneratedImage(
+                    url=url,
+                    revised_prompt=alt or None,
+                    model=model,
+                    size="1024x1024",
+                ))
+
+        # Pattern 2: Standalone URLs to image files
+        if not images:
+            url_pattern = re.findall(r'(https?://[^\s"<>]+\.(?:png|jpg|jpeg|webp|gif)[^\s"<>]*)', content)
+            for url in url_pattern:
+                images.append(GeneratedImage(
+                    url=url,
+                    model=model,
+                    size="1024x1024",
+                ))
+
+        # Pattern 3: Base64 data URIs
+        if not images:
+            b64_pattern = re.findall(r'data:image/[^;]+;base64,([A-Za-z0-9+/=]+)', content)
+            for b64 in b64_pattern:
+                images.append(GeneratedImage(
+                    base64_data=b64,
+                    model=model,
+                    size="1024x1024",
+                ))
+
+        return images
+
+    async def _generate_via_dalle(
+        self,
+        prompt: str,
+        model: str = "dall-e-3",
+        size: str = "1024x1024",
+        quality: str = "standard",
+        style: str = "vivid",
+        n: int = 1,
+        response_format: str = "url",
+    ) -> List[GeneratedImage]:
+        """Generate image via direct DALL-E API (fallback)."""
         if not self.openai_api_key:
-            raise ValueError("OpenAI API key not configured. Please add your API key in settings.")
+            raise ValueError("No image generation available. TokenRouter failed and no OpenAI API key configured.")
         
         # Validate parameters for DALL-E 3
         if model == "dall-e-3":
@@ -152,7 +271,7 @@ class ImageGenerationService:
                         size=size,
                     ))
                 
-                logger.info(f"🎨 Generated {len(images)} image(s) with {model}")
+                logger.info(f"🎨 [DALL-E] Generated {len(images)} image(s) with {model}")
                 return images
                 
         except httpx.HTTPStatusError as e:
@@ -163,10 +282,10 @@ class ImageGenerationService:
             except:
                 error_detail = str(e)
             
-            logger.error(f"Image generation failed: {error_detail}")
+            logger.error(f"DALL-E generation failed: {error_detail}")
             raise ValueError(f"Image generation failed: {error_detail}")
         except Exception as e:
-            logger.error(f"Image generation error: {e}")
+            logger.error(f"DALL-E generation error: {e}")
             raise
     
     async def edit_image(
