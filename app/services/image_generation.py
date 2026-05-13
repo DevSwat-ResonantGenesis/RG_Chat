@@ -155,6 +155,7 @@ class ImageGenerationService:
         )
 
         response = await _llm_client.complete(request, user_keys=self._user_keys)
+        print(f"[IMG-SERVICE] TokenRouter response: content_len={len(response.content or '')} images={len(response.images) if hasattr(response,'images') and response.images else 0} content_preview={repr((response.content or '')[:200])}", flush=True)
 
         # Check for images in the response (GPT-5-image, etc. return images in dedicated field)
         if hasattr(response, 'images') and response.images:
@@ -204,6 +205,7 @@ class ImageGenerationService:
 
         # If the model responded with text only (e.g. describing the image), return as-is
         # with the content stored for the caller to display
+        print(f"[IMG-SERVICE] TokenRouter returned TEXT only (no image data): {repr(response.content[:200])}", flush=True)
         return [GeneratedImage(
             url=None,
             base64_data=None,

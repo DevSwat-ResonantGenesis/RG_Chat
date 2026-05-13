@@ -1174,25 +1174,37 @@ async def stream_message(
                     _img_prompt = image_generation.extract_image_prompt(_effective_msg)
                     yield _sse_event({"event": "step", "step": "image_generating", "message": f"Generating image: {_img_prompt[:80]}"})
                     _gen_images = await image_generation.generate(prompt=_img_prompt, model="auto", size="1024x1024", quality="standard")
+                    print(f"[STREAM-IMAGEGEN] Got {len(_gen_images) if _gen_images else 0} images", flush=True)
                     if _gen_images:
                         _first_img = _gen_images[0]
                         _img_url = _first_img.url
                         _img_model = _first_img.model
                         _img_revised = _first_img.revised_prompt or _img_prompt
+                        print(f"[STREAM-IMAGEGEN] first_img: url={bool(_img_url)} b64={bool(_first_img.base64_data)} revised_prompt_len={len(_first_img.revised_prompt or '')} model={_img_model}", flush=True)
+
+                        # Build image list for SSE event
+                        _sse_images = []
+                        for _gi in _gen_images:
+                            _img_entry: Dict[str, Any] = {"model": _gi.model, "size": _gi.size, "revised_prompt": _gi.revised_prompt or _img_prompt}
+                            if _gi.url:
+                                _img_entry["url"] = _gi.url
+                            elif _gi.base64_data:
+                                _img_entry["base64_data"] = _gi.base64_data
+                            _sse_images.append(_img_entry)
+
                         if _img_url:
-                            response_text = f"![{_img_revised}]({_img_url})"
+                            response_text = f"Here is your generated image:\n\n![{_img_revised}]({_img_url})"
                             actual_provider = f"image_{_img_model}"
                             agent_type = "image_generation"
                         elif _first_img.base64_data:
-                            response_text = f"![{_img_revised}](data:image/png;base64,{_first_img.base64_data})"
+                            response_text = f"Here is your generated image:"
                             actual_provider = f"image_{_img_model}"
                             agent_type = "image_generation"
                         elif _first_img.revised_prompt:
-                            # Model responded with text (description) instead of actual image
                             response_text = _first_img.revised_prompt
                             actual_provider = f"image_{_img_model}"
                             agent_type = "image_generation"
-                        yield _sse_event({"event": "step", "step": "image_generated", "count": len(_gen_images), "model": _img_model})
+                        yield _sse_event({"event": "step", "step": "image_generated", "count": len(_gen_images), "model": _img_model, "images": _sse_images})
                 except Exception as _ie:
                     print(f"[STREAM-IMAGEGEN] FAILED: {_ie}", flush=True)
                     yield _sse_event({"event": "step", "step": "image_failed", "error": str(_ie)[:200]})
