@@ -75,7 +75,8 @@ class ImageGenerationService:
     """Image generation service using TokenRouter image models + DALL-E fallback."""
     
     def __init__(self):
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self._platform_openai_key = os.getenv("OPENAI_API_KEY")  # Platform key (never overwritten)
+        self.openai_api_key = self._platform_openai_key
         self.stability_api_key = os.getenv("STABILITY_API_KEY")
         self.timeout = 60.0  # Image generation can take time
         self.base_url = "https://api.openai.com/v1"
@@ -120,15 +121,31 @@ class ImageGenerationService:
         # Try TokenRouter image models first (unless user explicitly requests DALL-E)
         _is_dalle = model.startswith("dall-e")
         if not _is_dalle:
+            # Try primary model
             try:
                 result = await self._generate_via_tokenrouter(prompt, model)
                 if result:
                     return result
             except Exception as _tr_err:
-                logger.warning(f"TokenRouter image generation failed, falling back to DALL-E: {_tr_err}")
+                logger.warning(f"TokenRouter image generation failed ({model}): {_tr_err}")
+
+            # Retry with alternative TokenRouter models
+            _fallback_models = [m for m in TOKENROUTER_IMAGE_MODELS if m != (model if model != "auto" else "openai/gpt-5-image")]
+            for _fb_model in _fallback_models[:2]:
+                try:
+                    logger.info(f"🎨 Retrying image generation with fallback model: {_fb_model}")
+                    result = await self._generate_via_tokenrouter(prompt, _fb_model)
+                    if result:
+                        return result
+                except Exception as _fb_err:
+                    logger.warning(f"TokenRouter fallback {_fb_model} also failed: {_fb_err}")
+
+        # Final fallback: DALL-E direct API (only if a real key is available)
+        _dalle_key = self.openai_api_key or self._platform_openai_key
+        if _dalle_key and not _dalle_key.startswith("sk-placeho"):
+            return await self._generate_via_dalle(prompt, model if _is_dalle else "dall-e-3", size, quality, style, n, response_format)
         
-        # Fallback: DALL-E direct API
-        return await self._generate_via_dalle(prompt, model if _is_dalle else "dall-e-3", size, quality, style, n, response_format)
+        raise ValueError("Image generation failed: All image providers returned empty results. Please try again.")
 
     async def _generate_via_tokenrouter(
         self,
@@ -317,6 +334,14 @@ class ImageGenerationService:
                 error_detail = error_data.get("error", {}).get("message", str(e))
             except:
                 error_detail = str(e)
+            
+            # If user key failed (auth error), try platform key as fallback
+            _is_auth_error = e.response.status_code in (401, 403)
+            _used_user_key = self.openai_api_key != self._platform_openai_key
+            if _is_auth_error and _used_user_key and self._platform_openai_key:
+                logger.warning(f"DALL-E user key failed (auth), falling back to platform key: {error_detail}")
+                self.openai_api_key = self._platform_openai_key
+                return await self._generate_via_dalle(prompt, model, size, quality, style, n, response_format)
             
             logger.error(f"DALL-E generation failed: {error_detail}")
             raise ValueError(f"Image generation failed: {error_detail}")
