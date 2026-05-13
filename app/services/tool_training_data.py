@@ -148,6 +148,23 @@ def get_training_data() -> List[TrainingSample]:
         ("draw a cyberpunk street scene", [], _img),
         ("make an image of a cozy coffee shop interior", [], _img),
         ("generate a product mockup for a mobile app", [], _img),
+        # Conversational / informal image requests (common false positives)
+        ("can u generate for me image of cucumber carton eating bread in futuristic San Francisco", [], _img),
+        ("no I want just image to be generated", [
+            {"role": "assistant", "content": "I can build you a Creative Media Agent"},
+        ], _img),
+        ("i want image generated not agent", [
+            {"role": "assistant", "content": "Would you like me to create an agent for image generation?"},
+        ], _img),
+        ("just generate the image please", [], _img),
+        ("create image for me", [], _img),
+        ("generate picture of a cat in space", [], _img),
+        ("make me an image of a robot", [], _img),
+        ("i need a picture of a mountain landscape", [], _img),
+        ("generate art for my project", [], _img),
+        ("draw me something cool", [], _img),
+        ("create a picture of flowers", [], _img),
+        ("generate an illustration of a wizard", [], _img),
     ]
 
     # ------------------------------------------------------------------
@@ -344,14 +361,19 @@ def get_training_data() -> List[TrainingSample]:
         ("search through this code for bugs", [], _none),
         ("search the documentation for authentication", [], _none),
 
-        # Tricky: mentions "image" but NOT generation
+        # Tricky: mentions "image" but NOT generation (vision/analysis)
         ("what does this image show", [], _none),
         ("explain this screenshot", [], _none),
         ("analyze the image I uploaded", [], _none),
+        ("what do u see here", [], _none),
+        ("what is in this picture", [], _none),
+        ("can you read this screenshot", [], _none),
+        ("describe what's in the image", [], _none),
 
         # Tricky: mentions "drive" but NOT Google Drive
         ("what drives customer behavior", [], _none),
         ("the main drive behind this project is innovation", [], _none),
+        ("what is the driving force", [], _none),
 
         # Tricky: mentions "calendar" but NOT Google Calendar
         ("what calendar year are we in", [], _none),

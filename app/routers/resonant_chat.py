@@ -646,12 +646,38 @@ def _is_agent_intent(text: str) -> bool:
     """Detect whether user message is about agent management (architect territory)."""
     if not text:
         return False
+    # If user is clearly asking for image generation, it's NOT an agent intent
+    if _is_image_intent(text):
+        return False
     return bool(
         _AGENT_INTENT_RE.search(text)
         or _AGENT_REVERSE_RE.search(text)
         or _AGENT_WANT_RE.search(text)
         or _AGENT_NOUN_RE.search(text)
         or _AGENT_DELETE_RE.search(text)
+    )
+
+
+_IMAGE_INTENT_RE = re.compile(
+    r'\b(generate|create|draw|make|illustrate|design|render)\b'
+    r'.{0,25}'
+    r'\b(image|picture|photo|illustration|logo|art|artwork|portrait|poster|icon|banner|thumbnail|wallpaper|graphic)\b',
+    re.IGNORECASE,
+)
+_IMAGE_REVERSE_RE = re.compile(
+    r'\b(image|picture|photo|illustration|logo|art|artwork)\b'
+    r'.{0,15}'
+    r'\b(of|for|with|showing)\b',
+    re.IGNORECASE,
+)
+
+def _is_image_intent(text: str) -> bool:
+    """Detect whether user message is clearly about image generation."""
+    if not text:
+        return False
+    return bool(
+        _IMAGE_INTENT_RE.search(text)
+        or _IMAGE_REVERSE_RE.search(text)
     )
 
 
@@ -839,8 +865,11 @@ async def stream_message(
             print(f"[STREAM-DETECT] classifier ERROR: {_clf_err}", flush=True)
 
     # Soft continuity: if architect was active AND classifier didn't confidently
-    # pick a different tool, keep routing to architect for follow-ups
-    if not use_architect and _architect_active:
+    # pick a different tool, keep routing to architect for follow-ups.
+    # EXCEPTION: if image_gen or web_search was detected, always break continuity.
+    # EXCEPTION: if keyword guard detects clear image intent, break continuity.
+    _image_intent_detected = _is_image_intent(safe_message) and IMAGE_GENERATION_AVAILABLE
+    if not use_architect and _architect_active and not _stream_image_gen and not _stream_web_search and not _image_intent_detected:
         _clf_picked_other = (
             _clf_prediction
             and _clf_prediction.tool_id
@@ -860,7 +889,24 @@ async def stream_message(
         use_architect = True
         print(f"[STREAM-DETECT] regex guard triggered for msg={safe_message[:60]!r}", flush=True)
 
-    print(f"[STREAM-DETECT] FINAL: use_architect={use_architect} detected_tool={detected_tool.id if detected_tool else None} continuity={_architect_active} msg={safe_message[:60]!r}", flush=True)
+    # Image intent keyword guard — override architect/other tools when user clearly wants an image
+    if _is_image_intent(safe_message) and IMAGE_GENERATION_AVAILABLE:
+        use_architect = False
+        detected_tool = None
+        _stream_image_gen = True
+        print(f"[STREAM-DETECT] IMAGE INTENT guard — forcing image generation for msg={safe_message[:60]!r}", flush=True)
+
+    # Vision guard: when user uploads images, skip integration tools and let LLM handle with vision
+    if request_body.images and len(request_body.images) > 0 and not _stream_image_gen:
+        _integration_tools = {"google_drive", "google_calendar", "figma", "sigma"}
+        if detected_tool and detected_tool.id in _integration_tools:
+            print(f"[STREAM-DETECT] VISION guard — discarding {detected_tool.id} (user uploaded images, routing to LLM vision)", flush=True)
+            detected_tool = None
+        if use_architect and not safe_message.startswith("Agent Architect:"):
+            print(f"[STREAM-DETECT] VISION guard — discarding architect (user uploaded images)", flush=True)
+            use_architect = False
+
+    print(f"[STREAM-DETECT] FINAL: use_architect={use_architect} detected_tool={detected_tool.id if detected_tool else None} img={_stream_image_gen} web={_stream_web_search} continuity={_architect_active} msg={safe_message[:60]!r}", flush=True)
 
     # ── Get user API keys ──
     user_api_keys = await _get_user_api_keys(session, user_id)
@@ -1010,6 +1056,15 @@ async def stream_message(
             _tool_web_search = _stream_web_search
             _effective_msg = safe_message
 
+            # ── Image context for vision ──
+            if request_body.images and len(request_body.images) > 0:
+                _img_names = [img.get('name', 'image') for img in request_body.images]
+                print(f"[STREAM-VISION] Processing {len(request_body.images)} images: {_img_names}", flush=True)
+                context_messages.append({
+                    "role": "system",
+                    "content": f"The user has attached {len(request_body.images)} image(s): {', '.join(_img_names)}. Analyze the image(s) and respond to the user's question about them.",
+                })
+
             # ── Tool execution ──
             if detected_tool:
                 print(f"[STREAM-TOOL] Detected tool: {detected_tool.id}", flush=True)
@@ -1041,10 +1096,27 @@ async def stream_message(
                                 actual_provider = f"tool_{detected_tool.id}"
                                 agent_type = "integration"
                             else:
+                                # Integration failed — only show error if user explicitly asked for it.
+                                # Otherwise discard and fall through to regular LLM response.
                                 _err = (_stream_tool_result.get("error") or f"{detected_tool.name} failed.").strip()
-                                response_text = f"{detected_tool.name} error: {_err}"
-                                actual_provider = f"tool_{detected_tool.id}_error"
-                                agent_type = "integration"
+                                _tool_keywords = {
+                                    "google_drive": ["drive", "google drive", "my files", "my documents"],
+                                    "google_calendar": ["calendar", "schedule", "event", "meeting"],
+                                    "figma": ["figma", "design file"],
+                                    "sigma": ["sigma", "analytics"],
+                                }
+                                _kws = _tool_keywords.get(detected_tool.id, [])
+                                _msg_lower = (safe_message or "").lower()
+                                _user_asked = any(kw in _msg_lower for kw in _kws)
+                                if _user_asked:
+                                    response_text = f"{detected_tool.name} error: {_err}"
+                                    actual_provider = f"tool_{detected_tool.id}_error"
+                                    agent_type = "integration"
+                                else:
+                                    # False positive classification — discard tool result, let LLM respond
+                                    print(f"[STREAM-TOOL] DISCARDED false-positive {detected_tool.id} error (user didn't ask for it)", flush=True)
+                                    _stream_tool_result = None
+                                    detected_tool = None
                         elif _stream_tool_result.get("success"):
                             _summary = _stream_tool_result.get("summary", "")
                             if _stream_tool_result.get("delegate_to_pipeline"):
@@ -1187,6 +1259,7 @@ async def stream_message(
                             preferred_provider=request_body.preferred_provider,
                             user_api_keys=user_api_keys,
                             tools=_native_tools,
+                            images=request_body.images,
                         ):
                             evt_type = stream_evt.get("type", "")
                             if evt_type == "tool_calls":
@@ -1274,6 +1347,7 @@ async def stream_message(
                             message=_effective_msg, context=context_messages,
                             preferred_provider=request_body.preferred_provider,
                             user_api_keys=user_api_keys,
+                            images=request_body.images,
                         ):
                             evt_type = stream_evt.get("type", "")
                             if evt_type == "chunk":
@@ -1973,7 +2047,8 @@ async def send_message(
     # Soft continuity: if architect was active AND classifier didn't confidently
     # pick a different tool, keep routing to architect for follow-ups.
     # If user asks random question (classifier picks web_search, image_gen, etc.), break continuity.
-    if not detected_tool and not web_search_needed and not image_gen_needed and _architect_pipeline_active:
+    _ns_image_intent = _is_image_intent(safe_user_message) and IMAGE_GENERATION_AVAILABLE
+    if not detected_tool and not web_search_needed and not image_gen_needed and _architect_pipeline_active and not _ns_image_intent:
         _clf_picked_other = (
             _clf_prediction
             and _clf_prediction.tool_id
@@ -1986,6 +2061,13 @@ async def send_message(
         else:
             detected_tool = tools_registry.get_tool("agent_architect")
             print(f"[TOOL-7.9] continuity KEPT — previous was architect, classifier uncertain or no strong other tool", flush=True)
+
+    # Image intent keyword guard — override architect/other tools when user clearly wants an image
+    if _is_image_intent(safe_user_message) and IMAGE_GENERATION_AVAILABLE:
+        detected_tool = None
+        image_gen_needed = True
+        _architect_pipeline_active = False
+        print(f"[TOOL-7.9] IMAGE INTENT guard — forcing image generation for msg={safe_user_message[:60]!r}", flush=True)
 
     # ============================================
     # STEP 7.6: CHECK RESPONSE CACHE
@@ -2206,7 +2288,8 @@ async def send_message(
             agent_type = "agents"
 
     # Force tool-grounded reply for integration skill failures (google_calendar, figma, google_drive, sigma).
-    # Without this, failed integration skills silently fall back to LLM which hallucinates.
+    # But ONLY if the user actually asked for that integration (keyword check).
+    # False-positive classifications should fall through to regular LLM response.
     _integration_tool_ids = {"figma", "google_drive", "google_calendar", "sigma"}
     if (
         not execute_mode
@@ -2216,11 +2299,26 @@ async def send_message(
         and tool_result
         and not tool_result.get("success")
     ):
-        error_detail = (tool_result.get("error") or f"{detected_tool.name} request failed.").strip()
-        response_text = f"{detected_tool.name} error: {error_detail}"
-        provider = f"tool_{detected_tool.id}_error"
-        agent_type = "integration"
-        logger.info(f"Integration tool {detected_tool.id} failed, returning error directly: {error_detail[:120]}")
+        _tool_keywords_ns = {
+            "google_drive": ["drive", "google drive", "my files", "my documents"],
+            "google_calendar": ["calendar", "schedule", "event", "meeting"],
+            "figma": ["figma", "design file"],
+            "sigma": ["sigma", "analytics"],
+        }
+        _kws_ns = _tool_keywords_ns.get(detected_tool.id, [])
+        _msg_lower_ns = (safe_user_message or "").lower()
+        _user_asked_ns = any(kw in _msg_lower_ns for kw in _kws_ns)
+        if _user_asked_ns:
+            error_detail = (tool_result.get("error") or f"{detected_tool.name} request failed.").strip()
+            response_text = f"{detected_tool.name} error: {error_detail}"
+            provider = f"tool_{detected_tool.id}_error"
+            agent_type = "integration"
+            logger.info(f"Integration tool {detected_tool.id} failed, returning error directly: {error_detail[:120]}")
+        else:
+            # False positive — discard and let LLM handle the message normally
+            logger.info(f"Integration tool {detected_tool.id} failed but user didn't ask for it — discarding false positive")
+            tool_result = None
+            detected_tool = None
     if not execute_mode and response_text is None and time_tool_results and is_time_only_query(safe_user_message):
         tr = time_tool_results[0].result or {}
         local_str = tr.get("local") or tr.get("iso")

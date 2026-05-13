@@ -725,7 +725,7 @@ class ToolClassifier:
         # unrelated requests like "add to my calendar".
         CONTINUITY_BOOST = 0.30
         CONTINUITY_MIN = 0.10
-        _NO_CONTINUITY_TOOLS = {"agent_architect"}
+        _NO_CONTINUITY_TOOLS = {"agent_architect", "google_drive", "google_calendar", "google_sheets", "google_docs"}
 
         if active_tool and active_tool in prob_dict and active_tool not in _NO_CONTINUITY_TOOLS:
             active_prob = prob_dict[active_tool]

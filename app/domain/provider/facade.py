@@ -57,6 +57,7 @@ async def route_query_stream(
     context: Optional[List[Dict]] = None,
     preferred_provider: Optional[str] = None,
     user_api_keys: Optional[Dict[str, str]] = None,
+    images: Optional[List[Dict]] = None,
 ):
     """Stream a query response from LLM provider.
 
@@ -82,7 +83,7 @@ async def route_query_stream(
         return
 
     # Stream via UnifiedLLMClient
-    messages = _build_messages(context, message)
+    messages = _build_messages(context, message, images=images)
 
     norm = _ALIASES.get(
         (preferred_provider or "").lower(), (preferred_provider or "").lower()
@@ -108,7 +109,7 @@ async def route_query_stream(
         yield {"type": "error", "error": str(e)}
 
 
-def _build_messages(context: Optional[List[Dict]], message: str) -> List[Dict]:
+def _build_messages(context: Optional[List[Dict]], message: str, images: Optional[List[Dict]] = None) -> List[Dict]:
     """Build message list from context + user message."""
     messages = []
     system_content = ""
@@ -120,7 +121,18 @@ def _build_messages(context: Optional[List[Dict]], message: str) -> List[Dict]:
                 messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
     if system_content:
         messages = [{"role": "system", "content": system_content.strip()}] + messages
-    messages.append({"role": "user", "content": message})
+    # Handle multimodal (vision) messages with images
+    if images:
+        content_parts = [{"type": "text", "text": str(message)}]
+        for img in images:
+            if img.get("data"):
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": img["data"]},
+                })
+        messages.append({"role": "user", "content": content_parts})
+    else:
+        messages.append({"role": "user", "content": message})
     return messages
 
 
@@ -130,6 +142,7 @@ async def route_query_with_tools(
     preferred_provider: Optional[str] = None,
     user_api_keys: Optional[Dict[str, str]] = None,
     tools: Optional[List[Dict]] = None,
+    images: Optional[List[Dict]] = None,
 ):
     """Stream with native function calling.
 
@@ -147,7 +160,7 @@ async def route_query_with_tools(
 
     if preferred_provider and preferred_provider.lower() in ("local", "codellama"):
         # Local providers don't support tools — fall through to plain streaming
-        async for evt in route_query_stream(message, context, preferred_provider, user_api_keys):
+        async for evt in route_query_stream(message, context, preferred_provider, user_api_keys, images=images):
             yield evt
         return
 
@@ -155,7 +168,7 @@ async def route_query_with_tools(
         (preferred_provider or "").lower(), (preferred_provider or "").lower()
     ) or None
 
-    messages = _build_messages(context, message)
+    messages = _build_messages(context, message, images=images)
 
     try:
         # Phase 1: Non-streaming call with tools to let LLM decide
