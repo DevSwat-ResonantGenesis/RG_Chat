@@ -156,6 +156,40 @@ class ImageGenerationService:
 
         response = await _llm_client.complete(request, user_keys=self._user_keys)
 
+        # Check for images in the response (GPT-5-image, etc. return images in dedicated field)
+        if hasattr(response, 'images') and response.images:
+            images = []
+            for img_data in response.images:
+                url = img_data.get("url", "")
+                b64 = img_data.get("b64_json", "")
+                if url and url.startswith("data:image/"):
+                    # Extract base64 from data URL
+                    b64_part = url.split(",", 1)[1] if "," in url else ""
+                    images.append(GeneratedImage(
+                        url=None,
+                        base64_data=b64_part,
+                        revised_prompt=prompt,
+                        model=selected_model,
+                        size="1024x1024",
+                    ))
+                elif url:
+                    images.append(GeneratedImage(
+                        url=url,
+                        revised_prompt=prompt,
+                        model=selected_model,
+                        size="1024x1024",
+                    ))
+                elif b64:
+                    images.append(GeneratedImage(
+                        base64_data=b64,
+                        revised_prompt=prompt,
+                        model=selected_model,
+                        size="1024x1024",
+                    ))
+            if images:
+                logger.info(f"🎨 [TokenRouter] Generated {len(images)} image(s) with {selected_model} (via images field)")
+                return images
+
         if not response.content:
             return None
 

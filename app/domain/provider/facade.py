@@ -34,6 +34,7 @@ async def route_query(
     preferred_provider: Optional[str] = None,
     user_api_keys: Optional[Dict[str, str]] = None,
     images: Optional[List[Dict]] = None,
+    preferred_model: Optional[str] = None,
 ) -> Dict:
     """Route a chat/agent query to an LLM provider (non-streaming)."""
     user_keys = {k: v for k, v in (user_api_keys or {}).items() if not k.startswith("__")} or None
@@ -42,6 +43,7 @@ async def route_query(
         message=message,
         context=context,
         preferred_provider=preferred_provider,
+        preferred_model=preferred_model,
         images=images,
         user_keys=user_keys,
     )
@@ -58,6 +60,7 @@ async def route_query_stream(
     preferred_provider: Optional[str] = None,
     user_api_keys: Optional[Dict[str, str]] = None,
     images: Optional[List[Dict]] = None,
+    preferred_model: Optional[str] = None,
 ):
     """Stream a query response from LLM provider.
 
@@ -94,6 +97,7 @@ async def route_query_stream(
         request = LLMRequest(
             messages=messages,
             provider=norm,
+            model=preferred_model or "",
             temperature=0.7,
             max_tokens=16384,
             stream=True,
@@ -143,6 +147,7 @@ async def route_query_with_tools(
     user_api_keys: Optional[Dict[str, str]] = None,
     tools: Optional[List[Dict]] = None,
     images: Optional[List[Dict]] = None,
+    preferred_model: Optional[str] = None,
 ):
     """Stream with native function calling.
 
@@ -175,6 +180,7 @@ async def route_query_with_tools(
         request = LLMRequest(
             messages=messages,
             provider=norm,
+            model=preferred_model or "",
             temperature=0.7,
             max_tokens=16384,
             tools=tools,

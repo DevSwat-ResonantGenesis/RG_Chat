@@ -57,6 +57,7 @@ class MultiAIRouter:
         message: str,
         context: Optional[List[Dict]] = None,
         preferred_provider: Optional[str] = None,
+        preferred_model: Optional[str] = None,
         images: Optional[List[Dict]] = None,
         user_keys: Optional[Dict[str, str]] = None,
     ) -> Dict:
@@ -105,6 +106,7 @@ class MultiAIRouter:
             request = LLMRequest(
                 messages=messages,
                 provider=norm,
+                model=preferred_model or "",
                 temperature=0.7,
                 max_tokens=16384,
             )

@@ -19,6 +19,7 @@ class SendMessageRequest(BaseModel):
     message: str
     chat_id: Optional[str] = None
     preferred_provider: Optional[str] = None
+    preferred_model: Optional[str] = None
     agent_hash: Optional[str] = None
     teamId: Optional[str] = None
     attached_files: Optional[List[Dict[str, Any]]] = None

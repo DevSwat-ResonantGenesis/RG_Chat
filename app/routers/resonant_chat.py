@@ -1194,6 +1194,10 @@ async def stream_message(
                 except Exception as _ie:
                     print(f"[STREAM-IMAGEGEN] FAILED: {_ie}", flush=True)
                     yield _sse_event({"event": "step", "step": "image_failed", "error": str(_ie)[:200]})
+                    # Set error response so pipeline doesn't fall through to plain LLM
+                    if _stream_image_gen:
+                        response_text = f"⚠️ Image generation failed: {str(_ie)[:200]}\n\nPlease try again or check your image generation settings."
+                        agent_type = "image_generation"
 
             # ── Vision shortcut: when images are attached, skip text-only agents ──
             _has_vision_images = bool(request_body.images and len(request_body.images) > 0)
@@ -1299,6 +1303,7 @@ async def stream_message(
                             user_api_keys=user_api_keys,
                             tools=_native_tools,
                             images=request_body.images,
+                            preferred_model=request_body.preferred_model,
                         ):
                             evt_type = stream_evt.get("type", "")
                             if evt_type == "tool_calls":
@@ -1387,6 +1392,7 @@ async def stream_message(
                             preferred_provider=request_body.preferred_provider,
                             user_api_keys=user_api_keys,
                             images=request_body.images,
+                            preferred_model=request_body.preferred_model,
                         ):
                             evt_type = stream_evt.get("type", "")
                             if evt_type == "chunk":
