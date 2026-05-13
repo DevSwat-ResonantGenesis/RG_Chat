@@ -123,6 +123,140 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/resonant-chat", tags=["resonant-chat"])
 
 # ============================================
+# ARCHITECT SESSION TRACKER (survives page refresh)
+# ============================================
+# In-memory store for active/completed architect sessions.
+# Key: chat_id, Value: dict with status, accumulated text, events, etc.
+_architect_sessions: Dict[str, Dict[str, Any]] = {}
+_ARCHITECT_SESSION_TTL = 600  # seconds — keep completed sessions for 10 min
+
+def _get_architect_session(chat_id: str) -> Optional[Dict[str, Any]]:
+    """Get an active/recent architect session."""
+    s = _architect_sessions.get(chat_id)
+    if not s:
+        return None
+    import time
+    if s.get("status") == "completed" and time.time() - s.get("completed_at", 0) > _ARCHITECT_SESSION_TTL:
+        _architect_sessions.pop(chat_id, None)
+        return None
+    return s
+
+def _cleanup_old_sessions():
+    """Remove expired completed sessions."""
+    import time
+    now = time.time()
+    to_remove = [k for k, v in _architect_sessions.items()
+                 if v.get("status") == "completed" and now - v.get("completed_at", 0) > _ARCHITECT_SESSION_TTL]
+    for k in to_remove:
+        _architect_sessions.pop(k, None)
+
+async def _run_architect_background(
+    chat_id: str,
+    svc_payload: Dict[str, Any],
+    headers: Dict[str, str],
+    user_id: str,
+    user_role: str,
+    is_superuser: bool,
+    unlimited_credits: bool,
+    safe_message: str,
+    user_msg_id: str,
+    org_id: str,
+):
+    """Run architect streaming in background — survives client disconnect."""
+    import time
+    session_data = _architect_sessions.get(chat_id)
+    if not session_data:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream("POST", f"{AGENT_ARCHITECT_URL}/api/message/stream",
+                                     json=svc_payload, headers=headers) as resp:
+                if resp.status_code != 200:
+                    session_data["status"] = "error"
+                    session_data["error"] = f"Architect returned {resp.status_code}"
+                    session_data["completed_at"] = time.time()
+                    return
+
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        break
+
+                    try:
+                        event = json.loads(data_str)
+                    except Exception:
+                        continue
+
+                    etype = event.get("type", "")
+                    edata = event.get("data", event)
+
+                    if etype == "text":
+                        session_data["accumulated_text"] = edata.get("content", "")
+                    elif etype == "complete":
+                        resp_data = edata.get("response", edata)
+                        final_text = resp_data.get("text", "")
+                        if final_text:
+                            session_data["accumulated_text"] = final_text
+                        opts = resp_data.get("options")
+                        if opts:
+                            session_data["options"] = tool_executor._map_architect_options(opts)
+                    elif etype == "stream_token":
+                        content = edata.get("content", "")
+                        if content:
+                            session_data["accumulated_text"] = session_data.get("accumulated_text", "") + content
+                    elif etype == "options":
+                        session_data["options"] = tool_executor._map_architect_options(edata)
+
+                    # Store all events for the frontend to replay
+                    session_data.setdefault("events", []).append({"type": etype, "data": edata, "ts": time.time()})
+
+        session_data["status"] = "completed"
+        session_data["completed_at"] = time.time()
+        print(f"[ARCHITECT-BG] Session {chat_id} completed. text_len={len(session_data.get('accumulated_text', ''))}", flush=True)
+
+        # Save the message to DB
+        try:
+            from ..db import async_session_factory
+            async with async_session_factory() as db_session:
+                _clean = session_data.get("accumulated_text", "")
+                _clean = re.sub(r'Please choose one of the options:\s*present_options\([^)]*\)', '', _clean).strip()
+                _clean = re.sub(r'present_options\([^)]*\)', '', _clean).strip()
+                if _clean:
+                    _clean = _sanitize_agent_response(_clean)
+                try:
+                    a_hash = hasher.hash_text(_clean) if _clean else _simple_hash("")
+                    a_xyz = hasher.hash_to_coords(a_hash) if _clean else _hash_to_xyz_simple(a_hash)
+                except Exception:
+                    a_hash = _simple_hash(_clean)
+                    a_xyz = _hash_to_xyz_simple(a_hash)
+                assistant_msg = ResonantChatMessage(
+                    chat_id=UUID(chat_id), role="assistant", content=_clean,
+                    ai_provider="tool_agent_architect",
+                    hash=a_hash, resonance_score=0.5,
+                    xyz_x=a_xyz[0], xyz_y=a_xyz[1], xyz_z=a_xyz[2],
+                    meta_data={"agent_type": "architect", "toolResults": [{"tool_name": "tool_agent_architect", "success": True, "result": {"summary": _clean[:500]}}]},
+                )
+                db_session.add(assistant_msg)
+                await db_session.commit()
+                await db_session.refresh(assistant_msg)
+                session_data["message_id"] = str(assistant_msg.id)
+                print(f"[ARCHITECT-BG] Saved message {assistant_msg.id} for chat {chat_id}", flush=True)
+        except Exception as db_err:
+            print(f"[ARCHITECT-BG] DB save failed: {db_err}", flush=True)
+
+    except asyncio.CancelledError:
+        session_data["status"] = "cancelled"
+        session_data["completed_at"] = time.time()
+    except Exception as e:
+        session_data["status"] = "error"
+        session_data["error"] = str(e)
+        session_data["completed_at"] = time.time()
+        print(f"[ARCHITECT-BG] Error: {e}", flush=True)
+
+# ============================================
 # HELPER FUNCTIONS
 # ============================================
 
@@ -951,17 +1085,20 @@ async def stream_message(
         context_messages = []
 
         if use_architect:
-            # ── ARCHITECT SSE STREAMING ──
+            # ── ARCHITECT SSE STREAMING (background-task pattern) ──
+            # The architect runs in a detached background task so it survives
+            # client disconnects (page refresh, navigation).  This SSE generator
+            # tails the in-memory session store and forwards events to the client.
+            import time as _time
             print(f"[ARCHITECT-ROUTE] use_architect=True, user_api_keys={list(user_api_keys.keys()) if user_api_keys else 'None'}", flush=True)
             yield _sse_event({"event": "start", "chat_id": chat_id, "user_message_id": str(user_msg.id), "tool": "agent_architect"})
 
-            headers = {
+            _arch_headers = {
                 "x-user-id": user_id,
                 "x-user-role": user_role,
                 "x-is-superuser": str(is_superuser).lower(),
                 "x-unlimited-credits": str(unlimited_credits).lower(),
             }
-            # Build conversation history WITH timestamps so architect knows message order
             _hist_msgs = []
             for m in recent_messages[-20:]:
                 _entry = {
@@ -981,67 +1118,82 @@ async def stream_message(
                 "user_api_keys": user_api_keys or {},
             }
 
-            try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    async with client.stream("POST", f"{AGENT_ARCHITECT_URL}/api/message/stream",
-                                             json=svc_payload, headers=headers) as resp:
-                        if resp.status_code != 200:
-                            yield _sse_event({"event": "error", "error": f"Architect returned {resp.status_code}"})
-                            return
+            # Register session in tracker & launch background task
+            _cleanup_old_sessions()
+            _architect_sessions[chat_id] = {
+                "status": "running",
+                "accumulated_text": "",
+                "events": [],
+                "options": None,
+                "started_at": _time.time(),
+                "user_id": user_id,
+                "user_msg_id": str(user_msg.id),
+                "bg_save_done": False,
+            }
+            _bg_task = asyncio.create_task(_run_architect_background(
+                chat_id=chat_id, svc_payload=svc_payload, headers=_arch_headers,
+                user_id=user_id, user_role=user_role, is_superuser=is_superuser,
+                unlimited_credits=unlimited_credits, safe_message=safe_message,
+                user_msg_id=str(user_msg.id), org_id=org_id,
+            ))
 
-                        async for line in resp.aiter_lines():
-                            line = line.strip()
-                            if not line or not line.startswith("data: "):
-                                continue
-                            data_str = line[6:]
-                            if data_str == "[DONE]":
-                                break
+            # Tail the in-memory session — forward events to client in real time
+            _last_event_idx = 0
+            _last_text = ""
+            while True:
+                _sess = _architect_sessions.get(chat_id)
+                if not _sess:
+                    break
 
-                            try:
-                                event = json.loads(data_str)
-                            except Exception:
-                                continue
+                # Forward new events
+                _events = _sess.get("events", [])
+                while _last_event_idx < len(_events):
+                    _ev = _events[_last_event_idx]
+                    _last_event_idx += 1
+                    etype = _ev.get("type", "")
+                    edata = _ev.get("data", {})
 
-                            etype = event.get("type", "")
-                            edata = event.get("data", event)
+                    if etype == "text":
+                        content = edata.get("content", "")
+                        accumulated_text = content
+                        yield _sse_event({"event": "chunk", "content": content})
+                    elif etype == "options":
+                        present_options_data = tool_executor._map_architect_options(edata)
+                        yield _sse_event({"event": "options", "options": present_options_data})
+                    elif etype == "complete":
+                        resp_data = edata.get("response", edata)
+                        final_text = resp_data.get("text", "")
+                        if final_text:
+                            accumulated_text = final_text
+                        opts = resp_data.get("options")
+                        if opts:
+                            present_options_data = tool_executor._map_architect_options(opts)
+                            yield _sse_event({"event": "options", "options": present_options_data})
+                    elif etype == "stream_token":
+                        content = edata.get("content", "")
+                        if content:
+                            yield _sse_event({"event": "chunk", "content": content})
+                    elif etype in ("tool_call", "tool_result", "thinking", "phase",
+                                   "build_progress", "build_step", "build_complete",
+                                   "test_step", "test_result", "verify_step",
+                                   "verify_complete", "prompt_step", "prompt_ready",
+                                   "research_complete", "plan_ready", "offers_ready",
+                                   "self_heal", "warning"):
+                        yield _sse_event({"event": "step", "step": etype, **edata})
+                    elif etype == "error":
+                        yield _sse_event({"event": "error", "error": edata.get("error", "Unknown")})
 
-                            if etype == "text":
-                                content = edata.get("content", "")
-                                accumulated_text = content  # orchestrator sends full text each time
-                                yield _sse_event({"event": "chunk", "content": content})
+                # Check if background finished
+                if _sess.get("status") in ("completed", "error", "cancelled"):
+                    accumulated_text = _sess.get("accumulated_text", accumulated_text)
+                    if _sess.get("options"):
+                        present_options_data = _sess["options"]
+                    # Mark that we already saved the message in the BG task
+                    _sess["bg_save_done"] = True
+                    break
 
-                            elif etype == "options":
-                                present_options_data = tool_executor._map_architect_options(edata)
-                                yield _sse_event({"event": "options", "options": present_options_data})
-
-                            elif etype == "complete":
-                                resp_data = edata.get("response", edata)
-                                final_text = resp_data.get("text", "")
-                                if final_text:
-                                    accumulated_text = final_text
-                                opts = resp_data.get("options")
-                                if opts:
-                                    present_options_data = tool_executor._map_architect_options(opts)
-                                    yield _sse_event({"event": "options", "options": present_options_data})
-
-                            elif etype == "stream_token":
-                                content = edata.get("content", "")
-                                if content:
-                                    yield _sse_event({"event": "chunk", "content": content})
-
-                            elif etype in ("tool_call", "tool_result", "thinking", "phase",
-                                           "build_progress", "build_step", "build_complete",
-                                           "test_step", "test_result", "verify_step",
-                                           "verify_complete", "prompt_step", "prompt_ready",
-                                           "research_complete", "plan_ready", "offers_ready",
-                                           "self_heal", "warning"):
-                                yield _sse_event({"event": "step", "step": etype, **edata})
-
-                            elif etype == "error":
-                                yield _sse_event({"event": "error", "error": edata.get("error", "Unknown")})
-
-            except Exception as e:
-                yield _sse_event({"event": "error", "error": str(e)})
+                # Yield control — poll every 200ms
+                await asyncio.sleep(0.2)
 
         else:
             # ── FULL PIPELINE STREAMING ──
@@ -1494,16 +1646,33 @@ async def stream_message(
             msg_meta["memory_count"] = len(memories)
 
         _effective_provider = actual_provider or ("tool_agent_architect" if use_architect else "agent_reasoning")
-        assistant_msg = ResonantChatMessage(
-            chat_id=UUID(chat_id), role="assistant", content=clean_text,
-            ai_provider=_effective_provider,
-            hash=a_hash, resonance_score=resonance_score,
-            xyz_x=a_xyz[0], xyz_y=a_xyz[1], xyz_z=a_xyz[2],
-            meta_data=msg_meta or {},
-        )
-        session.add(assistant_msg)
-        await session.commit()
-        await session.refresh(assistant_msg)
+
+        # If the background architect task already saved, skip DB save here
+        _bg_already_saved = False
+        if use_architect:
+            _arch_sess = _architect_sessions.get(chat_id)
+            if _arch_sess and _arch_sess.get("bg_save_done") and _arch_sess.get("message_id"):
+                _bg_already_saved = True
+
+        if _bg_already_saved:
+            _arch_sess = _architect_sessions.get(chat_id, {})
+            # Use the message_id from the BG save
+            class _FakeMsg:
+                def __init__(self, mid):
+                    self.id = UUID(mid) if isinstance(mid, str) else mid
+            assistant_msg = _FakeMsg(_arch_sess["message_id"])
+            print(f"[ARCHITECT-SSE] Skipping DB save — BG task already saved msg={_arch_sess['message_id']}", flush=True)
+        else:
+            assistant_msg = ResonantChatMessage(
+                chat_id=UUID(chat_id), role="assistant", content=clean_text,
+                ai_provider=_effective_provider,
+                hash=a_hash, resonance_score=resonance_score,
+                xyz_x=a_xyz[0], xyz_y=a_xyz[1], xyz_z=a_xyz[2],
+                meta_data=msg_meta or {},
+            )
+            session.add(assistant_msg)
+            await session.commit()
+            await session.refresh(assistant_msg)
 
         # ── W1: DSID creation (message lineage tracking) ──
         try:
@@ -5209,6 +5378,111 @@ async def delete_knowledge_base_entry(
 async def health():
     """Health check endpoint."""
     return {"service": "resonant-chat", "status": "ok"}
+
+
+# ============================================
+# ARCHITECT SESSION POLL ENDPOINT
+# ============================================
+
+@router.get("/architect-session/{chat_id}")
+async def poll_architect_session(chat_id: str, request: Request, since_event: int = 0):
+    """
+    Poll for an active/completed architect session.
+    Used by the frontend to resume after page refresh.
+    Returns current status, accumulated text, and new events since `since_event` index.
+    """
+    sess = _get_architect_session(chat_id)
+    if not sess:
+        return {"active": False}
+
+    events_since = sess.get("events", [])[since_event:]
+    return {
+        "active": True,
+        "status": sess.get("status", "unknown"),
+        "accumulated_text": sess.get("accumulated_text", ""),
+        "options": sess.get("options"),
+        "event_count": len(sess.get("events", [])),
+        "new_events": events_since[:100],  # cap to avoid huge payloads
+        "message_id": sess.get("message_id"),
+        "started_at": sess.get("started_at"),
+        "completed_at": sess.get("completed_at"),
+    }
+
+
+@router.get("/architect-session/{chat_id}/stream")
+async def stream_architect_session(chat_id: str, request: Request, since_event: int = 0):
+    """
+    Reconnect to an active architect session via SSE.
+    Replays events from `since_event` then streams new ones live.
+    """
+    sess = _get_architect_session(chat_id)
+    if not sess:
+        return JSONResponse({"error": "No active architect session"}, status_code=404)
+
+    async def _resume_stream():
+        import time as _t
+        idx = since_event
+        # First replay any existing events the client missed
+        events = sess.get("events", [])
+        for ev in events[idx:]:
+            idx += 1
+            etype = ev.get("type", "")
+            edata = ev.get("data", {})
+            if etype == "text":
+                yield _sse_event({"event": "chunk", "content": edata.get("content", "")})
+            elif etype == "stream_token":
+                yield _sse_event({"event": "chunk", "content": edata.get("content", "")})
+            elif etype == "options":
+                yield _sse_event({"event": "options", "options": tool_executor._map_architect_options(edata)})
+            elif etype == "complete":
+                rd = edata.get("response", edata)
+                ft = rd.get("text", "")
+                if ft:
+                    yield _sse_event({"event": "chunk", "content": ft})
+                opts = rd.get("options")
+                if opts:
+                    yield _sse_event({"event": "options", "options": tool_executor._map_architect_options(opts)})
+            elif etype in ("tool_call", "tool_result", "thinking", "phase",
+                           "build_progress", "build_step", "build_complete",
+                           "test_step", "test_result", "verify_step",
+                           "verify_complete", "prompt_step", "prompt_ready",
+                           "research_complete", "plan_ready", "offers_ready",
+                           "self_heal", "warning"):
+                yield _sse_event({"event": "step", "step": etype, **edata})
+            elif etype == "error":
+                yield _sse_event({"event": "error", "error": edata.get("error", "Unknown")})
+
+        # If still running, keep tailing live
+        while sess.get("status") == "running":
+            events = sess.get("events", [])
+            while idx < len(events):
+                ev = events[idx]
+                idx += 1
+                etype = ev.get("type", "")
+                edata = ev.get("data", {})
+                if etype == "text":
+                    yield _sse_event({"event": "chunk", "content": edata.get("content", "")})
+                elif etype == "stream_token":
+                    yield _sse_event({"event": "chunk", "content": edata.get("content", "")})
+                elif etype == "options":
+                    yield _sse_event({"event": "options", "options": tool_executor._map_architect_options(edata)})
+                elif etype in ("tool_call", "tool_result", "thinking", "phase",
+                               "build_progress", "build_step", "build_complete",
+                               "test_step", "test_result", "verify_step",
+                               "verify_complete", "prompt_step", "prompt_ready",
+                               "research_complete", "plan_ready", "offers_ready",
+                               "self_heal", "warning"):
+                    yield _sse_event({"event": "step", "step": etype, **edata})
+                elif etype == "error":
+                    yield _sse_event({"event": "error", "error": edata.get("error", "Unknown")})
+            await asyncio.sleep(0.3)
+
+        # Emit done
+        yield _sse_event({"event": "done", "content": sess.get("accumulated_text", ""),
+                          "message_id": sess.get("message_id"), "provider": "tool_agent_architect"})
+
+    return StreamingResponse(_resume_stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ============================================
