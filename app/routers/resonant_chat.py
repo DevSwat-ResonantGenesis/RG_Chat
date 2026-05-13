@@ -1195,8 +1195,13 @@ async def stream_message(
                     print(f"[STREAM-IMAGEGEN] FAILED: {_ie}", flush=True)
                     yield _sse_event({"event": "step", "step": "image_failed", "error": str(_ie)[:200]})
 
+            # ── Vision shortcut: when images are attached, skip text-only agents ──
+            _has_vision_images = bool(request_body.images and len(request_body.images) > 0)
+            if _has_vision_images:
+                print(f"[STREAM-VISION] Skipping text-only agents (teams/debate/spawn) — sending images directly to multimodal LLM", flush=True)
+
             # ── Teams ──
-            if not response_text:
+            if not response_text and not _has_vision_images:
                 print(f"[STREAM-TEAM] Attempting team execution for: {_effective_msg[:60]!r}", flush=True)
                 try:
                     from ..domain.agent import maybe_run_team
@@ -1216,7 +1221,7 @@ async def stream_message(
                     print(f"[STREAM-TEAM] team failed: {_te}", flush=True)
 
             # ── Debate ──
-            if not response_text:
+            if not response_text and not _has_vision_images:
                 try:
                     _debate_resp, _debate_used = await maybe_run_debate(
                         message=_effective_msg, context_messages=context_messages,
@@ -1232,7 +1237,7 @@ async def stream_message(
                     pass
 
             # ── Agent spawn ──
-            if not response_text:
+            if not response_text and not _has_vision_images:
                 print(f"[STREAM-AGENT] Attempting agent spawn for: {_effective_msg[:60]!r}", flush=True)
                 try:
                     _ag_resp, agent_type, actual_provider, router_meta = await maybe_spawn_agent(
@@ -1249,7 +1254,7 @@ async def stream_message(
                     print(f"[STREAM-AGENT] spawn failed: {_ae}", flush=True)
 
             # ── Forced reasoning fallback ──
-            if not response_text:
+            if not response_text and not _has_vision_images:
                 try:
                     from ..services.agent_engine import agent_engine
                     from ..domain.provider import get_router_for_internal_use
