@@ -370,6 +370,45 @@ def get_training_data() -> List[TrainingSample]:
         ("can you read this screenshot", [], _none),
         ("describe what's in the image", [], _none),
 
+        # Tricky: ASKING ABOUT image generation (NOT requesting it)
+        ("why can't it generate images", [], _none),
+        ("why the image generation failed", [], _none),
+        ("why Media Architect are not able to generate picture", [], _none),
+        ("image generation is not working why", [], _none),
+        ("how come the picture wasn't generated", [], _none),
+        ("why did my image request fail", [], _none),
+        ("the agent can't generate pictures, what's wrong", [], _none),
+        ("why doesn't image generation work for this agent", [], _none),
+        ("can u explain why image generation is broken", [], _none),
+        ("why are generated images not showing up", [], _none),
+        ("picture generation doesn't work, any idea why", [], _none),
+        ("image generation keeps failing with an error", [], _none),
+        ("what's wrong with the image generator", [], _none),
+        ("why aren't pictures being created", [], _none),
+        ("the generate picture feature isn't working", [], _none),
+
+        # Tricky: ASKING ABOUT agents/architect (NOT requesting agent creation)
+        ("why the architect can't build proper agents", [], _none),
+        ("why agents don't work correctly", [], _none),
+        ("why my agent doesn't have a description", [], _none),
+        ("the agent architect isn't creating things properly", [], _none),
+        ("why can't the architect configure agents correctly", [], _none),
+        ("agents created by architect are broken", [], _none),
+        ("why does my agent fail to run", [], _none),
+        ("what's wrong with the agent builder", [], _none),
+        ("the architect keeps making agents without proper settings", [], _none),
+        ("why are agents missing their tools", [], _none),
+
+        # Tricky: ASKING ABOUT chat capabilities (NOT requesting a tool)
+        ("why doesn't the chat understand what I'm saying", [], _none),
+        ("why is the AI so dumb", [], _none),
+        ("the chat doesn't understand my intent", [], _none),
+        ("why can't it guess what I mean from context", [], _none),
+        ("resonant chat keeps misunderstanding my messages", [], _none),
+        ("why does it route to the wrong tool", [], _none),
+        ("the classifier picks the wrong action every time", [], _none),
+        ("why does it trigger image generation when I'm asking a question", [], _none),
+
         # Tricky: mentions "drive" but NOT Google Drive
         ("what drives customer behavior", [], _none),
         ("the main drive behind this project is innovation", [], _none),

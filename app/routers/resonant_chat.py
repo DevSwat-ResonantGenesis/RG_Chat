@@ -805,9 +805,17 @@ _IMAGE_REVERSE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_QUESTION_ABOUT_RE = re.compile(
+    r'\b(why|how come|cannot|can\'t|cant|unable|not able|doesn\'t|doesnt|don\'t|dont|won\'t|wont|isn\'t|isnt|failed|failing|broken|issue|problem|bug|error)\b',
+    re.IGNORECASE,
+)
+
 def _is_image_intent(text: str) -> bool:
-    """Detect whether user message is clearly about image generation."""
+    """Detect whether user message is clearly REQUESTING image generation (not asking about it)."""
     if not text:
+        return False
+    # If the message looks like a QUESTION about image generation, it's NOT a request
+    if _QUESTION_ABOUT_RE.search(text):
         return False
     return bool(
         _IMAGE_INTENT_RE.search(text)
