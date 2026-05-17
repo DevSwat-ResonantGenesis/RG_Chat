@@ -58,6 +58,7 @@ from ..services.evidence_graph import evidence_graph
 from ..services.narrative_continuity_engine import narrative_continuity_engine
 from ..services.temporal_thread_engine import temporal_thread_engine
 from ..services.token_optimizer import token_optimizer
+from ..services.memory_optimizer import memory_optimizer
 from ..services.insight_seed_engine import insight_seed_engine
 from ..services.pmi_layer import pmi_manager
 from ..services.latent_intent_predictor import latent_intent_predictor
@@ -628,24 +629,26 @@ def _build_context_messages(
     user_role: str = "user",
     user_plan: str = "free",
 ) -> List[Dict[str, str]]:
-    """Build minimal context for agent orchestration.
-    
-    NOTE: Agents have their own specialized prompts. This just provides conversation context.
+    """Build optimized context for agent orchestration.
+
+    Uses MemoryOptimizer to intelligently manage context window:
+    - Preserves system prompts and memories
+    - Keeps last 5 messages in full
+    - Summarizes older messages instead of silently dropping them
+    - Applies importance-based filtering
     """
-    context_messages = []
-    
+    all_messages: List[Dict[str, str]] = []
+
     # ============================================
     # RESONANT CHAT IDENTITY SYSTEM PROMPT
     # ============================================
-    # Get personality DNA
     pdna = personality_dna.system_prompt()
-    
-    # Get current date/time for context
+
     from datetime import datetime
     current_datetime = datetime.now(ZoneInfo("America/Los_Angeles"))
     current_date_str = current_datetime.strftime("%A, %B %d, %Y")
     current_time_str = current_datetime.strftime("%I:%M %p %Z")
-    
+
     resonant_identity_prompt = f"""You are DevSwat Chat — the AI assistant for the DevSwat platform.
 Today is {current_date_str}, {current_time_str}. User role: {user_role}, plan: {user_plan}.
 
@@ -691,11 +694,8 @@ Format all responses with Markdown. The chat UI renders full Markdown with synta
 /dashboard, /agents (agent config at /agents/:agentId), /agent-teams, /connect-profiles (integrations/API keys), /ide, /code-visualizer, /state-physics, /resonant-memory, /rabbit (community), /pricing, /help, /profile, /marketplace, /build, /network. Never invent routes.
 </platform_pages>
 """
-    
-    context_messages.append({
-        "role": "system",
-        "content": resonant_identity_prompt
-    })
+
+    all_messages.append({"role": "system", "content": resonant_identity_prompt})
 
     truthfulness_guardrail_prompt = """TRUTHFULNESS & GROUNDING RULES (MANDATORY):
 - Do NOT invent facts, sources, metrics, events, IDs, links, or tool results.
@@ -705,45 +705,48 @@ Format all responses with Markdown. The chat UI renders full Markdown with synta
 - For time-sensitive or external factual claims, request/require web search or tool execution instead of fabricating.
 - Never claim a scan/analysis/tool action ran unless it actually ran and returned output.
 """
-    context_messages.append({
-        "role": "system",
-        "content": truthfulness_guardrail_prompt,
-    })
+    all_messages.append({"role": "system", "content": truthfulness_guardrail_prompt})
 
-    # Add recent messages for context (capped at 15 to keep LLM focused)
-    logger.info(f"📝 Adding {len(recent_messages[-15:])} recent messages to context")
-    for msg in recent_messages[-15:]:
-        context_messages.append({
-            "role": msg.role,
-            "content": msg.content
-        })
-    logger.info(f"📝 Total context_messages: {len(context_messages)}")
-    
-    # Add memory context if available (increased from 5 to 20 for better memory retention)
+    # ALL conversation messages (optimizer decides what to keep / summarize / drop)
+    logger.info(f"📝 Building context from {len(recent_messages)} total messages")
+    for msg in recent_messages:
+        all_messages.append({"role": msg.role, "content": msg.content})
+
+    # Add memory context with quality filter
     if memories:
         print(f"[MEMORY-CONTEXT] Injecting {len(memories)} memories into context", flush=True)
         memory_context = "RELEVANT MEMORIES FROM USER'S HASH SPHERE:\n"
         mem_count = 0
         for mem in memories[:5]:
             content = mem.get("content", "") or mem.get("anchor_text", "")
-            # Quality filter: skip very short, empty, or still-encrypted memories
             if not content or len(content.strip()) < 15 or content.startswith("ENC2:"):
                 print(f"[MEMORY-CONTEXT] Skipping memory: len={len(content)}, starts_with_ENC2={content.startswith('ENC2:') if content else False}", flush=True)
                 continue
             mem_count += 1
             score = mem.get("hybrid_score", 0)
             memory_context += f"{mem_count}. [{score:.2f}] {content[:300]}\n"
-        
+
         print(f"[MEMORY-CONTEXT] Added {mem_count} memories to context", flush=True)
         if mem_count > 0:
-            context_messages.append({
-                "role": "system",
-                "content": memory_context
-            })
+            all_messages.append({"role": "system", "content": memory_context})
     else:
         print(f"[MEMORY-CONTEXT] No memories to inject", flush=True)
-    
-    return context_messages
+
+    # Optimize context window instead of blindly capping at 15
+    optimized = memory_optimizer.optimize_context(
+        messages=all_messages,
+        max_tokens=24000  # Leave headroom for tool results
+    )
+
+    if optimized.was_summarized:
+        logger.info(
+            f"📝 Context optimized: {optimized.dropped_count} messages summarized, "
+            f"{optimized.total_tokens} tokens"
+        )
+    else:
+        logger.info(f"📝 Context fits naturally: {optimized.total_tokens} tokens")
+
+    return optimized.messages
 
 
 # ============================================
