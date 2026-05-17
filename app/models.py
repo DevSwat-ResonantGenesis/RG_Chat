@@ -201,7 +201,7 @@ class ToolActiveSample(Base):
     probabilities = Column(JSON, default={})
     intents = Column(JSON, default=[])
     user_id = Column(String(255), nullable=True)
-    # Implicit feedback: did the user continue with this skill or switch?
+    # Implicit feedback: did the user continue with this tool or switch?
     was_correct = Column(Boolean, nullable=True)  # set later by feedback loop
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
