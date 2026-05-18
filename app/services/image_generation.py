@@ -18,7 +18,7 @@ from rg_llm import UnifiedLLMClient, LLMRequest, TOKENROUTER_IMAGE_MODELS
 
 logger = logging.getLogger(__name__)
 
-_llm_client = UnifiedLLMClient()
+_llm_client = UnifiedLLMClient(timeout=45.0)
 
 
 class ImageSize(str, Enum):
