@@ -18,7 +18,7 @@ from rg_llm import UnifiedLLMClient, LLMRequest, TOKENROUTER_IMAGE_MODELS
 
 logger = logging.getLogger(__name__)
 
-_llm_client = UnifiedLLMClient(timeout=45.0)
+_llm_client = UnifiedLLMClient(timeout=90.0)
 
 
 class ImageSize(str, Enum):
@@ -172,7 +172,12 @@ class ImageGenerationService:
         )
 
         response = await _llm_client.complete(request, user_keys=self._user_keys)
-        print(f"[IMG-SERVICE] TokenRouter response: content_len={len(response.content or '')} images={len(response.images) if hasattr(response,'images') and response.images else 0} content_preview={repr((response.content or '')[:200])}", flush=True)
+        print(f"[IMG-SERVICE] TokenRouter response: provider={response.provider} content_len={len(response.content or '')} images={len(response.images) if hasattr(response,'images') and response.images else 0} content_preview={repr((response.content or '')[:200])}", flush=True)
+
+        # Check for LLM failure (all providers failed)
+        if response.provider == "none" or (response.content and "All providers failed" in response.content):
+            logger.warning(f"[IMG-SERVICE] LLM call failed: {(response.content or '')[:150]}")
+            return None
 
         # Check for images in the response (GPT-5-image, etc. return images in dedicated field)
         if hasattr(response, 'images') and response.images:
@@ -220,16 +225,9 @@ class ImageGenerationService:
             logger.info(f"🎨 [TokenRouter] Generated {len(images)} image(s) with {selected_model}")
             return images
 
-        # If the model responded with text only (e.g. describing the image), return as-is
-        # with the content stored for the caller to display
+        # If the model responded with text only (no image data), return None to trigger fallback
         print(f"[IMG-SERVICE] TokenRouter returned TEXT only (no image data): {repr(response.content[:200])}", flush=True)
-        return [GeneratedImage(
-            url=None,
-            base64_data=None,
-            revised_prompt=response.content,
-            model=selected_model,
-            size="1024x1024",
-        )]
+        return None
 
     def _parse_image_response(self, content: str, model: str) -> List[GeneratedImage]:
         """Parse image URLs/data from TokenRouter model response."""
