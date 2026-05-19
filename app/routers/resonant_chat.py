@@ -796,7 +796,7 @@ def _is_agent_intent(text: str) -> bool:
 
 
 _IMAGE_INTENT_RE = re.compile(
-    r'\b(generate|create|draw|make|illustrate|design|render|generat)\b'
+    r'\b(generate|create|draw|make|illustrate|design|render|generat|creat|cre[aq]te)\b'
     r'.{0,25}'
     r'\b(image|images|picture|photo|illustration|logo|art|artwork|portrait|poster|icon|banner|thumbnail|wallpaper|graphic'
     r'|imag|immage|imige|img|pic|foto)\b',
