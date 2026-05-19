@@ -796,13 +796,14 @@ def _is_agent_intent(text: str) -> bool:
 
 
 _IMAGE_INTENT_RE = re.compile(
-    r'\b(generate|create|draw|make|illustrate|design|render)\b'
+    r'\b(generate|create|draw|make|illustrate|design|render|generat)\b'
     r'.{0,25}'
-    r'\b(image|picture|photo|illustration|logo|art|artwork|portrait|poster|icon|banner|thumbnail|wallpaper|graphic)\b',
+    r'\b(image|images|picture|photo|illustration|logo|art|artwork|portrait|poster|icon|banner|thumbnail|wallpaper|graphic'
+    r'|imag|immage|imige|img|pic|foto)\b',
     re.IGNORECASE,
 )
 _IMAGE_REVERSE_RE = re.compile(
-    r'\b(image|picture|photo|illustration|logo|art|artwork)\b'
+    r'\b(image|images|picture|photo|illustration|logo|art|artwork|immage|imag|img|pic)\b'
     r'.{0,15}'
     r'\b(of|for|with|showing)\b',
     re.IGNORECASE,
