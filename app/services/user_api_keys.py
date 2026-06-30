@@ -24,7 +24,7 @@ class UserApiKeyService:
     Keys are stored encrypted in the auth service.
     """
     
-    AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://green_auth_service:8000")
+    AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://auth_service:8000")
     
     async def get_user_api_keys(self, user_id: str) -> Dict[str, str]:
         """
