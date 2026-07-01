@@ -44,6 +44,7 @@ except ImportError:
 
 from ..db import get_session
 from ..models import ResonantChat, ResonantChatMessage
+from rg_llm.providers import BUILTIN_PROVIDERS
 from ..domain.provider import route_query, route_query_stream, route_query_with_tools
 from ..domain.agent import maybe_run_debate, maybe_spawn_agent
 from ..services.resonance_hashing import ResonanceHasher
@@ -1563,6 +1564,7 @@ async def stream_message(
                                 async for follow_evt in route_query_stream(
                                     message=_effective_msg, context=context_messages,
                                     preferred_provider=request_body.preferred_provider,
+                                    preferred_model=request_body.preferred_model,
                                     user_api_keys=user_api_keys,
                                 ):
                                     f_type = follow_evt.get("type", "")
@@ -4071,7 +4073,7 @@ async def get_providers(
     # This ensures user-connected providers (e.g. bedrock, chatgpt) always appear
     existing_ids = {p["id"] for p in providers} | {p.get("provider_key") for p in providers}
     BYOK_PROVIDER_META = {
-        "bedrock": {"name": "AWS Bedrock", "model": "anthropic.claude-3-5-sonnet-20241022-v2:0", "models": ["anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic.claude-3-haiku-20240307-v1:0", "amazon.nova-pro-v1:0", "amazon.nova-lite-v1:0"], "capabilities": ["chat", "coding", "vision"]},
+        "bedrock": {"name": "AWS Bedrock", "model": BUILTIN_PROVIDERS["bedrock"].default_model, "models": BUILTIN_PROVIDERS["bedrock"].models, "capabilities": ["chat", "coding", "vision"]},
         "chatgpt": {"name": "ChatGPT (Direct)", "model": "chatgpt-4o-latest", "models": ["chatgpt-4o-latest", "gpt-4o-mini"], "capabilities": ["chat", "coding", "vision"]},
         "replicate": {"name": "Replicate", "model": "meta/meta-llama-3-70b-instruct", "models": ["meta/meta-llama-3-70b-instruct"], "capabilities": ["chat"]},
         "stability": {"name": "Stability AI", "model": "stable-diffusion-xl", "models": ["stable-diffusion-xl"], "capabilities": ["image"]},

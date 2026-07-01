@@ -18,6 +18,8 @@ import time
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from rg_llm.providers import BUILTIN_PROVIDERS
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["provider-status"])
@@ -99,25 +101,13 @@ class ProviderStatusManager:
             # Audio
             "openai/gpt-audio", "openai/gpt-audio-mini",
         ]
-        OPENAI_MODELS = [
-            "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4",
-            "o1", "o1-mini", "o1-pro",
-            "gpt-3.5-turbo",
-            "dall-e-3", "dall-e-2",
-        ]
-        ANTHROPIC_MODELS = [
-            "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229", "claude-3-haiku-20240307",
-        ]
-        GEMINI_MODELS = [
-            "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash",
-            "gemini-pro-latest", "gemini-flash-latest",
-        ]
-        GROQ_MODELS = [
-            "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
-            "llama-3.1-70b-versatile",
-            "mixtral-8x7b-32768", "gemma2-9b-it",
-        ]
+        # Sourced from rg_llm.providers.BUILTIN_PROVIDERS (single source of
+        # truth shared with the actual BYOK call path) instead of a separate
+        # hardcoded list that drifts out of sync and can list retired models.
+        OPENAI_MODELS = BUILTIN_PROVIDERS["openai"].models
+        ANTHROPIC_MODELS = BUILTIN_PROVIDERS["anthropic"].models
+        GEMINI_MODELS = BUILTIN_PROVIDERS["google"].models
+        GROQ_MODELS = BUILTIN_PROVIDERS["groq"].models
 
         # Check TokenRouter (Tier 0 — unified router, 72 models)
         tr_status = await self._check_provider_latency("tokenrouter", platform_tokenrouter)
@@ -150,7 +140,7 @@ class ProviderStatusManager:
             "available": groq_status["available"],
             "latency": groq_status["latency"],
             "status": groq_status["status"],
-            "model": "llama-3.3-70b-versatile",
+            "model": BUILTIN_PROVIDERS["groq"].default_model,
             "models": GROQ_MODELS,
             "capabilities": ["chat", "coding"],
         })
@@ -163,7 +153,7 @@ class ProviderStatusManager:
             "available": openai_status["available"],
             "latency": openai_status["latency"],
             "status": openai_status["status"],
-            "model": "gpt-4o",
+            "model": BUILTIN_PROVIDERS["openai"].default_model,
             "models": OPENAI_MODELS,
             "capabilities": ["chat", "coding", "vision", "image"],
         })
@@ -176,7 +166,7 @@ class ProviderStatusManager:
             "available": gemini_status["available"],
             "latency": gemini_status["latency"],
             "status": gemini_status["status"],
-            "model": "gemini-2.0-flash",
+            "model": BUILTIN_PROVIDERS["google"].default_model,
             "models": GEMINI_MODELS,
             "capabilities": ["chat", "coding", "vision"],
         })
@@ -189,7 +179,7 @@ class ProviderStatusManager:
             "available": anthropic_status["available"],
             "latency": anthropic_status["latency"],
             "status": anthropic_status["status"],
-            "model": "claude-sonnet-4-20250514",
+            "model": BUILTIN_PROVIDERS["anthropic"].default_model,
             "models": ANTHROPIC_MODELS,
             "capabilities": ["chat", "coding", "vision"],
         })
