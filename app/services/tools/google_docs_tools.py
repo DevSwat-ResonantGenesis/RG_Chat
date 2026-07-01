@@ -25,7 +25,10 @@ class GoogleSheetsTool(BaseIntegrationSkill):
     intent_keywords = ["google sheets", "spreadsheet", "create sheet"]
 
     async def execute(self, message: str, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        token = self.get_credentials(context)
+        try:
+            token = await self.get_google_access_token(context)
+        except Exception as e:
+            return {"success": False, "action": "google_sheets", "error": f"Failed to refresh Google Sheets token: {e}. Please reconnect in **Settings → Connect Profiles**."}
         if not token:
             return self._no_credentials_error()
         try:
@@ -46,7 +49,10 @@ class GoogleDocsTool(BaseIntegrationSkill):
     intent_keywords = ["google docs", "create document", "open document"]
 
     async def execute(self, message: str, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        token = self.get_credentials(context)
+        try:
+            token = await self.get_google_access_token(context)
+        except Exception as e:
+            return {"success": False, "action": "google_docs", "error": f"Failed to refresh Google Docs token: {e}. Please reconnect in **Settings → Connect Profiles**."}
         if not token:
             return self._no_credentials_error()
         try:
@@ -67,7 +73,10 @@ class CreatePresentationTool(BaseIntegrationSkill):
     intent_keywords = ["create presentation", "google slides", "make slides"]
 
     async def execute(self, message: str, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        token = self.get_credentials(context)
+        try:
+            token = await self.get_google_access_token(context)
+        except Exception as e:
+            return {"success": False, "action": "create_presentation", "error": f"Failed to refresh Google Slides token: {e}. Please reconnect in **Settings → Connect Profiles**."}
         if not token:
             return self._no_credentials_error()
         try:

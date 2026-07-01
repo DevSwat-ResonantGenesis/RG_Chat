@@ -12,6 +12,7 @@ Each skill implements:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -51,6 +52,41 @@ class BaseIntegrationSkill(ABC):
             if val:
                 return val
         return None
+
+    async def get_google_access_token(self, context: Dict[str, Any]) -> Optional[str]:
+        """Fetch stored Google credentials, exchanging an OAuth refresh
+        token (Google's are prefixed '1//') for a short-lived access token.
+
+        Returns None if no credentials are stored at all. Raises if
+        credentials are stored but the refresh exchange fails.
+        """
+        token = self.get_credentials(context)
+        if not token:
+            return None
+        if token.startswith("1//"):
+            token = await self._refresh_google_token(token)
+        return token
+
+    @staticmethod
+    async def _refresh_google_token(refresh_token: str) -> str:
+        """Exchange a Google OAuth refresh token for a fresh access token."""
+        client_id = os.getenv("GOOGLE_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            raise ValueError("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not configured")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["access_token"]
 
     @abstractmethod
     async def execute(

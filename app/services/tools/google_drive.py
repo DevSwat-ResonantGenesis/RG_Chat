@@ -51,7 +51,18 @@ class GoogleDriveSkill(BaseIntegrationSkill):
     async def execute(
         self, message: str, user_id: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        api_key = self.get_credentials(context)
+        try:
+            api_key = await self.get_google_access_token(context)
+        except Exception as e:
+            logger.error(f"Google Drive OAuth refresh failed: {e}")
+            return {
+                "success": False,
+                "action": "google_drive",
+                "error": (
+                    f"Failed to refresh Google Drive token: {e}. "
+                    "Please reconnect in **Settings → Connect Profiles**."
+                ),
+            }
         if not api_key:
             return self._no_credentials_error()
 
