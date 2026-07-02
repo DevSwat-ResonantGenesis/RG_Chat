@@ -124,12 +124,49 @@ class HashSphereSearchTool(BaseIntegrationSkill):
                 memories = data.get("memories", [])
                 if not memories:
                     return {"success": True, "action": "hash_sphere_search", "summary": "No matching memories.", "count": 0}
-                summary = f"**Hash Sphere — {len(memories)} results:**\n\n"
+                confidence = float(data.get("confidence", 0.0))
+                answer_from_memory = bool(data.get("answer_from_memory", False))
+                evidence_hash = data.get("evidence_hash")
+
+                # Zero-LLM recall: when the confidence gate passed, the memory brain is
+                # certain enough to answer directly — lead with the grounded answer.
+                if answer_from_memory:
+                    top = memories[0]
+                    answer = (top.get("content") or "").strip()
+                    summary = (
+                        f"**Answer (from memory, confidence {confidence:.0%}):**\n\n{answer}\n"
+                    )
+                    if evidence_hash:
+                        summary += f"\n_Evidence: `{evidence_hash}`_"
+                    if len(memories) > 1:
+                        summary += "\n\n**Supporting memories:**\n"
+                        for i, m in enumerate(memories[1:5], 1):
+                            summary += f"{i}. {(m.get('content') or '')[:160]}\n"
+                    return {
+                        "success": True,
+                        "action": "hash_sphere_search",
+                        "answer_from_memory": True,
+                        "answer": answer,
+                        "confidence": confidence,
+                        "evidence_hash": evidence_hash,
+                        "summary": summary,
+                        "count": len(memories),
+                    }
+
+                # Below the gate — return ranked candidates for the LLM to reason over.
+                summary = f"**Hash Sphere — {len(memories)} results (confidence {confidence:.0%}):**\n\n"
                 for i, m in enumerate(memories[:10], 1):
                     content = (m.get("content") or "")[:200]
                     score = m.get("hybrid_score", 0)
                     summary += f"{i}. {content}... (score: {score:.2f})\n\n"
-                return {"success": True, "action": "hash_sphere_search", "summary": summary, "count": len(memories)}
+                return {
+                    "success": True,
+                    "action": "hash_sphere_search",
+                    "answer_from_memory": False,
+                    "confidence": confidence,
+                    "summary": summary,
+                    "count": len(memories),
+                }
         except Exception as e:
             return {"success": False, "action": "hash_sphere_search", "error": str(e)[:300]}
 
