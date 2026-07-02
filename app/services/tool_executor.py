@@ -1766,10 +1766,13 @@ class ToolExecutor:
         """Map architect present_options to the chat UI format."""
         if not isinstance(options_data, dict):
             return {}
+        kind = options_data.get("kind", "buttons")
+        if kind not in ("buttons", "tabs", "checkbox"):
+            kind = "buttons"
         raw_options = options_data.get("options", [])
         mapped = []
         if isinstance(raw_options, list):
-            for opt in raw_options[:4]:
+            for opt in raw_options[:6]:
                 if isinstance(opt, str):
                     mapped.append({
                         "label": opt,
@@ -1788,7 +1791,8 @@ class ToolExecutor:
             "_type": "present_options",
             "title": options_data.get("question", "What's next?"),
             "options": mapped,
-            "allow_custom": True,
+            "allow_custom": kind == "buttons",
+            "kind": kind,
         }
 
 
