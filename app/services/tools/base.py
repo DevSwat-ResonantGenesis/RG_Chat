@@ -105,4 +105,5 @@ class BaseIntegrationSkill(ABC):
                 f"Go to **Settings → Connect Profiles** and add your "
                 f"{self.skill_name} API key/token to use this skill."
             ),
+            "connect": {"provider": self.skill_id, "label": f"Connect {self.skill_name}"},
         }
