@@ -236,12 +236,37 @@ class HashSphereResonanceTool(BaseIntegrationSkill):
             return {"success": False, "action": "hash_sphere_resonance", "error": str(e)[:300]}
 
 
+class MemoryFactsTool(BaseIntegrationSkill):
+    skill_id = "memory_facts"
+    skill_name = "Memory Facts"
+    api_key_names = []
+    intent_keywords = ["what do you know about me", "my facts", "my name", "my preferences", "my details"]
+
+    async def execute(self, message: str, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    f"{MEMORY_SERVICE_URL}/memory/facts",
+                    params={"user_id": user_id, "limit": 100},
+                )
+                resp.raise_for_status()
+                facts = resp.json().get("facts", [])
+                if not facts:
+                    return {"success": True, "action": "memory_facts", "summary": "No stored facts yet.", "count": 0}
+                lines = [f"- {f.get('fact')}" for f in facts[:40] if f.get("fact")]
+                summary = "**What I know about you:**\n\n" + "\n".join(lines)
+                return {"success": True, "action": "memory_facts", "summary": summary, "facts": facts, "count": len(facts)}
+        except Exception as e:
+            return {"success": False, "action": "memory_facts", "error": str(e)[:300]}
+
+
 # ── Registry ──
 
 MEMORY_TOOLS = {
     "memory_read": MemoryReadTool(),
     "memory_write": MemoryWriteTool(),
     "memory_stats": MemoryStatsTool(),
+    "memory_facts": MemoryFactsTool(),
     "hash_sphere_search": HashSphereSearchTool(),
     "hash_sphere_anchor": HashSphereAnchorTool(),
     "hash_sphere_list_anchors": HashSphereListAnchorsTool(),

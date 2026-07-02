@@ -121,6 +121,7 @@ class ToolExecutor:
             "memory_read": self._execute_integration,
             "memory_write": self._execute_integration,
             "memory_stats": self._execute_integration,
+            "memory_facts": self._execute_integration,
             "hash_sphere_search": self._execute_integration,
             "hash_sphere_anchor": self._execute_integration,
             "hash_sphere_list_anchors": self._execute_integration,
