@@ -2276,8 +2276,9 @@ async def send_message(
         _architect_pipeline_active = True
         print(f"[TOOL-7.9] 'Agent Architect:' prefix detected — routing to architect", flush=True)
 
-    # Always use full ALL_TOOLS for classifier — the old tools_registry only
-    # knows 13 legacy skills but the neural classifier covers 199 tools.
+    # Always use full ALL_TOOLS for classifier — tools_registry now also
+    # registers the granular web/search tools (see tools_registry.py) so
+    # get_tool() resolves them instead of silently dropping the tool call.
     from ..services.tool_classifier import ALL_TOOLS
     enabled_tool_ids = {s for s in ALL_TOOLS if s is not None}
 

@@ -223,6 +223,126 @@ BUILTIN_TOOLS: Dict[str, ToolDefinition] = {
         requires_api_key="sigma",
         is_default=True,
     ),
+    # ── Granular web/search tools ──
+    # The neural tool classifier (tool_classifier.py) predicts these fine-grained
+    # IDs directly (not just "web_search"), and tool_executor.py / web_tools.py
+    # already implement real handlers for all of them. They must be registered
+    # here too, or tools_registry.get_tool() returns None and resonant_chat.py
+    # silently drops the tool call before it ever reaches the executor.
+    "news_search": ToolDefinition(
+        id="news_search", name="News Search",
+        description="Search for the latest news and headlines on a topic.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["news_search"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "weather": ToolDefinition(
+        id="weather", name="Weather",
+        description="Get the current weather and forecast for a location.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["weather"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "stock_crypto": ToolDefinition(
+        id="stock_crypto", name="Stock & Crypto",
+        description="Look up current stock and cryptocurrency prices.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["stock_crypto"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "stock_market_data": ToolDefinition(
+        id="stock_market_data", name="Stock Market Data",
+        description="Look up broader stock market data and indices.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["stock_market_data"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "reddit_search": ToolDefinition(
+        id="reddit_search", name="Reddit Search",
+        description="Search Reddit discussions and posts on a topic.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["reddit_search"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "places_search": ToolDefinition(
+        id="places_search", name="Places Search",
+        description="Find places and businesses near a location.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["places_search"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "youtube_search": ToolDefinition(
+        id="youtube_search", name="YouTube Search",
+        description="Search YouTube for videos on a topic.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["youtube_search"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "image_search": ToolDefinition(
+        id="image_search", name="Image Search",
+        description="Search the web for images.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["image_search"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "deep_research": ToolDefinition(
+        id="deep_research", name="Deep Research",
+        description="Perform in-depth, multi-source research on a topic.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["deep_research"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "wikipedia": ToolDefinition(
+        id="wikipedia", name="Wikipedia",
+        description="Look up a Wikipedia article summary.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["wikipedia"], credit_cost=20, is_default=True,
+    ),
+    "fetch_url": ToolDefinition(
+        id="fetch_url", name="Fetch URL",
+        description="Fetch and read the raw content of a specific URL.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["fetch_url"], credit_cost=20, is_default=True,
+    ),
+    "read_webpage": ToolDefinition(
+        id="read_webpage", name="Read Webpage",
+        description="Read and summarize the content of a webpage.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["read_webpage"], credit_cost=20, is_default=True,
+    ),
+    "read_many_pages": ToolDefinition(
+        id="read_many_pages", name="Read Many Pages",
+        description="Fetch and read multiple webpages at once.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["read_many_pages"], credit_cost=30, is_default=True,
+    ),
+    "scrape_page": ToolDefinition(
+        id="scrape_page", name="Scrape Page",
+        description="Scrape structured content from a webpage.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["scrape_page"], credit_cost=20, is_default=True,
+    ),
+    "scrape_platforms": ToolDefinition(
+        id="scrape_platforms", name="Scrape Platforms",
+        description="Scrape content across multiple platforms for a query.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["scrape_platforms"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "platform_api_search": ToolDefinition(
+        id="platform_api_search", name="Platform API Search",
+        description="Search via a connected platform API.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["platform_api_search"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "platform_api_call": ToolDefinition(
+        id="platform_api_call", name="Platform API Call",
+        description="Call a connected platform API directly.",
+        icon="search", category=ToolCategory.SEARCH, agent_type="research",
+        capabilities=["platform_api_call"], credit_cost=50, requires_api_key="tavily", is_default=True,
+    ),
+    "get_current_time": ToolDefinition(
+        id="get_current_time", name="Current Time",
+        description="Get the current UTC time.",
+        icon="search", category=ToolCategory.UTILITY,
+        capabilities=["get_current_time"], credit_cost=5, is_default=True,
+    ),
+    "get_system_info": ToolDefinition(
+        id="get_system_info", name="System Info",
+        description="Get Resonant Genesis platform/system status info.",
+        icon="search", category=ToolCategory.UTILITY,
+        capabilities=["get_system_info"], credit_cost=5, is_default=True,
+    ),
 }
 
 
