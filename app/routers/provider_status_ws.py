@@ -202,7 +202,7 @@ class ProviderStatusManager:
                            "qwen/qwen-2.5-72b-instruct", "deepseek/deepseek-chat",
                            "mistralai/mistral-large-latest"],
                 "capabilities": ["chat", "coding", "vision"],
-                "extra_headers": {"HTTP-Referer": "https://resonant.dev-swat.com"},
+                "extra_headers": {"HTTP-Referer": "https://dev-swat.com"},
             },
             {
                 "id": "mistral", "name": "Mistral AI",

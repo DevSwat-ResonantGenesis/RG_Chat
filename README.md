@@ -1,6 +1,6 @@
 # RG Chat
 
-> **Part of the [ResonantGenesis](https://resonant.dev-swat.com) platform** — Resonant Chat engine with skills, multi-provider streaming, and IDE completions.
+> **Part of the [ResonantGenesis](https://dev-swat.com) platform** — Resonant Chat engine with skills, multi-provider streaming, and IDE completions.
 
 [![Status: Production](https://img.shields.io/badge/Status-Production-brightgreen.svg)]()
 [![License: RG Source Available](https://img.shields.io/badge/License-RG%20Source%20Available-blue.svg)](LICENSE.txt)
@@ -49,4 +49,4 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - **Server path**: `/home/deploy/RG_Chat`
 
 ---
-**Organization**: [DevSwat-ResonantGenesis](https://github.com/DevSwat-ResonantGenesis) | **Platform**: [resonant.dev-swat.com](https://resonant.dev-swat.com)
+**Organization**: [DevSwat-ResonantGenesis](https://github.com/DevSwat-ResonantGenesis) | **Platform**: [dev-swat.com](https://dev-swat.com)
