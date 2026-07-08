@@ -27,6 +27,7 @@ class SendMessageRequest(BaseModel):
     code_selection: Optional[Dict[str, Any]] = None
     isolate_anchors: Optional[bool] = False
     enabled_tool_ids: Optional[List[str]] = None  # Frontend tool toggles — overrides server defaults when provided
+    client_timezone: Optional[str] = None  # IANA zone from Intl.DateTimeFormat().resolvedOptions().timeZone
     # IDE Chat Integration
     execute_mode: Optional[bool] = False  # When True: skip explanations, return structured code changes
     project_context: Optional[Dict[str, Any]] = None  # IDE project context (files, structure)

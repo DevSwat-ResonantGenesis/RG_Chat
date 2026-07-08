@@ -623,12 +623,149 @@ def _sanitize_agent_response(response: str) -> str:
     return cleaned
 
 
+async def _try_native_core_tools(
+    message: str,
+    raw_message: str,
+    context_messages: List[Dict[str, Any]],
+    preferred_provider: Optional[str],
+    preferred_model: Optional[str],
+    user_api_keys: Optional[Dict[str, Any]],
+    images: Optional[List[Dict[str, Any]]],
+    user_id: str,
+    user_role: str,
+    is_superuser: bool,
+    chat_id: str,
+    unlimited_credits: bool,
+    org_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Give the LLM one native-function-calling attempt at the always-on core
+    tools (web_search, scrape_page/fetch_url, memory_search, memory_rag_ask),
+    independent of whatever the (unreliable) neural tool classifier decided.
+
+    Used by the non-streaming turn-handler as a safety net for the case where
+    the classifier found nothing usable — the streaming handler already gets
+    this native-tools chance as part of its normal flow. Returns a dict with
+    the final response text/provider if a tool was actually called, or None
+    if the LLM didn't need a tool (caller should fall through to its normal
+    team/debate/agent-spawn cascade in that case, to avoid discarding a
+    perfectly good conversational answer that just didn't come from a tool).
+    """
+    try:
+        from ..services.native_tool_definitions import get_tool_definitions
+        native_tools = get_tool_definitions()
+    except Exception:
+        return None
+    if not native_tools:
+        return None
+
+    try:
+        tool_calls: List[Dict[str, Any]] = []
+        llm_text = ""
+        provider = "unknown"
+        async for evt in route_query_with_tools(
+            message=message, context=context_messages,
+            preferred_provider=preferred_provider, user_api_keys=user_api_keys,
+            tools=native_tools, images=images, preferred_model=preferred_model,
+        ):
+            evt_type = evt.get("type", "")
+            if evt_type == "tool_calls":
+                tool_calls = evt.get("tool_calls", [])
+                llm_text = evt.get("content", "")
+            elif evt_type == "provider":
+                provider = evt.get("provider", "unknown")
+            elif evt_type == "error":
+                return None
+
+        if not tool_calls:
+            # LLM decided no tool was needed — not our job to answer here.
+            return None
+
+        follow_up_context = list(context_messages)
+        for tc in tool_calls:
+            tc_name = tc.get("name", "")
+            tc_result = ""
+            try:
+                tc_tool = tools_registry.get_tool(tc_name)
+                if tc_tool:
+                    tc_ctx = {
+                        "chat_id": chat_id, "unlimited_credits": unlimited_credits,
+                        "org_id": org_id, "user_role": user_role,
+                        "is_superuser": is_superuser, "user_api_keys": user_api_keys or {},
+                    }
+                    tc_exec_result = await tool_executor.execute(
+                        tool=tc_tool, message=raw_message,
+                        user_id=user_id, user_role=user_role,
+                        is_superuser=is_superuser, context=tc_ctx,
+                    )
+                    tc_result = json.dumps(tc_exec_result or {"error": "Tool returned empty"})
+                else:
+                    tc_result = json.dumps({"error": f"Tool '{tc_name}' not found in registry"})
+            except Exception as tc_err:
+                tc_result = json.dumps({"error": str(tc_err)})
+                logger.warning(f"[native-core-tools] exec {tc_name} failed: {tc_err}")
+
+            follow_up_context.append({
+                "role": "assistant", "content": llm_text or "",
+                "tool_calls": [{"id": tc.get("id", "call_0"), "type": "function",
+                                "function": {"name": tc_name, "arguments": tc.get("arguments", "{}")}}],
+            })
+            follow_up_context.append({
+                "role": "tool", "tool_call_id": tc.get("id", "call_0"),
+                "name": tc_name, "content": tc_result,
+            })
+
+        final = await route_query(
+            message=message, context=follow_up_context,
+            preferred_provider=preferred_provider, user_api_keys=user_api_keys,
+            images=images, preferred_model=preferred_model,
+        )
+        final_text = final.get("response", "")
+        if not final_text:
+            return None
+        return {"response": final_text, "provider": final.get("provider", provider), "metadata": final.get("metadata", {})}
+    except Exception as e:
+        logger.warning(f"[native-core-tools] attempt failed: {e}")
+        return None
+
+
+def _combine_history(
+    recent_messages_full: List[ResonantChatMessage],
+    recent_messages_summary: List[ResonantChatMessage],
+) -> List[ResonantChatMessage]:
+    """Combine the last 5 full messages with a real summary of the next 20 older
+    messages, in correct chronological order (oldest -> newest).
+
+    Replaces per-message [SUMMARY] char-slicing (which produced 20 near-duplicate
+    truncated entries and put them AFTER the 5 most-recent messages, contradicting
+    the "oldest -> newest" ordering the system prompt asserts) with one real
+    extractive summary placed before the 5 full messages, where it chronologically
+    belongs.
+    """
+    summary_block: List[ResonantChatMessage] = []
+    if recent_messages_summary:
+        older_dicts = [{"content": m.content, "role": m.role} for m in recent_messages_summary]
+        summary_text = memory_optimizer.summarize_messages(older_dicts)
+        if summary_text:
+            oldest = recent_messages_summary[0]
+            summary_block = [
+                ResonantChatMessage(
+                    id=oldest.id, role="system",
+                    content=f"CONVERSATION SUMMARY (earlier messages):\n{summary_text}",
+                    hash=oldest.hash, resonance_score=oldest.resonance_score,
+                    xyz_x=oldest.xyz_x, xyz_y=oldest.xyz_y, xyz_z=oldest.xyz_z,
+                    created_at=oldest.created_at, meta_data=oldest.meta_data,
+                )
+            ]
+    return summary_block + recent_messages_full
+
+
 def _build_context_messages(
     recent_messages: List[ResonantChatMessage],
     memories: List[Dict[str, Any]],
     user_message: str,
     user_role: str = "user",
     user_plan: str = "free",
+    client_timezone: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """Build optimized context for agent orchestration.
 
@@ -645,13 +782,26 @@ def _build_context_messages(
     # ============================================
     pdna = personality_dna.system_prompt()
 
-    from datetime import datetime
-    current_datetime = datetime.now(ZoneInfo("America/Los_Angeles"))
-    current_date_str = current_datetime.strftime("%A, %B %d, %Y")
-    current_time_str = current_datetime.strftime("%I:%M %p %Z")
+    from datetime import datetime, timezone as _timezone
+    if client_timezone:
+        try:
+            current_datetime = datetime.now(ZoneInfo(client_timezone))
+            current_date_str = current_datetime.strftime("%A, %B %d, %Y")
+            current_time_str = current_datetime.strftime("%I:%M %p %Z")
+            _time_context_line = f"Today is {current_date_str}, {current_time_str} (user's local time, {client_timezone})."
+        except Exception:
+            client_timezone = None
+    if not client_timezone:
+        current_datetime = datetime.now(_timezone.utc)
+        current_date_str = current_datetime.strftime("%A, %B %d, %Y")
+        current_time_str = current_datetime.strftime("%H:%M UTC")
+        _time_context_line = (
+            f"Today is {current_date_str}, {current_time_str}. "
+            "The user's local timezone was not provided — this is UTC, not their local time."
+        )
 
     resonant_identity_prompt = f"""You are DevSwat Chat — the AI assistant for the DevSwat platform.
-Today is {current_date_str}, {current_time_str}. User role: {user_role}, plan: {user_plan}.
+{_time_context_line} User role: {user_role}, plan: {user_plan}.
 
 <identity>
 You are DevSwat Chat, a specialized AI with persistent memory (Hash Sphere), web search, code analysis, and agent management capabilities. You were created by the DevSwat team. When asked "who are you?", identify as DevSwat Chat.
@@ -659,7 +809,7 @@ You are DevSwat Chat, a specialized AI with persistent memory (Hash Sphere), web
 </identity>
 
 <capabilities>
-You have access to **208 tools** auto-selected by a neural classifier. Categories include: web search, weather, news, code analysis (AST/SAST), Agent Architect (create/manage/run agents), memory (Hash Sphere read/write/search), media generation (image/audio/video), integrations (Google Drive/Calendar/Gmail, Slack, Discord, Figma, Jira, Notion, GitHub, GitLab, LinkedIn, Salesforce, HubSpot, Airtable, and 20+ more), state physics simulation, community/Rabbit posts, file operations, code execution, and more. When asked about your tools: you have 208 tools across 15+ categories. Tool outputs appear as "TOOL OUTPUT (name):". If absent, the tool did NOT run — never fabricate.
+You have access to **202 tools** auto-selected by a neural classifier (plus native function-calling for the core always-on tools: web search, page fetching, and memory search/RAG). Categories include: web search, weather, news, code analysis (AST/SAST), Agent Architect (create/manage/run agents), memory (Hash Sphere read/write/search), media generation (image/audio/video), integrations (Google Drive/Calendar/Gmail, Slack, Discord, Figma, Jira, Notion, GitHub, GitLab, LinkedIn, Salesforce, HubSpot, Airtable, and 20+ more), state physics simulation, community/Rabbit posts, file operations, code execution, and more. When asked about your tools: you have 202 tools across 15+ categories. Tool outputs appear as "TOOL OUTPUT (name):". If absent, the tool did NOT run — never fabricate.
 </capabilities>
 
 <anti_hallucination>
@@ -930,16 +1080,8 @@ async def stream_message(
     )
     recent_messages_summary = list(reversed(result_msgs_summary.scalars().all()))
 
-    # Combine: 5 full messages + summarized older messages
-    recent_messages = recent_messages_full + [
-        ResonantChatMessage(
-            id=m.id, role=m.role, content=f"[SUMMARY] {m.content[:200]}...", 
-            hash=m.hash, resonance_score=m.resonance_score,
-            xyz_x=m.xyz_x, xyz_y=m.xyz_y, xyz_z=m.xyz_z,
-            created_at=m.created_at, meta_data=m.meta_data
-        )
-        for m in recent_messages_summary
-    ]
+    # Combine: real summary of older messages (oldest) + 5 full messages (newest)
+    recent_messages = _combine_history(recent_messages_full, recent_messages_summary)
 
     # Check architect pipeline continuity — route follow-ups to architect
     # Triggers if ANY recent assistant message was from the architect
@@ -1234,6 +1376,7 @@ async def stream_message(
                 recent_messages=history_msgs, memories=memories,
                 user_message=safe_message, user_role=user_role,
                 user_plan="unlimited" if is_superuser else "free",
+                client_timezone=request_body.client_timezone,
             )
 
             response_text = None
@@ -2101,16 +2244,8 @@ async def send_message(
     )
     recent_messages_summary = list(reversed(result_summary.scalars().all()))
 
-    # Combine: 5 full messages + summarized older messages
-    recent_messages = recent_messages_full + [
-        ResonantChatMessage(
-            id=m.id, role=m.role, content=f"[SUMMARY] {m.content[:200]}...", 
-            hash=m.hash, resonance_score=m.resonance_score,
-            xyz_x=m.xyz_x, xyz_y=m.xyz_y, xyz_z=m.xyz_z,
-            created_at=m.created_at, meta_data=m.meta_data
-        )
-        for m in recent_messages_summary
-    ]
+    # Combine: real summary of older messages (oldest) + 5 full messages (newest)
+    recent_messages = _combine_history(recent_messages_full, recent_messages_summary)
     
     # Get previous message ID for lineage
     prev_message_id = None
@@ -2203,6 +2338,7 @@ async def send_message(
         user_message=safe_user_message,
         user_role=user_role,
         user_plan=user_plan if isinstance(user_plan, str) else "free",
+        client_timezone=request_body.client_timezone,
     )
     total_ctx_chars = sum(len(m.get("content", "")) for m in context_messages)
     logger.info(f"🔧 STEP 6 COMPLETE: {len(context_messages)} context messages, ~{total_ctx_chars} chars, {len(history_msgs)} history msgs, {len(memories)} memories")
@@ -2221,15 +2357,16 @@ async def send_message(
     execute_mode = request_body.execute_mode or False
     _prev_assistant_agent_content = ""
 
-    time_tool_results = extract_current_time_tool_results(safe_user_message)
+    time_tool_results = extract_current_time_tool_results(safe_user_message, client_timezone=request_body.client_timezone)
     if time_tool_results:
         tr = time_tool_results[0].result or {}
         local_str = tr.get("local") or tr.get("iso")
-        tz = tr.get("timezone") or "America/Los_Angeles"
+        tz = tr.get("timezone") or "UTC"
+        note = f" {tr['note']}" if tr.get("note") else ""
         context_messages.append(
             {
                 "role": "system",
-                "content": f"AUTHORITATIVE CURRENT TIME TOOL: {local_str} ({tz}). Use this exact time when answering time questions.",
+                "content": f"AUTHORITATIVE CURRENT TIME TOOL: {local_str} ({tz}).{note} Use this exact time when answering time questions.",
             }
         )
 
@@ -2615,8 +2752,11 @@ async def send_message(
     if not execute_mode and response_text is None and time_tool_results and is_time_only_query(safe_user_message):
         tr = time_tool_results[0].result or {}
         local_str = tr.get("local") or tr.get("iso")
-        tz = tr.get("timezone") or "America/Los_Angeles"
-        response_text = f"The exact current time in San Francisco is {local_str} ({tz})."
+        tz = tr.get("timezone") or "UTC"
+        if tz == "UTC" and tr.get("note"):
+            response_text = f"I don't know your local timezone, so here's the current time in UTC: {local_str or tr.get('utc')}."
+        else:
+            response_text = f"The exact current time ({tz}) is {local_str}."
         provider = "tool_time"
         agent_type = "time"
 
@@ -2634,7 +2774,7 @@ async def send_message(
     ):
         tr = time_tool_results[0].result or {}
         local_str = tr.get("local") or tr.get("iso")
-        tz = tr.get("timezone") or "America/Los_Angeles"
+        tz = tr.get("timezone") or "UTC"
         response_text = (
             response_text.rstrip()
             + "\n\n"
@@ -2808,6 +2948,36 @@ async def send_message(
     }
     if request_body.agent_hash and request_body.agent_hash in allowed_forced_agents:
         forced_agent_type = request_body.agent_hash
+
+    # Safety net: the classifier found no usable tool for this message. Before
+    # falling into the persona/team/debate cascade (which has no tool access
+    # at all in this non-streaming path), give the LLM one native-function-
+    # calling shot at the always-on core tools (web_search, scrape_page,
+    # memory_search, memory_rag_ask). If it doesn't call a tool, discard and
+    # proceed exactly as before — this only spends an extra LLM call on the
+    # subset of turns where the classifier already came up empty.
+    if (
+        not execute_mode and not response_text and not forced_agent_type
+        and not detected_tool and not _architect_pipeline_active
+        and not web_search_needed and not image_gen_needed
+    ):
+        try:
+            _native_result = await _try_native_core_tools(
+                message=message_with_images, raw_message=raw_user_message,
+                context_messages=context_messages,
+                preferred_provider=request_body.preferred_provider,
+                preferred_model=request_body.preferred_model,
+                user_api_keys=user_api_keys, images=request_body.images,
+                user_id=user_id, user_role=user_role, is_superuser=is_superuser,
+                chat_id=chat_id, unlimited_credits=unlimited_credits, org_id=org_id,
+            )
+            if _native_result:
+                response_text = _native_result["response"]
+                provider = "native_core_tools"
+                router_metadata = _native_result.get("metadata") or None
+                logger.info("🔧 Native core tool call answered this turn (classifier found nothing)")
+        except Exception as e:
+            logger.warning(f"Native core tools attempt failed: {e}")
 
     if not execute_mode and not response_text and not forced_agent_type:
         try:

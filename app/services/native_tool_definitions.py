@@ -148,6 +148,40 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_url",
+            "description": "Fetch and extract the readable content of a specific web page URL. Use when the user gives you a URL, or asks you to look at/read/summarize a specific webpage or article.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The exact URL to fetch and extract content from",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_rag_ask",
+            "description": "Ask a question directly against the user's stored memory using retrieval-augmented generation. Use for open-ended recall questions ('what do you know about X', 'what have I told you about Y') rather than a literal keyword search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The natural-language question to answer from the user's memory",
+                    },
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "figma",
             "description": "Access Figma design files: view components, export assets, or inspect design details. Use when the user asks about Figma designs or UI components.",
             "parameters": {
@@ -179,6 +213,8 @@ NATIVE_TOOL_NAME_TO_CLASSIFIER_ID = {
     "memory_search": "memory_search",
     "memory_library": "memory_library",
     "figma": "figma",
+    "fetch_url": "fetch_url",
+    "memory_rag_ask": "memory_rag_ask",
 }
 
 

@@ -231,7 +231,11 @@ class GetCurrentTimeTool(BaseIntegrationSkill):
             "success": True,
             "action": "get_current_time",
             "time_utc": now.isoformat(),
-            "summary": f"**Current UTC time:** {now.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            "summary": (
+                f"**Current UTC time:** {now.strftime('%Y-%m-%d %H:%M:%S UTC')}. "
+                "This server reports time in UTC; the user's local timezone is not known here "
+                "unless it was provided separately as their client timezone."
+            ),
         }
 
 

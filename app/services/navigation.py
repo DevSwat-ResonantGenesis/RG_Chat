@@ -11,7 +11,7 @@ Also handles current-time tool results and time-only query detection.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
@@ -78,7 +78,9 @@ def extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
     return []
 
 
-def extract_current_time_tool_results(user_message: str) -> List[ToolResultData]:
+def extract_current_time_tool_results(
+    user_message: str, client_timezone: Optional[str] = None
+) -> List[ToolResultData]:
     msg = (user_message or "").strip()
     if not msg:
         return []
@@ -92,18 +94,41 @@ def extract_current_time_tool_results(user_message: str) -> List[ToolResultData]
     if not time_trigger:
         return []
 
+    # Only resolve a specific zone from an explicit place name in the message.
+    # Never fall back to a guessed/hardcoded city — that misrepresents the user's
+    # real location. Prefer the caller-supplied real client timezone, else be
+    # honest that we don't know the user's local zone and report UTC.
     tz: Optional[str] = None
     if "san francisco" in msg_lower or re.search(r"\bsf\b", msg_lower):
         tz = "America/Los_Angeles"
     elif "pacific" in msg_lower or "pst" in msg_lower or "pdt" in msg_lower:
         tz = "America/Los_Angeles"
+    elif client_timezone:
+        tz = client_timezone
 
-    # Default to platform timezone if user asks for "current time" without specifying location
+    now_utc = datetime.now(timezone.utc)
+
+    if tz:
+        try:
+            now_local = datetime.now(ZoneInfo(tz))
+        except Exception:
+            tz = None
+
     if not tz:
-        tz = "America/Los_Angeles"
-
-    now_local = datetime.now(ZoneInfo(tz))
-    now_utc = datetime.utcnow()
+        return [
+            ToolResultData(
+                tool_name="time",
+                success=True,
+                result={
+                    "action": "current_time",
+                    "timezone": "UTC",
+                    "iso": now_utc.isoformat(),
+                    "local": None,
+                    "utc": now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "note": "User's local timezone is unknown; showing UTC.",
+                },
+            )
+        ]
 
     return [
         ToolResultData(
