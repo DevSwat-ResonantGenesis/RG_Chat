@@ -297,60 +297,6 @@ class MemoryFactsTool(BaseIntegrationSkill):
             return {"success": False, "action": "memory_facts", "error": str(e)[:300]}
 
 
-class MemoryRagAskTool(BaseIntegrationSkill):
-    skill_id = "memory_rag_ask"
-    skill_name = "Memory RAG Ask"
-    api_key_names = []
-    intent_keywords = ["what have i told you", "what do you know about", "based on my memory", "recall about"]
-
-    async def execute(self, message: str, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{MEMORY_SERVICE_URL}/rag/ask",
-                    json={"question": message, "user_id": user_id},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                answer = (data.get("answer") or "").strip()
-                if not answer:
-                    return {"success": True, "action": "memory_rag_ask", "summary": "No relevant memory found for that question.", "count": 0}
-                sources = data.get("sources") or []
-                summary = f"**Answer (from your memory):**\n\n{answer}"
-                return {"success": True, "action": "memory_rag_ask", "summary": summary, "answer": answer, "sources": sources}
-        except Exception as e:
-            return {"success": False, "action": "memory_rag_ask", "error": str(e)[:300]}
-
-
-class MemoryUniverseTool(BaseIntegrationSkill):
-    skill_id = "memory_universe"
-    skill_name = "Memory Universe"
-    api_key_names = []
-    intent_keywords = ["show my memory universe", "memory layers", "short term memory", "long term memory", "memory clusters"]
-
-    async def execute(self, message: str, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(
-                    f"{MEMORY_SERVICE_URL}/rag/universe",
-                    params={"user_id": user_id},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                records = data.get("memories", data if isinstance(data, list) else [])
-                if not records:
-                    return {"success": True, "action": "memory_universe", "summary": "No memory universe data yet.", "count": 0}
-                by_layer: Dict[str, int] = {}
-                for r in records:
-                    layer = (r.get("layer") or "active") if isinstance(r, dict) else "active"
-                    by_layer[layer] = by_layer.get(layer, 0) + 1
-                layer_lines = "\n".join(f"- {layer}: {count}" for layer, count in by_layer.items())
-                summary = f"**Memory universe ({len(records)} entries):**\n\n{layer_lines}"
-                return {"success": True, "action": "memory_universe", "summary": summary, "count": len(records), "by_layer": by_layer}
-        except Exception as e:
-            return {"success": False, "action": "memory_universe", "error": str(e)[:300]}
-
-
 # ── Registry ──
 
 MEMORY_TOOLS = {
@@ -363,6 +309,4 @@ MEMORY_TOOLS = {
     "hash_sphere_list_anchors": HashSphereListAnchorsTool(),
     "hash_sphere_hash": HashSphereHashTool(),
     "hash_sphere_resonance": HashSphereResonanceTool(),
-    "memory_rag_ask": MemoryRagAskTool(),
-    "memory_universe": MemoryUniverseTool(),
 }

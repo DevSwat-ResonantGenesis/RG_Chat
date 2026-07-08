@@ -127,8 +127,6 @@ class ToolExecutor:
             "hash_sphere_list_anchors": self._execute_integration,
             "hash_sphere_hash": self._execute_integration,
             "hash_sphere_resonance": self._execute_integration,
-            "memory_rag_ask": self._execute_integration,
-            "memory_universe": self._execute_integration,
             # ── Code Visualizer granular (modular: code_visualizer_tools.py) ──
             "code_visualizer_scan": self._execute_integration,
             "code_visualizer_functions": self._execute_integration,
