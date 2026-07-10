@@ -4074,7 +4074,7 @@ async def get_providers(
     # This ensures user-connected providers (e.g. bedrock, chatgpt) always appear
     existing_ids = {p["id"] for p in providers} | {p.get("provider_key") for p in providers}
     BYOK_PROVIDER_META = {
-        "bedrock": {"name": "AWS Bedrock", "model": BUILTIN_PROVIDERS["bedrock"].default_model, "models": BUILTIN_PROVIDERS["bedrock"].models, "capabilities": ["chat", "coding", "vision"]},
+        # "bedrock" removed 2026-07-09 — no AWS account/keys exist for it yet.
         "chatgpt": {"name": "ChatGPT (Direct)", "model": "chatgpt-4o-latest", "models": ["chatgpt-4o-latest", "gpt-4o-mini"], "capabilities": ["chat", "coding", "vision"]},
         "replicate": {"name": "Replicate", "model": "meta/meta-llama-3-70b-instruct", "models": ["meta/meta-llama-3-70b-instruct"], "capabilities": ["chat"]},
         "stability": {"name": "Stability AI", "model": "stable-diffusion-xl", "models": ["stable-diffusion-xl"], "capabilities": ["image"]},
