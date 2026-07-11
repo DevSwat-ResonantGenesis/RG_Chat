@@ -619,8 +619,22 @@ def _sanitize_agent_response(response: str) -> str:
     # Remove excessive whitespace
     cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
     cleaned = cleaned.strip()
-    
+
     return cleaned
+
+
+# Provider keys in user_api_keys that are LLM providers, not third-party
+# integrations — excluded when telling the LLM what's "connected".
+_LLM_PROVIDER_KEYS = {
+    "anthropic", "openai", "google", "bedrock", "groq", "mistral",
+    "openrouter", "cohere", "azure", "azure-openai",
+}
+
+
+def _connected_integrations(user_api_keys: Optional[Dict[str, str]]) -> List[str]:
+    if not user_api_keys:
+        return []
+    return sorted(p for p in user_api_keys if p not in _LLM_PROVIDER_KEYS)
 
 
 def _build_context_messages(
@@ -630,6 +644,7 @@ def _build_context_messages(
     user_role: str = "user",
     user_plan: str = "free",
     client_timezone: Optional[str] = None,
+    connected_integrations: Optional[List[str]] = None,
 ) -> List[Dict[str, str]]:
     """Build optimized context for agent orchestration.
 
@@ -659,8 +674,16 @@ def _build_context_messages(
     # (it previously claimed a stale hardcoded "208" — see rg-chat-tool-registry-gap memory).
     tool_count = len(tools_registry.tools)
 
+    integrations_line = (
+        f"CONNECTED INTEGRATIONS: {', '.join(connected_integrations)}"
+        if connected_integrations else
+        "CONNECTED INTEGRATIONS: none yet — the user hasn't connected any third-party integrations "
+        "(Google Calendar, Drive, Slack, GitHub, etc.) via /connect-profiles."
+    )
+
     resonant_identity_prompt = f"""You are DevSwat Chat — the AI assistant for the DevSwat platform.
 Today is {current_date_str}, {current_time_str}. User role: {user_role}, plan: {user_plan}.
+{integrations_line}
 
 <identity>
 You are DevSwat Chat, a specialized AI with persistent memory (Hash Sphere), web search, code analysis, and agent management capabilities. You were created by the DevSwat team. When asked "who are you?", identify as DevSwat Chat.
@@ -1265,6 +1288,7 @@ async def stream_message(
                 user_message=safe_message, user_role=user_role,
                 user_plan="unlimited" if (is_superuser or unlimited_credits) else "free",
                 client_timezone=request_body.client_timezone,
+                connected_integrations=_connected_integrations(user_api_keys),
             )
 
             response_text = None
@@ -2234,6 +2258,7 @@ async def send_message(
     # ============================================
     history_msgs = recent_messages[:-1]  # Exclude current user message
     logger.info(f"🔧 STEP 6: Building context with {len(history_msgs)} recent messages (DB returned {len(recent_messages)} total)")
+    user_api_keys = await _get_user_api_keys(session, user_id)
     context_messages = _build_context_messages(
         recent_messages=history_msgs,
         memories=memories,
@@ -2241,6 +2266,7 @@ async def send_message(
         user_role=user_role,
         user_plan=user_plan if isinstance(user_plan, str) else "free",
         client_timezone=request_body.client_timezone,
+        connected_integrations=_connected_integrations(user_api_keys),
     )
     total_ctx_chars = sum(len(m.get("content", "")) for m in context_messages)
     logger.info(f"🔧 STEP 6 COMPLETE: {len(context_messages)} context messages, ~{total_ctx_chars} chars, {len(history_msgs)} history msgs, {len(memories)} memories")
@@ -2248,9 +2274,8 @@ async def send_message(
     # ============================================
     # STEP 7: Get User API Keys (BYOK)
     # ============================================
-    logger.info(f"🔑 STEP 7: Getting user API keys for user {user_id}")
+    logger.info(f"🔑 STEP 7: User API keys already fetched in STEP 6")
     logger.info(f"🎯 PREFERRED PROVIDER RECEIVED: {request_body.preferred_provider}")
-    user_api_keys = await _get_user_api_keys(session, user_id)
     logger.info(f"🔑 User API keys retrieved: {list(user_api_keys.keys()) if user_api_keys else 'None'}")
     
     # ============================================
