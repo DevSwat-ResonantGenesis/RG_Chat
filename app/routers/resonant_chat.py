@@ -1626,8 +1626,14 @@ async def stream_message(
                                 break
                     except Exception as _stream_err:
                         logger.warning(f"[SSE] Token streaming failed: {_stream_err}")
-                        accumulated_text = accumulated_text or "I apologize, but I couldn't generate a response. Please try again."
-                        yield _sse_event({"event": "chunk", "content": accumulated_text})
+                        # If tokens were already streamed individually before this exception
+                        # hit, they were already emitted as "chunk" deltas above — re-emitting
+                        # accumulated_text here would duplicate everything already sent
+                        # (the frontend concatenates every "chunk" event's content as a delta).
+                        # Only synthesize a fallback message when NOTHING streamed yet.
+                        if not accumulated_text:
+                            accumulated_text = "I apologize, but I couldn't generate a response. Please try again."
+                            yield _sse_event({"event": "chunk", "content": accumulated_text})
 
                 if not actual_provider:
                     actual_provider = "streaming_llm"
