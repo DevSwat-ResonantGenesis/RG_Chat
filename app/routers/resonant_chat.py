@@ -629,6 +629,7 @@ def _build_context_messages(
     user_message: str,
     user_role: str = "user",
     user_plan: str = "free",
+    client_timezone: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """Build optimized context for agent orchestration.
 
@@ -646,7 +647,11 @@ def _build_context_messages(
     pdna = personality_dna.system_prompt()
 
     from datetime import datetime
-    current_datetime = datetime.now(ZoneInfo("America/Los_Angeles"))
+    try:
+        tz = ZoneInfo(client_timezone) if client_timezone else ZoneInfo("America/Los_Angeles")
+    except Exception:
+        tz = ZoneInfo("America/Los_Angeles")
+    current_datetime = datetime.now(tz)
     current_date_str = current_datetime.strftime("%A, %B %d, %Y")
     current_time_str = current_datetime.strftime("%I:%M %p %Z")
 
@@ -1234,6 +1239,7 @@ async def stream_message(
                 recent_messages=history_msgs, memories=memories,
                 user_message=safe_message, user_role=user_role,
                 user_plan="unlimited" if is_superuser else "free",
+                client_timezone=request_body.client_timezone,
             )
 
             response_text = None
@@ -2203,6 +2209,7 @@ async def send_message(
         user_message=safe_user_message,
         user_role=user_role,
         user_plan=user_plan if isinstance(user_plan, str) else "free",
+        client_timezone=request_body.client_timezone,
     )
     total_ctx_chars = sum(len(m.get("content", "")) for m in context_messages)
     logger.info(f"🔧 STEP 6 COMPLETE: {len(context_messages)} context messages, ~{total_ctx_chars} chars, {len(history_msgs)} history msgs, {len(memories)} memories")
@@ -2221,7 +2228,7 @@ async def send_message(
     execute_mode = request_body.execute_mode or False
     _prev_assistant_agent_content = ""
 
-    time_tool_results = extract_current_time_tool_results(safe_user_message)
+    time_tool_results = extract_current_time_tool_results(safe_user_message, default_timezone=request_body.client_timezone)
     if time_tool_results:
         tr = time_tool_results[0].result or {}
         local_str = tr.get("local") or tr.get("iso")

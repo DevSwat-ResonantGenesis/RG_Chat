@@ -78,7 +78,7 @@ def extract_navigation_tool_results(user_message: str) -> List[ToolResultData]:
     return []
 
 
-def extract_current_time_tool_results(user_message: str) -> List[ToolResultData]:
+def extract_current_time_tool_results(user_message: str, default_timezone: Optional[str] = None) -> List[ToolResultData]:
     msg = (user_message or "").strip()
     if not msg:
         return []
@@ -98,11 +98,15 @@ def extract_current_time_tool_results(user_message: str) -> List[ToolResultData]
     elif "pacific" in msg_lower or "pst" in msg_lower or "pdt" in msg_lower:
         tz = "America/Los_Angeles"
 
-    # Default to platform timezone if user asks for "current time" without specifying location
+    # Default to the client's browser timezone if user asks for "current time" without specifying location
     if not tz:
-        tz = "America/Los_Angeles"
+        tz = default_timezone or "America/Los_Angeles"
 
-    now_local = datetime.now(ZoneInfo(tz))
+    try:
+        now_local = datetime.now(ZoneInfo(tz))
+    except Exception:
+        tz = "America/Los_Angeles"
+        now_local = datetime.now(ZoneInfo(tz))
     now_utc = datetime.utcnow()
 
     return [
