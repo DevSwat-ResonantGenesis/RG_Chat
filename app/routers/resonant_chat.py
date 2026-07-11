@@ -1263,7 +1263,7 @@ async def stream_message(
             context_messages = _build_context_messages(
                 recent_messages=history_msgs, memories=memories,
                 user_message=safe_message, user_role=user_role,
-                user_plan="unlimited" if is_superuser else "free",
+                user_plan="unlimited" if (is_superuser or unlimited_credits) else "free",
                 client_timezone=request_body.client_timezone,
             )
 
