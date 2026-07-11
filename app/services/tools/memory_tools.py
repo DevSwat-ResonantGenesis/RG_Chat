@@ -32,10 +32,12 @@ class MemoryReadTool(BaseIntegrationSkill):
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
                     f"{MEMORY_SERVICE_URL}/memory/rag/memories",
-                    params={"user_id": user_id, "limit": 20},
+                    params={"limit": 20},
+                    headers={"x-user-id": user_id},
                 )
                 resp.raise_for_status()
-                memories = resp.json().get("memories", [])
+                data = resp.json()
+                memories = data if isinstance(data, list) else data.get("memories", [])
                 if not memories:
                     return {"success": True, "action": "memory_read", "summary": "No memories stored yet.", "count": 0}
                 summary = f"**{len(memories)} memories found:**\n\n"
@@ -58,7 +60,7 @@ class MemoryWriteTool(BaseIntegrationSkill):
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
                     f"{MEMORY_SERVICE_URL}/memory/ingest",
-                    json={"text": message, "user_id": user_id, "source": "resonant_chat"},
+                    json={"content": message, "user_id": user_id, "org_id": context.get("org_id"), "source": "resonant_chat"},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -181,15 +183,16 @@ class HashSphereAnchorTool(BaseIntegrationSkill):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
-                    f"{MEMORY_SERVICE_URL}/memory/hash-sphere/anchor",
-                    json={"text": message, "user_id": user_id},
+                    f"{MEMORY_SERVICE_URL}/memory/hash-sphere/anchors",
+                    json={"anchor_text": message},
+                    headers={"x-user-id": user_id, "x-org-id": context.get("org_id") or ""},
                 )
                 resp.raise_for_status()
                 data = resp.json()
                 return {
                     "success": True,
                     "action": "hash_sphere_anchor",
-                    "summary": f"**Anchor created.** Hash: {data.get('hash', 'N/A')}",
+                    "summary": f"**Anchor created.** Hash: {data.get('anchor_hash', 'N/A')}",
                 }
         except Exception as e:
             return {"success": False, "action": "hash_sphere_anchor", "error": str(e)[:300]}
@@ -209,12 +212,13 @@ class HashSphereListAnchorsTool(BaseIntegrationSkill):
                     params={"user_id": user_id},
                 )
                 resp.raise_for_status()
-                anchors = resp.json().get("anchors", [])
+                data = resp.json()
+                anchors = data if isinstance(data, list) else data.get("anchors", [])
                 if not anchors:
                     return {"success": True, "action": "hash_sphere_list_anchors", "summary": "No anchors yet.", "count": 0}
                 summary = f"**{len(anchors)} anchors:**\n\n"
                 for a in anchors[:20]:
-                    label = a.get("label", a.get("hash", "?"))[:80]
+                    label = (a.get("anchor_text") or a.get("anchor_hash") or "?")[:80]
                     summary += f"- {label}\n"
                 return {"success": True, "action": "hash_sphere_list_anchors", "summary": summary, "count": len(anchors)}
         except Exception as e:
@@ -254,19 +258,43 @@ class HashSphereResonanceTool(BaseIntegrationSkill):
     intent_keywords = ["resonance score", "compute resonance"]
 
     async def execute(self, message: str, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        # /hash-sphere/resonance compares two existing hashes, not raw text — hash the
+        # current message, then find the closest prior memory to compare it against.
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                hash_resp = await client.post(
+                    f"{MEMORY_SERVICE_URL}/memory/hash-sphere/hash",
+                    json={"text": message},
+                )
+                hash_resp.raise_for_status()
+                hash1 = hash_resp.json().get("hash")
+
+                extract_resp = await client.post(
+                    f"{MEMORY_SERVICE_URL}/memory/hash-sphere/extract",
+                    json={"query": message, "user_id": user_id, "limit": 1},
+                )
+                extract_resp.raise_for_status()
+                candidates = extract_resp.json().get("memories", [])
+                if not candidates or not candidates[0].get("hash"):
+                    return {
+                        "success": True,
+                        "action": "hash_sphere_resonance",
+                        "summary": "No prior memory to compare resonance against yet.",
+                    }
+                hash2 = candidates[0]["hash"]
+                compared_text = (candidates[0].get("content") or "")[:120]
+
                 resp = await client.post(
                     f"{MEMORY_SERVICE_URL}/memory/hash-sphere/resonance",
-                    json={"text": message, "user_id": user_id},
+                    json={"hash1": hash1, "hash2": hash2},
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                score = data.get("resonance_score", data.get("score", 0))
+                score = data.get("resonance_score", 0)
                 return {
                     "success": True,
                     "action": "hash_sphere_resonance",
-                    "summary": f"**Resonance score:** {score:.4f}",
+                    "summary": f"**Resonance score:** {score:.4f} (vs closest memory: \"{compared_text}\")",
                     "resonance_score": score,
                 }
         except Exception as e:
@@ -308,11 +336,12 @@ class MemoryRagAskTool(BaseIntegrationSkill):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
                     f"{MEMORY_SERVICE_URL}/memory/rag/ask",
-                    json={"question": message, "user_id": user_id},
+                    json={"query": message},
+                    headers={"x-user-id": user_id, "x-org-id": context.get("org_id") or ""},
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                answer = (data.get("answer") or "").strip()
+                answer = (data.get("response") or "").strip()
                 if not answer:
                     return {"success": True, "action": "memory_rag_ask", "summary": "No relevant memory found for that question.", "count": 0}
                 sources = data.get("sources") or []
@@ -333,11 +362,11 @@ class MemoryUniverseTool(BaseIntegrationSkill):
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
                     f"{MEMORY_SERVICE_URL}/memory/rag/universe",
-                    params={"user_id": user_id},
+                    headers={"x-user-id": user_id, "x-org-id": context.get("org_id") or ""},
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                records = data.get("memories", data if isinstance(data, list) else [])
+                records = data.get("nodes", [])
                 if not records:
                     return {"success": True, "action": "memory_universe", "summary": "No memory universe data yet.", "count": 0}
                 by_layer: Dict[str, int] = {}
