@@ -1177,9 +1177,15 @@ async def stream_message(
                     edata = _ev.get("data", {})
 
                     if etype == "text":
+                        # Architect "text" events carry the FULL accumulated text so far
+                        # (assigned, not appended, to accumulated_text below) — NOT a
+                        # delta. Sending it as "chunk" made the frontend (which appends
+                        # every chunk's content as an incremental delta) concatenate
+                        # the same growing snapshot onto itself over and over, producing
+                        # duplicated/garbled text. "response" replaces instead of appends.
                         content = edata.get("content", "")
                         accumulated_text = content
-                        yield _sse_event({"event": "chunk", "content": content})
+                        yield _sse_event({"event": "response", "content": content})
                     elif etype == "options":
                         present_options_data = tool_executor._map_architect_options(edata)
                         yield _sse_event({"event": "options", "options": present_options_data})
@@ -1188,6 +1194,7 @@ async def stream_message(
                         final_text = resp_data.get("text", "")
                         if final_text:
                             accumulated_text = final_text
+                            yield _sse_event({"event": "response", "content": final_text})
                         opts = resp_data.get("options")
                         if opts:
                             present_options_data = tool_executor._map_architect_options(opts)
