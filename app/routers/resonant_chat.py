@@ -1139,6 +1139,7 @@ async def stream_message(
                 "context": "",
                 "conversation_history": _hist_msgs,
                 "user_api_keys": user_api_keys or {},
+                "client_timezone": request_body.client_timezone or "",
             }
 
             # Register session in tracker & launch background task
