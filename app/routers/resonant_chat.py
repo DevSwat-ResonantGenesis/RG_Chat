@@ -1143,22 +1143,35 @@ async def stream_message(
 
             # Register session in tracker & launch background task
             _cleanup_old_sessions()
-            _architect_sessions[chat_id] = {
-                "status": "running",
-                "accumulated_text": "",
-                "events": [],
-                "options": None,
-                "started_at": _time.time(),
-                "user_id": user_id,
-                "user_msg_id": str(user_msg.id),
-                "bg_save_done": False,
-            }
-            _bg_task = asyncio.create_task(_run_architect_background(
-                chat_id=chat_id, svc_payload=svc_payload, headers=_arch_headers,
-                user_id=user_id, user_role=user_role, is_superuser=is_superuser,
-                unlimited_credits=unlimited_credits, safe_message=safe_message,
-                user_msg_id=str(user_msg.id), org_id=org_id,
-            ))
+            _existing_sess = _architect_sessions.get(chat_id)
+            if _existing_sess and _existing_sess.get("status") == "running":
+                # A background task for this chat is already in flight (double
+                # send/click, or a client retry while the first is still running).
+                # _architect_sessions is keyed only by chat_id with no guard, so
+                # unconditionally overwriting it here + spawning a second background
+                # task used to race with the first: both independently hit the
+                # architect service and each saved its OWN assistant message,
+                # producing duplicate (often byte-identical, for templated
+                # responses) messages in the chat. Attach to the existing run
+                # instead of starting a new one.
+                print(f"[ARCHITECT-ROUTE] Session already running for chat {chat_id} — attaching instead of starting a duplicate", flush=True)
+            else:
+                _architect_sessions[chat_id] = {
+                    "status": "running",
+                    "accumulated_text": "",
+                    "events": [],
+                    "options": None,
+                    "started_at": _time.time(),
+                    "user_id": user_id,
+                    "user_msg_id": str(user_msg.id),
+                    "bg_save_done": False,
+                }
+                _bg_task = asyncio.create_task(_run_architect_background(
+                    chat_id=chat_id, svc_payload=svc_payload, headers=_arch_headers,
+                    user_id=user_id, user_role=user_role, is_superuser=is_superuser,
+                    unlimited_credits=unlimited_credits, safe_message=safe_message,
+                    user_msg_id=str(user_msg.id), org_id=org_id,
+                ))
 
             # Tail the in-memory session — forward events to client in real time
             _last_event_idx = 0
