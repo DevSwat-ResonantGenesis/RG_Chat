@@ -28,16 +28,19 @@ class MemoryReadTool(BaseIntegrationSkill):
     intent_keywords = ["read memory", "recall", "what do you remember"]
 
     async def execute(self, message: str, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        # NOTE: GET /memory/rag/memories filters to source=="rag" (literal uploaded RAG
+        # documents) — chat-captured memories are stored as source="resonant-chat", so
+        # that endpoint can never see them regardless of user scoping. Use the same
+        # hash-sphere extract engine hash_sphere_search uses instead, which is
+        # source-agnostic and already verified working.
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(
-                    f"{MEMORY_SERVICE_URL}/memory/rag/memories",
-                    params={"limit": 20},
-                    headers={"x-user-id": user_id},
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    f"{MEMORY_SERVICE_URL}/memory/hash-sphere/extract",
+                    json={"query": message, "user_id": user_id, "limit": 20, "use_rag_fallback": True},
                 )
                 resp.raise_for_status()
-                data = resp.json()
-                memories = data if isinstance(data, list) else data.get("memories", [])
+                memories = resp.json().get("memories", [])
                 if not memories:
                     return {"success": True, "action": "memory_read", "summary": "No memories stored yet.", "count": 0}
                 summary = f"**{len(memories)} memories found:**\n\n"
