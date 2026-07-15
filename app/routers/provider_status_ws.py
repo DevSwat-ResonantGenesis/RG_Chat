@@ -58,9 +58,23 @@ class ProviderStatusManager:
         for conn in disconnected:
             self.disconnect(conn)
     
-    async def check_provider_status(self) -> Dict[str, Any]:
-        """Check live provider status including latency."""
+    async def check_provider_status(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """Check live provider status including latency.
+        
+        Args:
+            user_id: Optional user ID to fetch BYOK keys for per-user status
+        """
         providers = []
+        
+        # Fetch user BYOK keys if user_id provided
+        user_keys = {}
+        if user_id:
+            try:
+                from ..services.user_api_keys import user_api_key_service
+                user_keys = await user_api_key_service.get_user_api_keys(user_id)
+                logger.info(f"🔑 Provider status: Retrieved BYOK keys for user {user_id}: {list(user_keys.keys())}")
+            except Exception as e:
+                logger.warning(f"🔑 Failed to fetch user BYOK keys: {e}")
         
         # Platform keys (handle comma-separated keys by taking the first one)
         platform_tokenrouter = os.getenv("TOKENROUTER_API_KEY")
@@ -132,8 +146,9 @@ class ProviderStatusManager:
             "supports_smart_routing": True,
         })
         
-        # Check Groq
-        groq_status = await self._check_provider_latency("groq", platform_groq)
+        # Check Groq (prefer user BYOK key if available)
+        groq_key = user_keys.get("groq") or platform_groq
+        groq_status = await self._check_provider_latency("groq", groq_key)
         providers.append({
             "id": "groq",
             "name": "Groq",
@@ -143,10 +158,12 @@ class ProviderStatusManager:
             "model": BUILTIN_PROVIDERS["groq"].default_model,
             "models": GROQ_MODELS,
             "capabilities": ["chat", "coding"],
+            "has_user_key": bool(user_keys.get("groq")),
         })
         
-        # Check OpenAI
-        openai_status = await self._check_provider_latency("openai", platform_openai)
+        # Check OpenAI (prefer user BYOK key if available)
+        openai_key = user_keys.get("openai") or user_keys.get("chatgpt") or platform_openai
+        openai_status = await self._check_provider_latency("openai", openai_key)
         providers.append({
             "id": "chatgpt",
             "name": "ChatGPT",
@@ -156,10 +173,12 @@ class ProviderStatusManager:
             "model": BUILTIN_PROVIDERS["openai"].default_model,
             "models": OPENAI_MODELS,
             "capabilities": ["chat", "coding", "vision", "image"],
+            "has_user_key": bool(user_keys.get("openai") or user_keys.get("chatgpt")),
         })
         
-        # Check Gemini
-        gemini_status = await self._check_provider_latency("gemini", platform_gemini)
+        # Check Gemini (prefer user BYOK key if available)
+        gemini_key = user_keys.get("google") or user_keys.get("gemini") or platform_gemini
+        gemini_status = await self._check_provider_latency("gemini", gemini_key)
         providers.append({
             "id": "gemini",
             "name": "Gemini",
@@ -169,10 +188,12 @@ class ProviderStatusManager:
             "model": BUILTIN_PROVIDERS["google"].default_model,
             "models": GEMINI_MODELS,
             "capabilities": ["chat", "coding", "vision"],
+            "has_user_key": bool(user_keys.get("google") or user_keys.get("gemini")),
         })
         
-        # Check Anthropic
-        anthropic_status = await self._check_provider_latency("anthropic", platform_anthropic)
+        # Check Anthropic (prefer user BYOK key if available)
+        anthropic_key = user_keys.get("anthropic") or user_keys.get("claude") or platform_anthropic
+        anthropic_status = await self._check_provider_latency("anthropic", anthropic_key)
         providers.append({
             "id": "anthropic",
             "name": "Claude",
@@ -182,6 +203,7 @@ class ProviderStatusManager:
             "model": BUILTIN_PROVIDERS["anthropic"].default_model,
             "models": ANTHROPIC_MODELS,
             "capabilities": ["chat", "coding", "vision"],
+            "has_user_key": bool(user_keys.get("anthropic") or user_keys.get("claude")),
         })
         
         
@@ -291,12 +313,16 @@ class ProviderStatusManager:
                 if platform_key:
                     break
             
-            if platform_key and bp.get("test_model"):
+            # Prefer user BYOK key over platform key
+            user_key = user_keys.get(bp["id"])
+            effective_key = user_key or platform_key
+            
+            if effective_key and bp.get("test_model"):
                 status = await self._check_byok_provider_latency(
-                    bp["base_url"], platform_key, bp["test_model"],
+                    bp["base_url"], effective_key, bp["test_model"],
                     extra_headers=bp.get("extra_headers", {}),
                 )
-            elif platform_key:
+            elif effective_key:
                 # Has key but can't test (e.g. HuggingFace) — assume available
                 status = {"available": True, "latency": None, "status": "key_configured"}
             else:
@@ -313,6 +339,7 @@ class ProviderStatusManager:
                 "models": bp["models"],
                 "capabilities": bp.get("capabilities", ["chat"]),
                 "byok_only": not bool(platform_key),
+                "has_user_key": bool(user_key),
             })
         
         # Check CodeLlama (Ollama) - tunneled from Mac - Coding
@@ -567,11 +594,14 @@ async def websocket_provider_status(websocket: WebSocket):
         # Accept connection
         await websocket.accept()
         
+        # Get user ID from headers for BYOK key lookup
+        user_id = websocket.headers.get("x-user-id")
+        
         # Register connection
         await status_manager.connect(websocket)
         
-        # Send initial status immediately
-        initial_status = await status_manager.check_provider_status()
+        # Send initial status immediately with user BYOK keys
+        initial_status = await status_manager.check_provider_status(user_id=user_id)
         await websocket.send_json(initial_status)
         
         # Message loop
@@ -588,8 +618,8 @@ async def websocket_provider_status(websocket: WebSocket):
                 if msg_type == "ping":
                     await websocket.send_json({"type": "pong"})
                 elif msg_type == "refresh":
-                    # Force refresh provider status
-                    status = await status_manager.check_provider_status()
+                    # Force refresh provider status with user BYOK keys
+                    status = await status_manager.check_provider_status(user_id=user_id)
                     await websocket.send_json(status)
             
             except asyncio.TimeoutError:
