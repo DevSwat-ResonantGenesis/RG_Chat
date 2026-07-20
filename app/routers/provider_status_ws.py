@@ -93,7 +93,7 @@ class ProviderStatusManager:
             "openai/gpt-5-mini", "openai/gpt-4o-mini", "x-ai/grok-4.3", "x-ai/grok-4.20-beta",
             "x-ai/grok-4.1-fast", "google/gemini-3.1-pro-preview", "google/gemini-3-flash-preview",
             "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v3.2",
-            "z-ai/glm-5.1", "z-ai/glm-5", "z-ai/glm-5-turbo", "z-ai/glm-4.7", "z-ai/glm-4.6",
+            "z-ai/glm-5.2-free", "z-ai/glm-5.1", "z-ai/glm-5", "z-ai/glm-5-turbo", "z-ai/glm-4.7", "z-ai/glm-4.6",
             "z-ai/glm-4.6v", "z-ai/glm-4.5-air", "qwen/qwen3.6-plus", "qwen/qwen3.5-plus-02-15",
             "qwen/qwen3.5-flash", "qwen/qwen3.5-397b-a17b", "qwen/qwen3.5-122b-a10b",
             "qwen/qwen3.5-35b-a3b", "qwen/qwen3.5-9b", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.5",
