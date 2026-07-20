@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
 CODE_EXEC_URL = os.getenv("CODE_EXECUTION_URL", "http://code_execution_service:8000")
+# code_execution_service requires this on every route (see its app/security.py) —
+# without it, any container reachable on app-network could run arbitrary shell
+# commands there (it has /var/run/docker.sock mounted for its own sandboxing).
+CODE_EXEC_INTERNAL_KEY = os.getenv("CODE_EXECUTION_INTERNAL_SERVICE_KEY", "")
 
 
 class _GitHubTool(BaseIntegrationSkill):
@@ -116,14 +120,16 @@ class _GitTool(BaseIntegrationSkill):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
-                    f"{CODE_EXEC_URL}/execute",
-                    json={"code": self._cmd, "user_id": user_id, "language": "bash"},
-                    headers={"x-user-id": user_id},
+                    f"{CODE_EXEC_URL}/terminal/execute",
+                    json={"command": self._cmd, "timeout": 25},
+                    headers={"x-user-id": user_id, "x-internal-service-key": CODE_EXEC_INTERNAL_KEY},
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                output = data.get("output", data.get("stdout", ""))
-                return {"success": True, "action": self.skill_id, "summary": f"```\n{output[:3000]}\n```"}
+                output = data.get("stdout") or data.get("output") or ""
+                stderr = data.get("stderr") or ""
+                combined = (output + ("\n" + stderr if stderr else "")).strip()
+                return {"success": data.get("exit_code", 0) == 0, "action": self.skill_id, "summary": f"```\n{combined[:3000]}\n```"}
         except Exception as e:
             return {"success": False, "action": self.skill_id, "error": str(e)[:300]}
 

@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 CODE_EXEC_URL = os.getenv("CODE_EXECUTION_URL", "http://code_execution_service:8000")
 IDE_SERVICE_URL = os.getenv("IDE_SERVICE_URL", "http://ide_platform_service:8080")
+# code_execution_service requires this on every route (see its app/security.py) —
+# without it, any container reachable on app-network could run arbitrary shell
+# commands there (it has /var/run/docker.sock mounted for its own sandboxing).
+CODE_EXEC_INTERNAL_KEY = os.getenv("CODE_EXECUTION_INTERNAL_SERVICE_KEY", "")
 
 
 class ExecuteCodeTool(BaseIntegrationSkill):
@@ -32,9 +36,9 @@ class ExecuteCodeTool(BaseIntegrationSkill):
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(
-                    f"{CODE_EXEC_URL}/execute",
-                    json={"code": message, "user_id": user_id, "language": "python"},
-                    headers={"x-user-id": user_id},
+                    f"{CODE_EXEC_URL}/code/execute",
+                    json={"code": message, "language": "python"},
+                    headers={"x-user-id": user_id, "x-internal-service-key": CODE_EXEC_INTERNAL_KEY},
                 )
                 resp.raise_for_status()
                 data = resp.json()
