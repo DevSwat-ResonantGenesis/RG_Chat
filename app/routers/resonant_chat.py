@@ -4020,18 +4020,30 @@ async def get_providers(
     
     # Get user info from request
     user_id = request.headers.get("x-user-id")
-    user_role = request.headers.get("x-user-role", "user")
-    user_plan = request.headers.get("x-user-plan", "free")
+    user_role = request.headers.get("x-user-role", "free_user")
     is_superuser = request.headers.get("x-is-superuser", "false").lower() == "true"
     unlimited_credits = request.headers.get("x-unlimited-credits", "false").lower() == "true"
-    
+
     # Free tier credit limit
     FREE_TIER_CREDITS = 1000
-    
-    # Check if user is on a paid plan (unlimited platform keys)
-    is_paid_user = user_plan in ["plus", "enterprise"] or \
-                   user_role in ["platform_dev", "system", "admin", "owner", "org_admin"] or \
+
+    # Check if user is on a paid plan (role encodes plan tier)
+    # Plan-based roles: free_user, plus_user, max_user, team_user, team_admin, org_admin
+    is_paid_user = user_role in ["plus_user", "max_user", "team_user", "team_admin", "org_admin"] or \
                    is_superuser or unlimited_credits
+    
+    # Determine user plan name
+    user_plan = "free"
+    if is_superuser:
+        user_plan = "admin"
+    elif user_role == "plus_user":
+        user_plan = "plus"
+    elif user_role == "max_user":
+        user_plan = "max"
+    elif user_role in ["team_user", "team_admin", "org_admin"]:
+        user_plan = "team"
+    elif unlimited_credits:
+        user_plan = "unlimited"
     
     # Get user's credit balance for free users
     credits_remaining = FREE_TIER_CREDITS
@@ -4077,7 +4089,7 @@ async def get_providers(
         return {}
     
     live_status, llm_models_map = await _asyncio.gather(
-        status_manager.check_provider_status(),
+        status_manager.check_provider_status(user_id),
         _fetch_llm_models(),
     )
     live_providers = live_status.get("providers", [])
@@ -4146,7 +4158,7 @@ async def get_providers(
         "meta": {"name": "Meta AI (Llama)", "model": "llama-3.2-90b", "models": ["llama-3.2-90b", "llama-3.2-11b"], "capabilities": ["chat", "coding"]},
         "copilot": {"name": "Microsoft Copilot", "model": "gpt-4o", "models": ["gpt-4o", "gpt-4-turbo"], "capabilities": ["chat", "coding"]},
         "glm": {"name": "GLM (Zhipu AI)", "model": "glm-4", "models": ["glm-4", "glm-4v", "glm-3-turbo"], "capabilities": ["chat"]},
-        "tokenrouter": {"name": "TokenRouter (72 Models)", "model": "google/gemini-3-flash-preview", "models": [
+        "tokenrouter": {"name": "TokenRouter (72 Models)", "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "models": [
             "anthropic/claude-opus-4.7", "anthropic/claude-opus-4.6", "anthropic/claude-opus-4.5",
             "anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5", "anthropic/claude-sonnet-4",
             "anthropic/claude-haiku-4.5", "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.2",
@@ -7021,7 +7033,7 @@ async def extract_memories_from_conversation(
         
         # Build proxy headers for memory_service billing checks
         extract_headers = {"x-user-id": user_id}
-        for h in ("x-user-role", "x-user-plan", "x-unlimited-credits", "x-is-superuser", "x-org-id"):
+        for h in ("x-user-role", "x-unlimited-credits", "x-is-superuser", "x-org-id"):
             val = request.headers.get(h)
             if val:
                 extract_headers[h] = val
@@ -7096,7 +7108,7 @@ async def save_memory_proxy(request: Request):
         
         # Forward auth headers so memory_service billing checks work correctly
         proxy_headers = {"x-user-id": user_id}
-        for h in ("x-user-role", "x-user-plan", "x-unlimited-credits", "x-is-superuser", "x-org-id"):
+        for h in ("x-user-role", "x-unlimited-credits", "x-is-superuser", "x-org-id"):
             val = request.headers.get(h)
             if val:
                 proxy_headers[h] = val

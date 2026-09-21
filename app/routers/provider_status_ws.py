@@ -124,7 +124,9 @@ class ProviderStatusManager:
         GROQ_MODELS = BUILTIN_PROVIDERS["groq"].models
 
         # Check TokenRouter (Tier 0 — unified router, 72 models)
-        tr_status = await self._check_provider_latency("tokenrouter", platform_tokenrouter)
+        # Prefer user BYOK key if available
+        tokenrouter_key = user_keys.get("tokenrouter") or platform_tokenrouter
+        tr_status = await self._check_provider_latency("tokenrouter", tokenrouter_key)
         providers.append({
             "id": "tokenrouter",
             "name": "TokenRouter (72 Models)",
@@ -144,6 +146,7 @@ class ProviderStatusManager:
                 "audio": ["openai/gpt-audio", "openai/gpt-audio-mini"],
             },
             "supports_smart_routing": True,
+            "has_user_key": bool(user_keys.get("tokenrouter")),
         })
         
         # Check Groq (prefer user BYOK key if available)
