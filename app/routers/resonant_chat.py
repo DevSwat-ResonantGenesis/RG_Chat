@@ -4158,7 +4158,7 @@ async def get_providers(
         "meta": {"name": "Meta AI (Llama)", "model": "llama-3.2-90b", "models": ["llama-3.2-90b", "llama-3.2-11b"], "capabilities": ["chat", "coding"]},
         "copilot": {"name": "Microsoft Copilot", "model": "gpt-4o", "models": ["gpt-4o", "gpt-4-turbo"], "capabilities": ["chat", "coding"]},
         "glm": {"name": "GLM (Zhipu AI)", "model": "glm-4", "models": ["glm-4", "glm-4v", "glm-3-turbo"], "capabilities": ["chat"]},
-        "tokenrouter": {"name": "TokenRouter (72 Models)", "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "models": [
+        "tokenrouter": {"name": "TokenRouter (72 Models)", "model": "google/gemini-3-flash-preview", "models": [
             "anthropic/claude-opus-4.7", "anthropic/claude-opus-4.6", "anthropic/claude-opus-4.5",
             "anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5", "anthropic/claude-sonnet-4",
             "anthropic/claude-haiku-4.5", "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.2",
